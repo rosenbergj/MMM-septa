@@ -47,7 +47,12 @@ Module.register("MMM-septa", {
   },
 
   getStyles() {
-    return ["MMM-septa.css"];
+    // MagicMirror's loader only prefixes the module's own path onto
+    // getStyles() entries that DON'T contain a "/" (see loader.js
+    // loadFileForModule) -- a slash makes it treat the string as an
+    // already-resolved path instead. Since our CSS lives in a css/
+    // subfolder, resolve it ourselves via this.file() first.
+    return [this.file("css/MMM-septa.css")];
   },
 
   socketNotificationReceived(notification, payload) {
