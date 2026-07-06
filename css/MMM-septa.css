@@ -50,6 +50,14 @@
   color: #ccc;
 }
 
+/* Tracked (non-italic) arrivals that aren't urgent read as green instead of
+   gray. Untracked ("~") arrivals keep their existing muted look untouched --
+   :not(.septa-untracked) excludes them, so they fall back to the plain
+   .septa-normal gray above. */
+.septa-table .septa-arrivals .septa-normal:not(.septa-untracked) {
+  color: #4caf50;
+}
+
 .septa-table .septa-arrivals .septa-urgent {
   color: #e05050;
   font-weight: bold;
