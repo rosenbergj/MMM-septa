@@ -111,6 +111,16 @@ function isDetourActive(detours, stopId, now = new Date()) {
   return findActiveDetour(detours, stopId, now) !== null;
 }
 
+// When skipped_stops is the object-keyed real API shape, each entry also
+// carries the stop's name -- reuse it so the stop-context header still has
+// something to show during an active detour, when we skip fetching trip
+// data entirely and so can't derive stopName from stop_times instead.
+function findSkippedStopName(skippedStops, targetStopId) {
+  if (!skippedStops || Array.isArray(skippedStops) || typeof skippedStops !== "object") return null;
+  const entry = skippedStops[targetStopId];
+  return (Array.isArray(entry) && typeof entry[0] === "string" && entry[0]) || null;
+}
+
 // A trip is "good" if it's heading the configured direction, isn't
 // canceled, and hasn't already progressed past its first stop.
 function filterGoodTrips(trips, direction) {
@@ -190,7 +200,7 @@ async function pollRoute(routeConfig, options = {}) {
       detour: true,
       detourReason: reason,
       headsign: null,
-      stopName: null,
+      stopName: findSkippedStopName(activeDetour.skipped_stops, String(stopId)),
       direction,
       hasTripError: false,
       fetchedAt: nowDate.getTime(),
@@ -242,6 +252,7 @@ module.exports = {
   parseSeptaDateTime,
   isDetourActive,
   findActiveDetour,
+  findSkippedStopName,
   filterGoodTrips,
   filterStopTimes,
   findStopName,

@@ -6,6 +6,7 @@ const path = require("node:path");
 
 const {
   isDetourActive,
+  findSkippedStopName,
   filterGoodTrips,
   filterStopTimes,
   findStopName,
@@ -170,6 +171,27 @@ test("filterStopTimes", async (t) => {
   });
 });
 
+test("findSkippedStopName", async (t) => {
+  await t.test("object-shaped skipped_stops -> the stop's name", () => {
+    const skippedStops = { 8704: ["Huntingdon St & 17th St", "39.993027", "-75.15956"] };
+    assert.equal(findSkippedStopName(skippedStops, "8704"), "Huntingdon St & 17th St");
+  });
+
+  await t.test("stop not in the map -> null", () => {
+    const skippedStops = { 8704: ["Huntingdon St & 17th St", "39.993027", "-75.15956"] };
+    assert.equal(findSkippedStopName(skippedStops, "99999"), null);
+  });
+
+  await t.test("array-shaped skipped_stops (no name info) -> null", () => {
+    assert.equal(findSkippedStopName(["21289", "21290"], "21289"), null);
+  });
+
+  await t.test("null/empty skipped_stops -> null", () => {
+    assert.equal(findSkippedStopName(null, "21289"), null);
+    assert.equal(findSkippedStopName({}, "21289"), null);
+  });
+});
+
 test("findStopName", async (t) => {
   const stopTimes = fixture("trip-update-900002.json").stop_times;
 
@@ -278,6 +300,17 @@ test("pollRoute", async (t) => {
       { fetchImpl, now: () => new Date(2026, 5, 1) }
     );
     assert.equal(result.detourReason, "Sinkhole");
+  });
+
+  await t.test("surfaces stopName from skipped_stops during an active detour", async () => {
+    const detoursLive = fixture("detours-route64-live-sample.json");
+    const fetchImpl = stubFetch([["detours/?route=64", detoursLive]]);
+    const result = await pollRoute(
+      { routeId: "64", stopId: 15210, direction: "Westbound" },
+      { fetchImpl, now: () => new Date(2026, 5, 1) }
+    );
+    assert.equal(result.stopName, "Westminster Av & 46th St");
+    assert.equal(result.headsign, null);
   });
 
   await t.test("isolates a single failed trip-update: partial etas + hasTripError", async () => {
