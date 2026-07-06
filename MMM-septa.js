@@ -165,12 +165,15 @@ Module.register("MMM-septa", {
       labelMain.innerHTML = `${route.label || route.routeId} <span class="septa-direction-abbrev">${abbrev}</span>`;
       labelCell.appendChild(labelMain);
       if (destinationInfo.mixed) {
+        // One destination per line (each with its own arrow), not
+        // comma-joined onto one line -- this is a plain HTML table, so a
+        // single long line in one row's label cell widens that column for
+        // every row, shifting all the arrival times to the right.
         const labelSub = document.createElement("div");
         labelSub.className = "septa-label-sub";
-        const parts = destinationInfo.order.map(
-          (headsign) => `${septaEscapeHtml(headsign)}(${destinationInfo.markerFor.get(headsign)})`
-        );
-        labelSub.innerHTML = `&rarr; ${parts.join(", ")}`;
+        labelSub.innerHTML = destinationInfo.order
+          .map((headsign) => `&rarr; ${septaEscapeHtml(headsign)}(${destinationInfo.markerFor.get(headsign)})`)
+          .join("<br>");
         labelCell.appendChild(labelSub);
       } else if (destinationInfo.headsign) {
         const labelSub = document.createElement("div");
