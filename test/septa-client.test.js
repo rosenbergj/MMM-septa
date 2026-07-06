@@ -211,6 +211,7 @@ test("pollRoute", async (t) => {
     assert.deepEqual(result.etas, [1783312200]);
     assert.equal(result.detour, false);
     assert.equal(result.hasTripError, false);
+    assert.equal(result.headsign, "Front-Market");
   });
 
   await t.test("excludes delay-999 stop_times for a clean Southbound cycle", async () => {
@@ -225,6 +226,7 @@ test("pollRoute", async (t) => {
     );
     assert.deepEqual(result.etas, [1783312320]);
     assert.equal(result.hasTripError, false);
+    assert.equal(result.headsign, "20th-Johnston");
   });
 
   await t.test("short-circuits with detour:true when a detour is active", async () => {
@@ -237,6 +239,7 @@ test("pollRoute", async (t) => {
       etas: [],
       detour: true,
       detourReason: null,
+      headsign: null,
       direction: "Northbound",
       hasTripError: false,
       fetchedAt: new Date(2026, 0, 1).getTime(),

@@ -42,6 +42,7 @@ module.exports = NodeHelper.create({
         etas: [],
         detour: false,
         detourReason: null,
+        headsign: null,
         direction: route.direction,
         hasTripError: false,
         lastFetchTime: null,
@@ -65,6 +66,10 @@ module.exports = NodeHelper.create({
       state.etas = result.etas;
       state.detour = result.detour;
       state.detourReason = result.detourReason;
+      // headsign is effectively static (a route's destination doesn't
+      // change); don't let a cycle where no trips were running (so we
+      // couldn't look it up) blank out an already-known value.
+      if (result.headsign) state.headsign = result.headsign;
       state.direction = result.direction;
       state.hasTripError = result.hasTripError;
       state.lastFetchTime = result.fetchedAt;
@@ -75,6 +80,7 @@ module.exports = NodeHelper.create({
         etas: state.etas,
         detour: state.detour,
         detourReason: state.detourReason,
+        headsign: state.headsign,
         direction: state.direction,
         hasTripError: state.hasTripError,
         lastFetchTime: state.lastFetchTime,

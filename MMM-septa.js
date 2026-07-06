@@ -20,8 +20,8 @@ function septaMinutesUntil(etaSeconds, nowMs) {
   return Math.max(0, Math.round((etaSeconds * 1000 - nowMs) / 60000));
 }
 
-// detourReason comes from SEPTA's API, not our own config, so escape it
-// before dropping it into innerHTML.
+// detourReason/headsign come from SEPTA's API, not our own config, so
+// escape them before dropping them into innerHTML.
 function septaEscapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text;
@@ -93,12 +93,22 @@ Module.register("MMM-septa", {
 
     for (const route of this.config.routes) {
       const state = this.routeStates[septaRouteKey(route)];
+
       const row = document.createElement("tr");
       row.className = "septa-row";
 
       const labelCell = document.createElement("td");
       labelCell.className = "septa-label";
-      labelCell.innerHTML = route.label || route.routeId;
+      const labelMain = document.createElement("div");
+      labelMain.className = "septa-label-main";
+      labelMain.innerHTML = route.label || route.routeId;
+      labelCell.appendChild(labelMain);
+      if (state && state.headsign) {
+        const labelSub = document.createElement("div");
+        labelSub.className = "septa-label-sub";
+        labelSub.innerHTML = septaEscapeHtml(state.headsign);
+        labelCell.appendChild(labelSub);
+      }
       row.appendChild(labelCell);
 
       const arrivalsCell = document.createElement("td");
@@ -118,11 +128,12 @@ Module.register("MMM-septa", {
         } else {
           arrivalsCell.innerHTML = state.etas
             .slice(0, this.config.maxArrivals)
-            .map((eta) => {
+            .map((eta, index) => {
               const minutes = septaMinutesUntil(eta, now);
-              const cls = minutes <= this.config.warnMinutes ? "septa-urgent" : "septa-normal";
+              const urgencyClass = minutes <= this.config.warnMinutes ? "septa-urgent" : "septa-normal";
+              const tierClass = index === 0 ? "septa-first" : "septa-later";
               const text = minutes <= this.config.countdownWithinMinutes ? `${minutes}m` : septaFormatClockTime(eta);
-              return `<span class="${cls}">${text}</span>`;
+              return `<span class="${urgencyClass} ${tierClass}">${text}</span>`;
             })
             .join(" ");
         }

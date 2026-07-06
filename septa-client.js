@@ -178,6 +178,7 @@ async function pollRoute(routeConfig, options = {}) {
       etas: [],
       detour: true,
       detourReason: reason,
+      headsign: null,
       direction,
       hasTripError: false,
       fetchedAt: nowDate.getTime(),
@@ -186,6 +187,7 @@ async function pollRoute(routeConfig, options = {}) {
 
   const trips = await fetchTrips(routeId, fetchImpl);
   const goodTrips = filterGoodTrips(trips, direction);
+  const headsign = (goodTrips[0] && goodTrips[0].trip_headsign) || null;
 
   const nowSeconds = nowDate.getTime() / 1000;
   const results = await Promise.allSettled(
@@ -206,7 +208,15 @@ async function pollRoute(routeConfig, options = {}) {
   }
   etas.sort((a, b) => a - b);
 
-  return { etas, detour: false, detourReason: null, direction, hasTripError, fetchedAt: nowDate.getTime() };
+  return {
+    etas,
+    detour: false,
+    detourReason: null,
+    headsign,
+    direction,
+    hasTripError,
+    fetchedAt: nowDate.getTime(),
+  };
 }
 
 module.exports = {
