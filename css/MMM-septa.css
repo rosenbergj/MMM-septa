@@ -27,6 +27,14 @@
   font-weight: bold;
 }
 
+.septa-table .septa-direction-abbrev {
+  font-size: 0.7em;
+  font-weight: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  opacity: 0.6;
+}
+
 .septa-table .septa-label-sub {
   margin-top: 2px;
   font-size: 0.7em;

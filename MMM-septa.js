@@ -118,15 +118,16 @@ Module.register("MMM-septa", {
     for (const route of this.config.routes) {
       const state = this.routeStates[septaRouteKey(route)];
 
-      const headerRow = document.createElement("tr");
-      const headerCell = document.createElement("td");
-      headerCell.className = "septa-stop-header";
-      headerCell.colSpan = 2;
-      const abbrev = septaAbbreviateDirection(route.direction);
       const stopName = state && state.stopName;
-      headerCell.innerHTML = stopName ? `${abbrev} &middot; ${septaEscapeHtml(stopName)}` : abbrev;
-      headerRow.appendChild(headerCell);
-      wrapper.appendChild(headerRow);
+      if (stopName) {
+        const headerRow = document.createElement("tr");
+        const headerCell = document.createElement("td");
+        headerCell.className = "septa-stop-header";
+        headerCell.colSpan = 2;
+        headerCell.innerHTML = septaEscapeHtml(stopName);
+        headerRow.appendChild(headerCell);
+        wrapper.appendChild(headerRow);
+      }
 
       const row = document.createElement("tr");
       row.className = "septa-row";
@@ -138,7 +139,8 @@ Module.register("MMM-septa", {
       labelCell.className = "septa-label";
       const labelMain = document.createElement("div");
       labelMain.className = "septa-label-main";
-      labelMain.innerHTML = route.label || route.routeId;
+      const abbrev = septaAbbreviateDirection(route.direction);
+      labelMain.innerHTML = `${route.label || route.routeId} <span class="septa-direction-abbrev">${abbrev}</span>`;
       labelCell.appendChild(labelMain);
       if (commonHeadsign) {
         const labelSub = document.createElement("div");

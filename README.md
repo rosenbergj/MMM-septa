@@ -152,15 +152,16 @@ don't copy that into your real `config.js`.
   the "Nm" countdowns every `countdownTickSeconds` without needing a
   fresh backend fetch. When a detour affects the configured stop, shows
   "DETOUR" (with SEPTA's stated reason, e.g. "DETOUR: Sinkhole", if one
-  was provided) instead of arrival times. Each route also gets a small
-  header line (e.g. "NB · 20th St & Oregon Av") discovered automatically
-  from SEPTA's live data (no config needed) and cached once known, so it
-  doesn't disappear during a cycle with no active trips. Each arrival
-  carries its own trip's destination, shown as a sub-label under the
-  route label when every currently-shown arrival agrees on it (e.g.
-  "→ Front-Market"); if they don't, it shows "Mixed destinations" rather
-  than guessing. The nearest arrival is shown larger/brighter than the
-  rest.
+  was provided) instead of arrival times. The route label is followed by
+  a small direction abbreviation (e.g. "17 NB"), and each route also gets
+  a small header line with the stop name (e.g. "20th St & Oregon Av"),
+  discovered automatically from SEPTA's live data (no config needed) and
+  cached once known, so it doesn't disappear during a cycle with no
+  active trips. Each arrival carries its own trip's destination, shown
+  as a sub-label under the route label when every currently-shown
+  arrival agrees on it (e.g. "→ Front-Market"); if they don't, it shows
+  "Mixed destinations" rather than guessing. The nearest arrival is
+  shown larger/brighter than the rest.
 - `scripts/find-stop.js` / `scripts/dry-run.js` — standalone CLI helpers,
   runnable with plain `node`, no MagicMirror needed.
 
