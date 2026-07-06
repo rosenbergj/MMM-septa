@@ -82,6 +82,12 @@ Module.register("MMM-septa", {
     }, this.config.countdownTickSeconds * 1000);
   },
 
+  getHeader() {
+    // Falls back to "SEPTA tracking" unless the user set their own `header`
+    // on this module's entry in config.js.
+    return this.data.header || "SEPTA tracking";
+  },
+
   getStyles() {
     // MagicMirror's loader only prefixes the module's own path onto
     // getStyles() entries that DON'T contain a "/" (see loader.js

@@ -77,6 +77,9 @@ re-run it (ideally earlier in the route's service window).
 
 Add to `config.js`:
 
+Shows a "SEPTA tracking" header by default; set `header` (a standard
+MagicMirror module option, outside `config`) to override it.
+
 ```js
 {
   module: "MMM-septa",
