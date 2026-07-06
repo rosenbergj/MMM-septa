@@ -1,0 +1,39 @@
+{
+  "trip": {
+    "route_id": "17",
+    "trip_id": "787404",
+    "direction_id": 0,
+    "trip_headsign": "Front-Market",
+    "status": "ON-TIME",
+    "real-time": true
+  },
+  "stop_times": [
+    {
+      "stop_id": 40,
+      "stop_name": "20th St & Johnston St",
+      "stop_sequence": 1,
+      "eta": 1783312500,
+      "delay": 0,
+      "departed": false,
+      "is_skipped": false
+    },
+    {
+      "stop_id": 21289,
+      "stop_name": "20th St & Oregon Av",
+      "stop_sequence": 2,
+      "eta": 1783312560,
+      "delay": 0,
+      "departed": false,
+      "is_skipped": false
+    },
+    {
+      "stop_id": 21290,
+      "stop_name": "20th St & Shunk St",
+      "stop_sequence": 3,
+      "eta": 1783312620,
+      "delay": 0,
+      "departed": false,
+      "is_skipped": false
+    }
+  ]
+}

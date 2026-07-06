@@ -8,10 +8,12 @@ const {
   isDetourActive,
   findSkippedStopName,
   filterGoodTrips,
+  isTripTracked,
   filterStopTimes,
   findStopName,
   computeIsFresh,
   pollRoute,
+  mergeScheduledArrivals,
 } = require("../septa-client.js");
 
 function fixture(name) {
@@ -120,23 +122,65 @@ test("isDetourActive", async (t) => {
 test("filterGoodTrips", async (t) => {
   const trips = fixture("trips-route17.json");
 
-  await t.test("Northbound: excludes seq<=1 and CANCELED, keeps the rest", () => {
+  await t.test("default (useScheduleSupplement=true): Northbound keeps seq=1 and seq>1, excludes CANCELED", () => {
     const good = filterGoodTrips(trips, "Northbound");
-    assert.deepEqual(good.map((trip) => trip.trip_id), ["900002"]);
+    assert.deepEqual(good.map((trip) => trip.trip_id), ["787404", "900002"]);
   });
 
-  await t.test("Southbound: keeps ON-TIME trip with seq>1", () => {
+  await t.test("default: Southbound keeps ON-TIME trip with seq>1", () => {
     const good = filterGoodTrips(trips, "Southbound");
     assert.deepEqual(good.map((trip) => trip.trip_id), ["787763"]);
   });
 
-  await t.test("wrong direction excluded entirely", () => {
+  await t.test("default: wrong direction excluded entirely", () => {
     assert.deepEqual(filterGoodTrips(trips, "Eastbound"), []);
   });
 
-  await t.test("missing next_stop_sequence excluded", () => {
+  await t.test("default: a trip with no next_stop_sequence at all is still kept (untracked, not dropped)", () => {
     const withMissing = [{ direction_name: "Northbound", status: "ON-TIME", trip_id: "x" }];
-    assert.deepEqual(filterGoodTrips(withMissing, "Northbound"), []);
+    assert.deepEqual(filterGoodTrips(withMissing, "Northbound").map((trip) => trip.trip_id), ["x"]);
+  });
+
+  await t.test("useScheduleSupplement=false: Northbound excludes seq<=1 and CANCELED, keeps the rest", () => {
+    const good = filterGoodTrips(trips, "Northbound", false);
+    assert.deepEqual(good.map((trip) => trip.trip_id), ["900002"]);
+  });
+
+  await t.test("useScheduleSupplement=false: missing next_stop_sequence excluded", () => {
+    const withMissing = [{ direction_name: "Northbound", status: "ON-TIME", trip_id: "x" }];
+    assert.deepEqual(filterGoodTrips(withMissing, "Northbound", false), []);
+  });
+});
+
+test("isTripTracked", async (t) => {
+  const baseTrip = { next_stop_sequence: 5, status: "ON-TIME", vehicle_id: "1234" };
+
+  await t.test("normal in-progress, GPS-tracked trip -> true", () => {
+    assert.equal(isTripTracked(baseTrip, { "real-time": true }), true);
+  });
+
+  await t.test("next_stop_sequence 1 -> false", () => {
+    assert.equal(isTripTracked({ ...baseTrip, next_stop_sequence: 1 }, { "real-time": true }), false);
+  });
+
+  await t.test('status "NO GPS" -> false', () => {
+    assert.equal(isTripTracked({ ...baseTrip, status: "NO GPS" }, { "real-time": true }), false);
+  });
+
+  await t.test('vehicle_id "None" -> false', () => {
+    assert.equal(isTripTracked({ ...baseTrip, vehicle_id: "None" }, { "real-time": true }), false);
+  });
+
+  await t.test('trip-update "real-time": false -> false', () => {
+    assert.equal(isTripTracked(baseTrip, { "real-time": false }), false);
+  });
+
+  await t.test("missing tripsEntry -> false", () => {
+    assert.equal(isTripTracked(null, { "real-time": true }), false);
+  });
+
+  await t.test("missing trip-update trip object -> true (no real-time:false signal to distrust)", () => {
+    assert.equal(isTripTracked(baseTrip, undefined), true);
   });
 });
 
@@ -233,15 +277,77 @@ test("computeIsFresh", async (t) => {
   });
 });
 
+test("mergeScheduledArrivals", async (t) => {
+  await t.test("matches the 1/11-tracked, 3/12/27/47-scheduled walkthrough exactly", () => {
+    const tracked = [
+      { eta: 1, headsign: "A", tracked: true, tripId: "live-1" },
+      { eta: 11, headsign: "A", tracked: true, tripId: "live-2" },
+    ];
+    const candidates = [
+      { eta: 3, headsign: "A", tripId: "sched-3" },
+      { eta: 12, headsign: "A", tripId: "sched-12" },
+      { eta: 27, headsign: "A", tripId: "sched-27" },
+      { eta: 47, headsign: "A", tripId: "sched-47" },
+    ];
+    const merged = mergeScheduledArrivals(tracked, candidates);
+    assert.deepEqual(
+      merged.map((a) => a.eta),
+      [1, 11, 12, 27, 47]
+    );
+    assert.equal(merged[0].tracked, true);
+    assert.equal(merged[2].tracked, false);
+  });
+
+  await t.test("drops a candidate whose tripId matches an already-tracked trip, even past the cutoff", () => {
+    const tracked = [{ eta: 1, headsign: "A", tracked: true, tripId: "live-1" }];
+    const candidates = [{ eta: 50, headsign: "A", tripId: "live-1" }];
+    assert.deepEqual(mergeScheduledArrivals(tracked, candidates), tracked);
+  });
+
+  await t.test("with no tracked arrivals at all, every candidate survives (no cutoff)", () => {
+    const candidates = [
+      { eta: 5, headsign: "A", tripId: "sched-5" },
+      { eta: 40, headsign: "A", tripId: "sched-40" },
+    ];
+    const merged = mergeScheduledArrivals([], candidates);
+    assert.deepEqual(
+      merged.map((a) => a.eta),
+      [5, 40]
+    );
+    assert.ok(merged.every((a) => a.tracked === false));
+  });
+});
+
 test("pollRoute", async (t) => {
   const trips = fixture("trips-route17.json");
+  const tripUpdate787404 = fixture("trip-update-787404.json");
   const tripUpdate900002 = fixture("trip-update-900002.json");
   const tripUpdate787763 = fixture("trip-update-787763.json");
   const detoursEmpty = fixture("detours-route17-empty.json");
   const detoursActive = fixture("detours-route17-active.json");
   const fixedNow = () => new Date(1783312100 * 1000);
 
-  await t.test("returns sorted etas for a clean Northbound cycle", async () => {
+  await t.test("returns sorted etas for a clean Northbound cycle, tagging the untracked seq=1 trip", async () => {
+    const fetchImpl = stubFetch([
+      ["detours/?route=17", detoursEmpty],
+      ["trips/?route_id=17", trips],
+      ["trip-update/?trip_id=787404", tripUpdate787404],
+      ["trip-update/?trip_id=900002", tripUpdate900002],
+    ]);
+    const result = await pollRoute(
+      { routeId: "17", stopId: 21289, direction: "Northbound" },
+      { fetchImpl, now: fixedNow }
+    );
+    assert.deepEqual(result.etas, [
+      { eta: 1783312200, headsign: "Front-Market", tracked: true, tripId: "900002" },
+      { eta: 1783312560, headsign: "Front-Market", tracked: false, tripId: "787404" },
+    ]);
+    assert.equal(result.detour, false);
+    assert.equal(result.hasTripError, false);
+    assert.equal(result.stopName, "20th St & Oregon Av");
+  });
+
+  await t.test("useScheduleSupplement=false excludes the untracked seq=1 trip entirely", async () => {
     const fetchImpl = stubFetch([
       ["detours/?route=17", detoursEmpty],
       ["trips/?route_id=17", trips],
@@ -249,12 +355,10 @@ test("pollRoute", async (t) => {
     ]);
     const result = await pollRoute(
       { routeId: "17", stopId: 21289, direction: "Northbound" },
-      { fetchImpl, now: fixedNow }
+      { fetchImpl, now: fixedNow, useScheduleSupplement: false }
     );
-    assert.deepEqual(result.etas, [{ eta: 1783312200, headsign: "Front-Market" }]);
-    assert.equal(result.detour, false);
+    assert.deepEqual(result.etas, [{ eta: 1783312200, headsign: "Front-Market", tracked: true, tripId: "900002" }]);
     assert.equal(result.hasTripError, false);
-    assert.equal(result.stopName, "20th St & Oregon Av");
   });
 
   await t.test("excludes delay-999 stop_times for a clean Southbound cycle", async () => {
@@ -267,7 +371,7 @@ test("pollRoute", async (t) => {
       { routeId: "17", stopId: 10311, direction: "Southbound" },
       { fetchImpl, now: fixedNow }
     );
-    assert.deepEqual(result.etas, [{ eta: 1783312320, headsign: "20th-Johnston" }]);
+    assert.deepEqual(result.etas, [{ eta: 1783312320, headsign: "20th-Johnston", tracked: true, tripId: "787763" }]);
     assert.equal(result.hasTripError, false);
     assert.equal(result.stopName, "Market St & 4th St");
   });
@@ -337,8 +441,8 @@ test("pollRoute", async (t) => {
       { fetchImpl, now: fixedNow }
     );
     assert.deepEqual(result.etas, [
-      { eta: 1783312200, headsign: "Front-Market" },
-      { eta: 1783312500, headsign: "Different-Destination" },
+      { eta: 1783312200, headsign: "Front-Market", tracked: true, tripId: "900002" },
+      { eta: 1783312500, headsign: "Different-Destination", tracked: true, tripId: "900003" },
     ]);
   });
 
@@ -363,7 +467,7 @@ test("pollRoute", async (t) => {
       { routeId: "17", stopId: 21289, direction: "Northbound" },
       { fetchImpl, now: fixedNow }
     );
-    assert.deepEqual(result.etas, [{ eta: 1783312200, headsign: "Front-Market" }]);
+    assert.deepEqual(result.etas, [{ eta: 1783312200, headsign: "Front-Market", tracked: true, tripId: "900002" }]);
     assert.equal(result.hasTripError, true);
   });
 

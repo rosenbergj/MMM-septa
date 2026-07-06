@@ -94,6 +94,7 @@ MagicMirror module option, outside `config`) to override it.
     retryIntervalSeconds: 30,
     warnMinutes: 5,
     countdownWithinMinutes: 30,
+    useScheduleSupplement: true,
   },
 }
 ```
@@ -107,6 +108,7 @@ MagicMirror module option, outside `config`) to override it.
 | `warnMinutes`             | `5`     | Arrivals at or under this many minutes are styled as "urgent"            |
 | `countdownWithinMinutes`  | `30`    | Arrivals at or under this many minutes show as "Nm"; farther out shows a clock time (e.g. "5:47 PM"), honoring the mirror's global `timeFormat` (12/24h) |
 | `countdownTickSeconds`    | `15`    | How often the displayed "Nm" countdown re-renders client-side            |
+| `useScheduleSupplement`   | `true`  | Include arrivals SEPTA hasn't fully GPS-confirmed yet, plus static-schedule arrivals up to 60 minutes out that live tracking doesn't cover yet (both shown as "~Nm", italic/muted). Set `false` to show only GPS-confirmed arrivals. |
 
 Each route's `direction` must match SEPTA's `direction_name` for that route
 exactly (case-sensitive) — use `find-stop.js` to confirm it.
@@ -161,7 +163,23 @@ don't copy that into your real `config.js`.
   as a sub-label under the route label when every currently-shown
   arrival agrees on it (e.g. "→ Front-Market"); if they don't, it shows
   "Mixed destinations" rather than guessing. The nearest arrival is
-  shown larger/brighter than the rest.
+  shown larger/brighter than the rest. With `useScheduleSupplement` on
+  (the default), arrivals SEPTA hasn't started GPS-tracking yet — still
+  at their first stop, no vehicle assigned, or otherwise not "real-time"
+  — are shown too, styled as "~Nm" (italic, muted) instead of being
+  dropped entirely.
+- `gtfs-schedule.js` — fills in arrivals up to 60 minutes out that live
+  tracking doesn't cover yet, using SEPTA's static GTFS schedule as a
+  fallback (also shown "~Nm"). No sqlite, no GTFS-realtime protobuf, no
+  full-feed database: `node_helper.js` downloads and filters the feed down
+  to just your configured routes/stops once ~60 seconds after startup and
+  once daily thereafter (never on the per-poll hot path), and caches the
+  tiny result to `gtfs-cache.json` next to the module so a restart doesn't
+  require redownloading. That file is gitignored — safe to delete anytime;
+  it's rebuilt automatically on the next refresh. A scheduled arrival is
+  dropped if it's no later than the latest live-tracked arrival (live data
+  should already cover anything that imminent) or if it turns out to be
+  the same trip as one already shown.
 - `scripts/find-stop.js` / `scripts/dry-run.js` — standalone CLI helpers,
   runnable with plain `node`, no MagicMirror needed.
 

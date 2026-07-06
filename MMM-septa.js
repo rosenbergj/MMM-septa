@@ -65,6 +65,10 @@ Module.register("MMM-septa", {
     countdownWithinMinutes: 30, // arrivals at/under this show "N min"; farther out show clock time
     countdownTickSeconds: 15, // client-side re-render cadence, no network
     animationSpeed: 1000,
+    // Supplement live-tracked arrivals with SEPTA trips it hasn't started
+    // GPS-tracking yet (and, later, static-schedule arrivals) instead of
+    // showing only fully GPS-confirmed buses.
+    useScheduleSupplement: true,
   },
 
   start() {
@@ -75,6 +79,7 @@ Module.register("MMM-septa", {
       routes: this.config.routes,
       refreshIntervalSeconds: this.config.refreshIntervalSeconds,
       retryIntervalSeconds: this.config.retryIntervalSeconds,
+      useScheduleSupplement: this.config.useScheduleSupplement,
     });
 
     setInterval(() => {
@@ -166,16 +171,29 @@ Module.register("MMM-septa", {
         } else if (shownArrivals.length === 0) {
           arrivalsCell.innerHTML = "&ndash;&ndash;";
         } else {
+          // With any untracked (italic/"~") arrival in the same row, a bare
+          // space between entries reads as visually ambiguous -- especially
+          // once countdown- and clock-style entries mix (e.g.
+          // "6m ~20m ~2:55pm"). A comma makes each entry's boundary clear.
+          const hasUntracked = shownArrivals.some((arrival) => arrival.tracked === false);
+          const separator = hasUntracked ? ", " : " ";
           arrivalsCell.innerHTML = shownArrivals
             .map((arrival, index) => {
               const minutes = septaMinutesUntil(arrival.eta, now);
               const urgencyClass = minutes <= this.config.warnMinutes ? "septa-urgent" : "septa-normal";
-              const tierClass = index === 0 ? "septa-first" : "septa-later";
+              // Bold is reserved for a genuinely confirmed "next bus" --
+              // the first shown arrival only earns it if it's tracked, not
+              // just because it's chronologically first. An all-untracked
+              // row has no bold entry at all rather than overstating
+              // confidence in a guess.
+              const tierClass = index === 0 && arrival.tracked !== false ? "septa-first" : "septa-later";
+              const untrackedClass = arrival.tracked === false ? " septa-untracked" : "";
+              const prefix = arrival.tracked === false ? "~" : "";
               const text =
                 minutes <= this.config.countdownWithinMinutes ? `${minutes}m` : septaFormatClockTime(arrival.eta);
-              return `<span class="${urgencyClass} ${tierClass}">${text}</span>`;
+              return `<span class="${urgencyClass} ${tierClass}${untrackedClass}">${prefix}${text}</span>`;
             })
-            .join(" ");
+            .join(separator);
         }
 
         if (state.hasTripError) {

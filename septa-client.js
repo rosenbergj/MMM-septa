@@ -121,16 +121,36 @@ function findSkippedStopName(skippedStops, targetStopId) {
   return (Array.isArray(entry) && typeof entry[0] === "string" && entry[0]) || null;
 }
 
-// A trip is "good" if it's heading the configured direction, isn't
-// canceled, and hasn't already progressed past its first stop.
-function filterGoodTrips(trips, direction) {
+// A trip is "good" if it's heading the configured direction and isn't
+// canceled. With useScheduleSupplement enabled (the default), that's the
+// whole rule -- trips SEPTA hasn't started GPS-tracking yet (or that
+// haven't left their first stop) are included too, and flagged via
+// isTripTracked() rather than dropped. With it disabled, only trips past
+// their first stop count as "good", matching the module's original
+// tracked-only behavior.
+function filterGoodTrips(trips, direction, useScheduleSupplement = true) {
   if (!Array.isArray(trips)) return [];
   return trips.filter((trip) => {
     if (!trip) return false;
     if (trip.direction_name !== direction) return false;
     if (trip.status === "CANCELED") return false;
+    if (useScheduleSupplement) return true;
     return Number(trip.next_stop_sequence || 0) > 1;
   });
+}
+
+// A trip counts as "tracked" (solid, live data) unless SEPTA's own data
+// says otherwise: still at/before its first stop, no GPS yet, no vehicle
+// assigned, or the trip-update response itself says "real-time": false.
+// Untracked trips still get real ETAs (SEPTA blends in the static
+// schedule for them), just with lower confidence -- flagged, not dropped.
+function isTripTracked(tripsEntry, tripUpdateTrip) {
+  if (!tripsEntry) return false;
+  if (Number(tripsEntry.next_stop_sequence) === 1) return false;
+  if (tripsEntry.status === "NO GPS") return false;
+  if (tripsEntry.vehicle_id === "None") return false;
+  if (tripUpdateTrip && tripUpdateTrip["real-time"] === false) return false;
+  return true;
 }
 
 // A stop_time counts as an upcoming arrival if it's for the configured
@@ -187,6 +207,7 @@ function computeIsFresh(lastFetchTime, refreshIntervalSeconds, now = Date.now())
 async function pollRoute(routeConfig, options = {}) {
   const fetchImpl = options.fetchImpl || fetch;
   const nowFn = options.now || (() => new Date());
+  const useScheduleSupplement = options.useScheduleSupplement !== false;
   const { routeId, stopId, direction } = routeConfig;
 
   const nowDate = nowFn();
@@ -207,17 +228,17 @@ async function pollRoute(routeConfig, options = {}) {
   }
 
   const trips = await fetchTrips(routeId, fetchImpl);
-  const goodTrips = filterGoodTrips(trips, direction);
+  const goodTrips = filterGoodTrips(trips, direction, useScheduleSupplement);
 
   const nowSeconds = nowDate.getTime() / 1000;
   const results = await Promise.allSettled(
     goodTrips.map((trip) => fetchTripUpdate(trip.trip_id, fetchImpl))
   );
 
-  // Each arrival keeps the headsign of the specific trip it came from --
-  // a route/direction can in principle have mixed headsigns across trips
-  // (short-turns, etc), so a single route-level headsign can't be trusted
-  // to describe every arrival shown.
+  // Each arrival keeps the headsign and tracked-status of the specific trip
+  // it came from -- a route/direction can in principle have mixed headsigns
+  // across trips (short-turns, etc), so a single route-level value can't be
+  // trusted to describe every arrival shown.
   let hasTripError = false;
   let stopName = null;
   const etas = [];
@@ -228,9 +249,12 @@ async function pollRoute(routeConfig, options = {}) {
     }
     const stopTimes = result.value && result.value.stop_times;
     if (!stopName) stopName = findStopName(stopTimes, stopId);
-    const headsign = (goodTrips[index] && goodTrips[index].trip_headsign) || null;
+    const tripEntry = goodTrips[index];
+    const headsign = (tripEntry && tripEntry.trip_headsign) || null;
+    const tracked = isTripTracked(tripEntry, result.value && result.value.trip);
+    const tripId = (tripEntry && tripEntry.trip_id) || null;
     for (const stopTime of filterStopTimes(stopTimes, stopId, nowSeconds)) {
-      etas.push({ eta: Number(stopTime.eta), headsign });
+      etas.push({ eta: Number(stopTime.eta), headsign, tracked, tripId });
     }
   });
   etas.sort((a, b) => a.eta - b.eta);
@@ -246,6 +270,25 @@ async function pollRoute(routeConfig, options = {}) {
   };
 }
 
+// Merges GTFS-schedule-derived candidates (see gtfs-schedule.js's
+// getScheduledArrivals) into an already-tracked etas list. A candidate is
+// dropped unconditionally if its eta is at or before the latest tracked
+// arrival (SEPTA's own live data should already cover anything that
+// imminent -- if it didn't show up there, something's off, so it's not
+// worth surfacing from the schedule instead) and otherwise dropped only if
+// its tripId matches a trip we're already showing (the same run counted
+// twice). Survivors are tagged tracked:false and merged in eta order.
+function mergeScheduledArrivals(trackedEtas, scheduledCandidates) {
+  const maxTrackedEta = trackedEtas.reduce((max, arrival) => Math.max(max, arrival.eta), -Infinity);
+  const trackedTripIds = new Set(trackedEtas.map((arrival) => arrival.tripId).filter(Boolean));
+
+  const survivors = scheduledCandidates
+    .filter((candidate) => candidate.eta > maxTrackedEta && !trackedTripIds.has(candidate.tripId))
+    .map((candidate) => ({ ...candidate, tracked: false }));
+
+  return [...trackedEtas, ...survivors].sort((a, b) => a.eta - b.eta);
+}
+
 module.exports = {
   BASE_URL,
   fetchDetours,
@@ -256,8 +299,10 @@ module.exports = {
   findActiveDetour,
   findSkippedStopName,
   filterGoodTrips,
+  isTripTracked,
   filterStopTimes,
   findStopName,
   computeIsFresh,
   pollRoute,
+  mergeScheduledArrivals,
 };

@@ -1,7 +1,13 @@
 "use strict";
 
 const NodeHelper = require("node_helper");
-const { pollRoute } = require("./septa-client.js");
+const { pollRoute, mergeScheduledArrivals } = require("./septa-client.js");
+const { fetchScheduleCache, getScheduledArrivals, loadCacheFromDisk, saveCacheToDisk } = require("./gtfs-schedule.js");
+
+const SCHEDULE_HORIZON_MINUTES = 60;
+const SCHEDULE_INITIAL_DELAY_MS = 60 * 1000; // wait until well after MagicMirror's own startup
+const SCHEDULE_REFRESH_MS = 24 * 60 * 60 * 1000; // once daily thereafter
+const SCHEDULE_RETRY_MS = 60 * 60 * 1000; // retry sooner than a full day if a refresh fails
 
 function routeKey(route) {
   return `${route.routeId}:${route.stopId}:${route.direction}`;
@@ -13,6 +19,11 @@ module.exports = NodeHelper.create({
     // multiple MMM-septa instances on screen, so state is keyed by
     // instanceId + route to keep every instance's routes independent.
     this.routes = new Map();
+    // Use whatever was cached from a previous run (if any) immediately, so
+    // a MagicMirror restart doesn't lose the schedule supplement for the
+    // first 60+ seconds while a fresh download is pending.
+    this.scheduleCache = loadCacheFromDisk();
+    this.scheduleTimer = setTimeout(() => this.refreshScheduleCache(), SCHEDULE_INITIAL_DELAY_MS);
   },
 
   stop() {
@@ -20,6 +31,39 @@ module.exports = NodeHelper.create({
       if (state.timer) clearTimeout(state.timer);
     }
     this.routes.clear();
+    if (this.scheduleTimer) clearTimeout(this.scheduleTimer);
+  },
+
+  // Downloads and parses SEPTA's static GTFS feed, filtered down to just the
+  // routes/stops currently configured with useScheduleSupplement enabled.
+  // Runs once ~60s after startup (well clear of MagicMirror's own startup
+  // work), then once every 24h; a failure retries in an hour rather than
+  // waiting for the next scheduled day.
+  async refreshScheduleCache() {
+    const routeIds = new Set();
+    const stopIds = new Set();
+    for (const state of this.routes.values()) {
+      if (state.useScheduleSupplement === false) continue;
+      routeIds.add(state.config.routeId);
+      stopIds.add(state.config.stopId);
+    }
+
+    if (routeIds.size === 0) {
+      // No routes registered yet (or none want the supplement) -- check
+      // again shortly rather than downloading the feed for nothing.
+      this.scheduleTimer = setTimeout(() => this.refreshScheduleCache(), SCHEDULE_RETRY_MS);
+      return;
+    }
+
+    try {
+      this.scheduleCache = await fetchScheduleCache([...routeIds], [...stopIds]);
+      saveCacheToDisk(this.scheduleCache);
+      console.log(`MMM-septa: refreshed GTFS schedule cache (${this.scheduleCache.entries.length} entries)`);
+      this.scheduleTimer = setTimeout(() => this.refreshScheduleCache(), SCHEDULE_REFRESH_MS);
+    } catch (err) {
+      console.error(`MMM-septa: GTFS schedule refresh failed: ${err.message}; retrying in ${SCHEDULE_RETRY_MS / 1000}s`);
+      this.scheduleTimer = setTimeout(() => this.refreshScheduleCache(), SCHEDULE_RETRY_MS);
+    }
   },
 
   socketNotificationReceived(notification, payload) {
@@ -28,13 +72,14 @@ module.exports = NodeHelper.create({
   },
 
   registerConfig(payload) {
-    const { instanceId, routes, refreshIntervalSeconds, retryIntervalSeconds } = payload;
+    const { instanceId, routes, refreshIntervalSeconds, retryIntervalSeconds, useScheduleSupplement } = payload;
     for (const route of routes || []) {
       const fullKey = `${instanceId}::${routeKey(route)}`;
       if (this.routes.has(fullKey)) continue; // already polling this route
 
       const state = {
         config: { routeId: route.routeId, stopId: route.stopId, direction: route.direction },
+        useScheduleSupplement: useScheduleSupplement !== false,
         instanceId,
         routeKey: routeKey(route),
         refreshIntervalSeconds: refreshIntervalSeconds || 120,
@@ -62,8 +107,7 @@ module.exports = NodeHelper.create({
     if (!state) return; // route was deregistered (e.g. stop() ran)
 
     try {
-      const result = await pollRoute(state.config);
-      state.etas = result.etas;
+      const result = await pollRoute(state.config, { useScheduleSupplement: state.useScheduleSupplement });
       state.detour = result.detour;
       state.detourReason = result.detourReason;
       // stopName is effectively static (a stop's name doesn't change); don't
@@ -75,6 +119,22 @@ module.exports = NodeHelper.create({
       state.direction = result.direction;
       state.hasTripError = result.hasTripError;
       state.lastFetchTime = result.fetchedAt;
+
+      // A detour means SEPTA is actively skipping this stop -- the static
+      // schedule has no idea and would just show phantom arrivals, so only
+      // merge in the schedule supplement when there's no detour in effect.
+      if (state.useScheduleSupplement && this.scheduleCache && !result.detour) {
+        const scheduled = getScheduledArrivals(
+          this.scheduleCache,
+          state.config.routeId,
+          state.config.stopId,
+          new Date(),
+          SCHEDULE_HORIZON_MINUTES
+        );
+        state.etas = mergeScheduledArrivals(result.etas, scheduled);
+      } else {
+        state.etas = result.etas;
+      }
 
       this.sendSocketNotification("SEPTA_UPDATE", {
         instanceId: state.instanceId,
