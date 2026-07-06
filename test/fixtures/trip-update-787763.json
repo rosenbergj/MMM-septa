@@ -1,0 +1,29 @@
+{
+  "trip": {
+    "route_id": "17",
+    "trip_id": "787763",
+    "direction_id": 1,
+    "trip_headsign": "20th-Johnston",
+    "status": "ON-TIME"
+  },
+  "stop_times": [
+    {
+      "stop_id": 10311,
+      "stop_name": "Market St & 4th St",
+      "stop_sequence": 5,
+      "eta": 1783312320,
+      "delay": 1.4,
+      "departed": false,
+      "is_skipped": false
+    },
+    {
+      "stop_id": 10312,
+      "stop_name": "Market St & 3rd St",
+      "stop_sequence": 6,
+      "eta": 1783312380,
+      "delay": 999,
+      "departed": false,
+      "is_skipped": false
+    }
+  ]
+}

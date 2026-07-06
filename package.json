@@ -1,0 +1,18 @@
+{
+  "name": "MMM-septa",
+  "version": "0.1.0",
+  "description": "MagicMirror2 module: upcoming SEPTA bus arrivals for configured routes/stops",
+  "main": "MMM-septa.js",
+  "scripts": {
+    "test": "node --test",
+    "find-stop": "node scripts/find-stop.js",
+    "dry-run": "node scripts/dry-run.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {},
+  "devDependencies": {},
+  "license": "MIT",
+  "author": ""
+}

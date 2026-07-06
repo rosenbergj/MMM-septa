@@ -1,0 +1,41 @@
+.septa-table {
+  border-collapse: collapse;
+}
+
+.septa-table .septa-row {
+  vertical-align: top;
+}
+
+.septa-table .septa-label {
+  padding-right: 15px;
+  font-weight: bold;
+  color: #fff;
+}
+
+.septa-table .septa-arrivals {
+  color: #ccc;
+}
+
+.septa-table .septa-arrivals .septa-normal {
+  color: #ccc;
+}
+
+.septa-table .septa-arrivals .septa-urgent {
+  color: #e05050;
+  font-weight: bold;
+}
+
+.septa-table .septa-arrivals .septa-detour {
+  color: #e0a050;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.septa-table .septa-arrivals .septa-partial {
+  color: #e0a050;
+}
+
+.septa-table .septa-row.septa-stale .septa-label,
+.septa-table .septa-row.septa-stale .septa-arrivals {
+  opacity: 0.4;
+}

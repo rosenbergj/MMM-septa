@@ -1,0 +1,50 @@
+[
+  {
+    "route_id": "17",
+    "trip_id": "787404",
+    "direction_id": 0,
+    "trip_headsign": "Front-Market",
+    "block_id": 7301,
+    "delay": 0,
+    "next_stop_id": "40",
+    "next_stop_sequence": 1,
+    "direction_name": "Northbound",
+    "status": "ON-TIME"
+  },
+  {
+    "route_id": "17",
+    "trip_id": "787763",
+    "direction_id": 1,
+    "trip_headsign": "20th-Johnston",
+    "block_id": 7312,
+    "delay": 1.4,
+    "next_stop_id": "10311",
+    "next_stop_sequence": 5,
+    "direction_name": "Southbound",
+    "status": "ON-TIME"
+  },
+  {
+    "route_id": "17",
+    "trip_id": "900001",
+    "direction_id": 0,
+    "trip_headsign": "Front-Market",
+    "block_id": 7302,
+    "delay": 0,
+    "next_stop_id": "21289",
+    "next_stop_sequence": 3,
+    "direction_name": "Northbound",
+    "status": "CANCELED"
+  },
+  {
+    "route_id": "17",
+    "trip_id": "900002",
+    "direction_id": 0,
+    "trip_headsign": "Front-Market",
+    "block_id": 7303,
+    "delay": 0,
+    "next_stop_id": "40",
+    "next_stop_sequence": 2,
+    "direction_name": "Northbound",
+    "status": "ON-TIME"
+  }
+]
