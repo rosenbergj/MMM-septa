@@ -2,7 +2,13 @@
 
 const NodeHelper = require("node_helper");
 const { pollRoute, mergeScheduledArrivals } = require("./septa-client.js");
-const { fetchScheduleCache, getScheduledArrivals, loadCacheFromDisk, saveCacheToDisk } = require("./gtfs-schedule.js");
+const {
+  fetchScheduleCache,
+  getScheduledArrivals,
+  getAllHeadsignsForStop,
+  loadCacheFromDisk,
+  saveCacheToDisk,
+} = require("./gtfs-schedule.js");
 
 const SCHEDULE_HORIZON_MINUTES = 60;
 const SCHEDULE_INITIAL_DELAY_MS = 60 * 1000; // wait until well after MagicMirror's own startup
@@ -136,6 +142,15 @@ module.exports = NodeHelper.create({
         state.etas = result.etas;
       }
 
+      // A stable order for footnote-marker assignment (see MMM-septa.js's
+      // septaGroupByDestination) -- every headsign this route/stop is ever
+      // scheduled to see, not just whichever trips happen to be next right
+      // now, so a given destination's marker doesn't change as different
+      // trips rotate through.
+      const headsignOrder = this.scheduleCache
+        ? getAllHeadsignsForStop(this.scheduleCache, state.config.routeId, state.config.stopId)
+        : [];
+
       this.sendSocketNotification("SEPTA_UPDATE", {
         instanceId: state.instanceId,
         routeKey: state.routeKey,
@@ -147,6 +162,7 @@ module.exports = NodeHelper.create({
         hasTripError: state.hasTripError,
         lastFetchTime: state.lastFetchTime,
         refreshIntervalSeconds: state.refreshIntervalSeconds,
+        headsignOrder,
       });
 
       state.timer = setTimeout(() => this.runCycle(fullKey), state.refreshIntervalSeconds * 1000);

@@ -291,6 +291,23 @@ function getScheduledArrivals(cache, routeId, stopId, now, horizonMinutes) {
   return results;
 }
 
+// Every distinct headsign scheduled to serve this route/stop at any point
+// in the day (not just the next horizonMinutes), sorted alphabetically for
+// a stable order. Used to assign footnote markers to destinations
+// consistently, rather than by whichever trip happens to be next right now
+// -- that would make the same destination's marker change from one poll to
+// the next as different trips rotate through.
+function getAllHeadsignsForStop(cache, routeId, stopId) {
+  const targetRouteId = String(routeId);
+  const targetStopId = Number(stopId);
+  const headsigns = new Set();
+  for (const entry of cache.entries) {
+    if (entry.routeId !== targetRouteId || entry.stopId !== targetStopId) continue;
+    if (entry.headsign) headsigns.add(entry.headsign);
+  }
+  return [...headsigns].sort();
+}
+
 // Downloads the live feed and builds a fresh cache. I/O-only wrapper around
 // the pure functions above, so those can be unit tested without a network
 // call.
@@ -342,6 +359,7 @@ module.exports = {
   isServiceActiveOn,
   buildScheduleCache,
   getScheduledArrivals,
+  getAllHeadsignsForStop,
   fetchScheduleCache,
   loadCacheFromDisk,
   saveCacheToDisk,

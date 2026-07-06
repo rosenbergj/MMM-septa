@@ -161,9 +161,17 @@ don't copy that into your real `config.js`.
   cached once known, so it doesn't disappear during a cycle with no
   active trips. Each arrival carries its own trip's destination, shown
   as a sub-label under the route label when every currently-shown
-  arrival agrees on it (e.g. "→ Front-Market"); if they don't, it shows
-  "Mixed destinations" rather than guessing. The nearest arrival is
-  shown larger/brighter than the rest. With `useScheduleSupplement` on
+  arrival agrees on it (e.g. "→ Front-Market"). When they don't, each
+  distinct destination among the shown arrivals gets a footnote marker
+  (*, †, ‡, ...) appended to its times (e.g. "14m* 22m†"), with every
+  destination listed on its own line below (e.g. "→ 20th-Johnston(*)"
+  / "→ Broad-Pattison(†)") instead of a vague "Mixed destinations".
+  Marker assignment is stable across polls -- node_helper derives it
+  from every headsign the route/stop is ever scheduled to see (not
+  just whichever trip happens to be next), so a given destination
+  keeps the same marker even as different trips rotate through. The
+  nearest arrival is shown larger/brighter than the rest. With
+  `useScheduleSupplement` on
   (the default), arrivals SEPTA hasn't started GPS-tracking yet — still
   at their first stop, no vehicle assigned, or otherwise not "real-time"
   — are shown too, styled as "~Nm" (italic, muted) instead of being

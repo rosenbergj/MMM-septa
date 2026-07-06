@@ -42,17 +42,31 @@ function septaFootnoteMarker(index) {
 // order } so each arrival's time can carry its own footnote marker and the
 // label-sub line can list every destination alongside its marker instead of
 // a vague "Mixed destinations".
-function septaGroupByDestination(arrivals) {
+//
+// headsignOrder (from node_helper, derived from the full day's schedule --
+// see gtfs-schedule.js's getAllHeadsignsForStop) fixes which marker goes
+// with which destination, so it doesn't change from one poll to the next
+// just because a different trip happens to be next. Any shown headsign not
+// in that list (schedule cache not loaded yet, or a genuine off-schedule
+// trip) is appended after it, in first-seen order, so nothing is dropped.
+function septaGroupByDestination(arrivals, headsignOrder) {
   if (!Array.isArray(arrivals) || arrivals.length === 0) return { mixed: false, headsign: null };
-  const distinct = [];
-  for (const arrival of arrivals) {
-    if (!distinct.includes(arrival.headsign)) distinct.push(arrival.headsign);
-  }
-  if (distinct.length <= 1) return { mixed: false, headsign: distinct[0] || null };
+  const shown = new Set();
+  for (const arrival of arrivals) shown.add(arrival.headsign);
+  if (shown.size <= 1) return { mixed: false, headsign: arrivals[0].headsign || null };
 
-  const known = distinct.filter(Boolean);
-  const markerFor = new Map(known.map((headsign, index) => [headsign, septaFootnoteMarker(index)]));
-  return { mixed: true, markerFor, order: known };
+  const order = [];
+  if (Array.isArray(headsignOrder)) {
+    for (const headsign of headsignOrder) {
+      if (shown.has(headsign)) order.push(headsign);
+    }
+  }
+  for (const arrival of arrivals) {
+    if (arrival.headsign && !order.includes(arrival.headsign)) order.push(arrival.headsign);
+  }
+
+  const markerFor = new Map(order.map((headsign, index) => [headsign, septaFootnoteMarker(index)]));
+  return { mixed: true, markerFor, order };
 }
 
 // "Northbound" -> "NB", "Southbound" -> "SB", etc; falls back to the
@@ -155,7 +169,7 @@ Module.register("MMM-septa", {
       row.className = "septa-row";
 
       const shownArrivals = state && Array.isArray(state.etas) ? state.etas.slice(0, this.config.maxArrivals) : [];
-      const destinationInfo = septaGroupByDestination(shownArrivals);
+      const destinationInfo = septaGroupByDestination(shownArrivals, state && state.headsignOrder);
 
       const labelCell = document.createElement("td");
       labelCell.className = "septa-label";
