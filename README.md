@@ -94,6 +94,7 @@ MagicMirror module option, outside `config`) to override it.
     retryIntervalSeconds: 30,
     warnMinutes: 5,
     countdownWithinMinutes: 30,
+    useScheduleSupplement: true,
   },
 }
 ```
@@ -107,6 +108,7 @@ MagicMirror module option, outside `config`) to override it.
 | `warnMinutes`             | `5`     | Arrivals at or under this many minutes are styled as "urgent"            |
 | `countdownWithinMinutes`  | `30`    | Arrivals at or under this many minutes show as "Nm"; farther out shows a clock time (e.g. "5:47 PM"), honoring the mirror's global `timeFormat` (12/24h) |
 | `countdownTickSeconds`    | `15`    | How often the displayed "Nm" countdown re-renders client-side            |
+| `useScheduleSupplement`   | `true`  | Include arrivals SEPTA hasn't fully GPS-confirmed yet (shown as "~Nm", italic/muted) instead of only fully-tracked buses. Set `false` to show only GPS-confirmed arrivals. |
 
 Each route's `direction` must match SEPTA's `direction_name` for that route
 exactly (case-sensitive) — use `find-stop.js` to confirm it.
@@ -161,7 +163,11 @@ don't copy that into your real `config.js`.
   as a sub-label under the route label when every currently-shown
   arrival agrees on it (e.g. "→ Front-Market"); if they don't, it shows
   "Mixed destinations" rather than guessing. The nearest arrival is
-  shown larger/brighter than the rest.
+  shown larger/brighter than the rest. With `useScheduleSupplement` on
+  (the default), arrivals SEPTA hasn't started GPS-tracking yet — still
+  at their first stop, no vehicle assigned, or otherwise not "real-time"
+  — are shown too, styled as "~Nm" (italic, muted) instead of being
+  dropped entirely.
 - `scripts/find-stop.js` / `scripts/dry-run.js` — standalone CLI helpers,
   runnable with plain `node`, no MagicMirror needed.
 

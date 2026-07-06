@@ -65,6 +65,10 @@ Module.register("MMM-septa", {
     countdownWithinMinutes: 30, // arrivals at/under this show "N min"; farther out show clock time
     countdownTickSeconds: 15, // client-side re-render cadence, no network
     animationSpeed: 1000,
+    // Supplement live-tracked arrivals with SEPTA trips it hasn't started
+    // GPS-tracking yet (and, later, static-schedule arrivals) instead of
+    // showing only fully GPS-confirmed buses.
+    useScheduleSupplement: true,
   },
 
   start() {
@@ -75,6 +79,7 @@ Module.register("MMM-septa", {
       routes: this.config.routes,
       refreshIntervalSeconds: this.config.refreshIntervalSeconds,
       retryIntervalSeconds: this.config.retryIntervalSeconds,
+      useScheduleSupplement: this.config.useScheduleSupplement,
     });
 
     setInterval(() => {
@@ -171,9 +176,11 @@ Module.register("MMM-septa", {
               const minutes = septaMinutesUntil(arrival.eta, now);
               const urgencyClass = minutes <= this.config.warnMinutes ? "septa-urgent" : "septa-normal";
               const tierClass = index === 0 ? "septa-first" : "septa-later";
+              const untrackedClass = arrival.tracked === false ? " septa-untracked" : "";
+              const prefix = arrival.tracked === false ? "~" : "";
               const text =
                 minutes <= this.config.countdownWithinMinutes ? `${minutes}m` : septaFormatClockTime(arrival.eta);
-              return `<span class="${urgencyClass} ${tierClass}">${text}</span>`;
+              return `<span class="${urgencyClass} ${tierClass}${untrackedClass}">${prefix}${text}</span>`;
             })
             .join(" ");
         }

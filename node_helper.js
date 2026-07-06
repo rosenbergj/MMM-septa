@@ -28,13 +28,14 @@ module.exports = NodeHelper.create({
   },
 
   registerConfig(payload) {
-    const { instanceId, routes, refreshIntervalSeconds, retryIntervalSeconds } = payload;
+    const { instanceId, routes, refreshIntervalSeconds, retryIntervalSeconds, useScheduleSupplement } = payload;
     for (const route of routes || []) {
       const fullKey = `${instanceId}::${routeKey(route)}`;
       if (this.routes.has(fullKey)) continue; // already polling this route
 
       const state = {
         config: { routeId: route.routeId, stopId: route.stopId, direction: route.direction },
+        useScheduleSupplement: useScheduleSupplement !== false,
         instanceId,
         routeKey: routeKey(route),
         refreshIntervalSeconds: refreshIntervalSeconds || 120,
@@ -62,7 +63,7 @@ module.exports = NodeHelper.create({
     if (!state) return; // route was deregistered (e.g. stop() ran)
 
     try {
-      const result = await pollRoute(state.config);
+      const result = await pollRoute(state.config, { useScheduleSupplement: state.useScheduleSupplement });
       state.etas = result.etas;
       state.detour = result.detour;
       state.detourReason = result.detourReason;
