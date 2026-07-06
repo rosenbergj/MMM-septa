@@ -147,7 +147,9 @@ don't copy that into your real `config.js`.
   notifications.
 - `MMM-septa.js` — renders the last known state per route, and re-renders
   the "Nm" countdowns every `countdownTickSeconds` without needing a
-  fresh backend fetch.
+  fresh backend fetch. When a detour affects the configured stop, shows
+  "DETOUR" (with SEPTA's stated reason, e.g. "DETOUR: Sinkhole", if one
+  was provided) instead of arrival times.
 - `scripts/find-stop.js` / `scripts/dry-run.js` — standalone CLI helpers,
   runnable with plain `node`, no MagicMirror needed.
 

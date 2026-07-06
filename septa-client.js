@@ -86,21 +86,29 @@ function isWithinDayTimeWindow(dayTimeInfo, now) {
   return start <= end ? nowSeconds >= start && nowSeconds <= end : nowSeconds >= start || nowSeconds <= end;
 }
 
-// A detour is "active" if now falls strictly between its start/end date
-// range, the configured stop is one of its skipped stops, and (if present)
-// now falls within its day_time_active_info window for today.
-function isDetourActive(detours, stopId, now = new Date()) {
-  if (!Array.isArray(detours)) return false;
+// Returns the detour currently in effect for this stop (so callers can read
+// fields like `reason`), or null. A detour is "active" if now falls strictly
+// between its start/end date range, the configured stop is one of its
+// skipped stops, and (if present) now falls within its day_time_active_info
+// window for today.
+function findActiveDetour(detours, stopId, now = new Date()) {
+  if (!Array.isArray(detours)) return null;
   const targetStopId = String(stopId);
-  return detours.some((detour) => {
-    if (!detour) return false;
-    const start = parseSeptaDateTime(detour.start);
-    const end = parseSeptaDateTime(detour.end);
-    if (!start || !end) return false;
-    if (!(now > start && now < end)) return false;
-    if (!detourSkipsStop(detour.skipped_stops, targetStopId)) return false;
-    return isWithinDayTimeWindow(detour.day_time_active_info, now);
-  });
+  return (
+    detours.find((detour) => {
+      if (!detour) return false;
+      const start = parseSeptaDateTime(detour.start);
+      const end = parseSeptaDateTime(detour.end);
+      if (!start || !end) return false;
+      if (!(now > start && now < end)) return false;
+      if (!detourSkipsStop(detour.skipped_stops, targetStopId)) return false;
+      return isWithinDayTimeWindow(detour.day_time_active_info, now);
+    }) || null
+  );
+}
+
+function isDetourActive(detours, stopId, now = new Date()) {
+  return findActiveDetour(detours, stopId, now) !== null;
 }
 
 // A trip is "good" if it's heading the configured direction, isn't
@@ -163,8 +171,17 @@ async function pollRoute(routeConfig, options = {}) {
   const nowDate = nowFn();
 
   const detours = await fetchDetours(routeId, fetchImpl);
-  if (isDetourActive(detours, stopId, nowDate)) {
-    return { etas: [], detour: true, direction, hasTripError: false, fetchedAt: nowDate.getTime() };
+  const activeDetour = findActiveDetour(detours, stopId, nowDate);
+  if (activeDetour) {
+    const reason = activeDetour.reason && activeDetour.reason.trim() ? activeDetour.reason.trim() : null;
+    return {
+      etas: [],
+      detour: true,
+      detourReason: reason,
+      direction,
+      hasTripError: false,
+      fetchedAt: nowDate.getTime(),
+    };
   }
 
   const trips = await fetchTrips(routeId, fetchImpl);
@@ -189,7 +206,7 @@ async function pollRoute(routeConfig, options = {}) {
   }
   etas.sort((a, b) => a - b);
 
-  return { etas, detour: false, direction, hasTripError, fetchedAt: nowDate.getTime() };
+  return { etas, detour: false, detourReason: null, direction, hasTripError, fetchedAt: nowDate.getTime() };
 }
 
 module.exports = {
@@ -199,6 +216,7 @@ module.exports = {
   fetchTripUpdate,
   parseSeptaDateTime,
   isDetourActive,
+  findActiveDetour,
   filterGoodTrips,
   filterStopTimes,
   computeIsFresh,

@@ -236,10 +236,21 @@ test("pollRoute", async (t) => {
     assert.deepEqual(result, {
       etas: [],
       detour: true,
+      detourReason: null,
       direction: "Northbound",
       hasTripError: false,
       fetchedAt: new Date(2026, 0, 1).getTime(),
     });
+  });
+
+  await t.test("surfaces a trimmed detourReason when the active detour has one", async () => {
+    const detoursLive = fixture("detours-route64-live-sample.json");
+    const fetchImpl = stubFetch([["detours/?route=64", detoursLive]]);
+    const result = await pollRoute(
+      { routeId: "64", stopId: 15210, direction: "Westbound" },
+      { fetchImpl, now: () => new Date(2026, 5, 1) }
+    );
+    assert.equal(result.detourReason, "Sinkhole");
   });
 
   await t.test("isolates a single failed trip-update: partial etas + hasTripError", async () => {

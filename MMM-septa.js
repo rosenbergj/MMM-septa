@@ -20,6 +20,14 @@ function septaMinutesUntil(etaSeconds, nowMs) {
   return Math.max(0, Math.round((etaSeconds * 1000 - nowMs) / 60000));
 }
 
+// detourReason comes from SEPTA's API, not our own config, so escape it
+// before dropping it into innerHTML.
+function septaEscapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
 // Beyond countdownWithinMinutes, a clock time ("5:47 PM") is more useful than
 // a big minute count; respects the mirror's global 12h/24h config.timeFormat
 // if present (falls back to the browser's locale default otherwise).
@@ -104,7 +112,7 @@ Module.register("MMM-septa", {
 
         if (state.detour) {
           arrivalsCell.classList.add("septa-detour");
-          arrivalsCell.innerHTML = "DETOUR";
+          arrivalsCell.innerHTML = state.detourReason ? `DETOUR: ${septaEscapeHtml(state.detourReason)}` : "DETOUR";
         } else if (!state.etas || state.etas.length === 0) {
           arrivalsCell.innerHTML = "&ndash;&ndash;";
         } else {

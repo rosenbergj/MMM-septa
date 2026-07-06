@@ -41,6 +41,7 @@ module.exports = NodeHelper.create({
         retryIntervalSeconds: retryIntervalSeconds || 30,
         etas: [],
         detour: false,
+        detourReason: null,
         direction: route.direction,
         hasTripError: false,
         lastFetchTime: null,
@@ -63,6 +64,7 @@ module.exports = NodeHelper.create({
       const result = await pollRoute(state.config);
       state.etas = result.etas;
       state.detour = result.detour;
+      state.detourReason = result.detourReason;
       state.direction = result.direction;
       state.hasTripError = result.hasTripError;
       state.lastFetchTime = result.fetchedAt;
@@ -72,6 +74,7 @@ module.exports = NodeHelper.create({
         routeKey: state.routeKey,
         etas: state.etas,
         detour: state.detour,
+        detourReason: state.detourReason,
         direction: state.direction,
         hasTripError: state.hasTripError,
         lastFetchTime: state.lastFetchTime,
