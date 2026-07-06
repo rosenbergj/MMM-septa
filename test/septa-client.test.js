@@ -8,6 +8,7 @@ const {
   isDetourActive,
   filterGoodTrips,
   filterStopTimes,
+  findStopName,
   computeIsFresh,
   pollRoute,
 } = require("../septa-client.js");
@@ -169,6 +170,26 @@ test("filterStopTimes", async (t) => {
   });
 });
 
+test("findStopName", async (t) => {
+  const stopTimes = fixture("trip-update-900002.json").stop_times;
+
+  await t.test("matches numeric stop_id", () => {
+    assert.equal(findStopName(stopTimes, 21289), "20th St & Oregon Av");
+  });
+
+  await t.test("matches string stop_id (numeric coercion)", () => {
+    assert.equal(findStopName(stopTimes, "21289"), "20th St & Oregon Av");
+  });
+
+  await t.test("no matching stop -> null", () => {
+    assert.equal(findStopName(stopTimes, 99999), null);
+  });
+
+  await t.test("non-array input -> null", () => {
+    assert.equal(findStopName(null, 21289), null);
+  });
+});
+
 test("computeIsFresh", async (t) => {
   await t.test("null lastFetchTime -> false", () => {
     assert.equal(computeIsFresh(null, 120, 1_000_000), false);
@@ -212,6 +233,7 @@ test("pollRoute", async (t) => {
     assert.equal(result.detour, false);
     assert.equal(result.hasTripError, false);
     assert.equal(result.headsign, "Front-Market");
+    assert.equal(result.stopName, "20th St & Oregon Av");
   });
 
   await t.test("excludes delay-999 stop_times for a clean Southbound cycle", async () => {
@@ -227,6 +249,7 @@ test("pollRoute", async (t) => {
     assert.deepEqual(result.etas, [1783312320]);
     assert.equal(result.hasTripError, false);
     assert.equal(result.headsign, "20th-Johnston");
+    assert.equal(result.stopName, "Market St & 4th St");
   });
 
   await t.test("short-circuits with detour:true when a detour is active", async () => {
@@ -240,6 +263,7 @@ test("pollRoute", async (t) => {
       detour: true,
       detourReason: null,
       headsign: null,
+      stopName: null,
       direction: "Northbound",
       hasTripError: false,
       fetchedAt: new Date(2026, 0, 1).getTime(),

@@ -20,12 +20,20 @@ function septaMinutesUntil(etaSeconds, nowMs) {
   return Math.max(0, Math.round((etaSeconds * 1000 - nowMs) / 60000));
 }
 
-// detourReason/headsign come from SEPTA's API, not our own config, so
-// escape them before dropping them into innerHTML.
+// detourReason/stopName/headsign come from SEPTA's API, not our own config,
+// so escape them before dropping them into innerHTML.
 function septaEscapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text;
   return div.innerHTML;
+}
+
+// "Northbound" -> "NB", "Southbound" -> "SB", etc; falls back to the
+// original string for anything that doesn't fit the "___bound" pattern.
+function septaAbbreviateDirection(direction) {
+  if (typeof direction !== "string") return "";
+  const match = /^(.)\S*bound$/i.exec(direction.trim());
+  return match ? `${match[1].toUpperCase()}B` : direction;
 }
 
 // Beyond countdownWithinMinutes, a clock time ("5:47 PM") is more useful than
@@ -93,6 +101,16 @@ Module.register("MMM-septa", {
 
     for (const route of this.config.routes) {
       const state = this.routeStates[septaRouteKey(route)];
+
+      const headerRow = document.createElement("tr");
+      const headerCell = document.createElement("td");
+      headerCell.className = "septa-stop-header";
+      headerCell.colSpan = 2;
+      const abbrev = septaAbbreviateDirection(route.direction);
+      const stopName = state && state.stopName;
+      headerCell.innerHTML = stopName ? `${abbrev} &middot; ${septaEscapeHtml(stopName)}` : abbrev;
+      headerRow.appendChild(headerCell);
+      wrapper.appendChild(headerRow);
 
       const row = document.createElement("tr");
       row.className = "septa-row";

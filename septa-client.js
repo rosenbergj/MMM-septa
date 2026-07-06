@@ -144,6 +144,17 @@ function filterStopTimes(stopTimes, stopId, now = Date.now() / 1000) {
   });
 }
 
+// Every stop_time entry in a trip-update carries stop_name for every stop
+// along that trip, not just the target one -- reuse that (same trick
+// scripts/find-stop.js uses) so callers can label which physical stop
+// they're showing, without a separate "stops" API call.
+function findStopName(stopTimes, stopId) {
+  if (!Array.isArray(stopTimes)) return null;
+  const targetStopId = Number(stopId);
+  const match = stopTimes.find((stopTime) => stopTime && Number(stopTime.stop_id) === targetStopId);
+  return (match && match.stop_name) || null;
+}
+
 // Data is "fresh" until it ages past 3x the refresh interval, matching
 // lightpi's get_data() staleness window (fetchers.py:212-226).
 function computeIsFresh(lastFetchTime, refreshIntervalSeconds, now = Date.now()) {
@@ -179,6 +190,7 @@ async function pollRoute(routeConfig, options = {}) {
       detour: true,
       detourReason: reason,
       headsign: null,
+      stopName: null,
       direction,
       hasTripError: false,
       fetchedAt: nowDate.getTime(),
@@ -195,6 +207,7 @@ async function pollRoute(routeConfig, options = {}) {
   );
 
   let hasTripError = false;
+  let stopName = null;
   const etas = [];
   for (const result of results) {
     if (result.status === "rejected") {
@@ -202,6 +215,7 @@ async function pollRoute(routeConfig, options = {}) {
       continue;
     }
     const stopTimes = result.value && result.value.stop_times;
+    if (!stopName) stopName = findStopName(stopTimes, stopId);
     for (const stopTime of filterStopTimes(stopTimes, stopId, nowSeconds)) {
       etas.push(Number(stopTime.eta));
     }
@@ -213,6 +227,7 @@ async function pollRoute(routeConfig, options = {}) {
     detour: false,
     detourReason: null,
     headsign,
+    stopName,
     direction,
     hasTripError,
     fetchedAt: nowDate.getTime(),
@@ -229,6 +244,7 @@ module.exports = {
   findActiveDetour,
   filterGoodTrips,
   filterStopTimes,
+  findStopName,
   computeIsFresh,
   pollRoute,
 };

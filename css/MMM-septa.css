@@ -6,6 +6,18 @@
   vertical-align: top;
 }
 
+.septa-table .septa-stop-header {
+  padding-top: 8px;
+  font-size: 0.7em;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  opacity: 0.5;
+}
+
+.septa-table tr:first-child .septa-stop-header {
+  padding-top: 0;
+}
+
 .septa-table .septa-label {
   padding-right: 15px;
   color: #fff;
