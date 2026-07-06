@@ -212,12 +212,11 @@ Module.register("MMM-septa", {
         } else if (shownArrivals.length === 0) {
           arrivalsCell.innerHTML = "&ndash;&ndash;";
         } else {
-          // With any untracked (italic/"~") arrival in the same row, a bare
-          // space between entries reads as visually ambiguous -- especially
-          // once countdown- and clock-style entries mix (e.g.
-          // "6m ~20m ~2:55pm"). A comma makes each entry's boundary clear.
-          const hasUntracked = shownArrivals.some((arrival) => arrival.tracked === false);
-          const separator = hasUntracked ? ", " : " ";
+          // A bare space between entries reads as visually ambiguous once
+          // there's more than one, especially with mixed countdown-/clock-
+          // style formatting (e.g. "6m 20m 2:55pm"). Comma-separate
+          // whenever there's more than one, tracked or not.
+          const separator = shownArrivals.length > 1 ? ", " : " ";
           arrivalsCell.innerHTML = shownArrivals
             .map((arrival, index) => {
               const minutes = septaMinutesUntil(arrival.eta, now);
