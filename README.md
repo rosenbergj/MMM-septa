@@ -150,11 +150,13 @@ don't copy that into your real `config.js`.
   fresh backend fetch. When a detour affects the configured stop, shows
   "DETOUR" (with SEPTA's stated reason, e.g. "DETOUR: Sinkhole", if one
   was provided) instead of arrival times. Each route also gets a small
-  header line (e.g. "NB · 20th St & Oregon Av") and a destination
-  sub-label (e.g. "→ Front-Market") under its route label — both are
-  discovered automatically from SEPTA's live data (no config needed) and
-  cached once known, so they don't disappear during a cycle with no
-  active trips. The nearest arrival is shown larger/brighter than the
+  header line (e.g. "NB · 20th St & Oregon Av") discovered automatically
+  from SEPTA's live data (no config needed) and cached once known, so it
+  doesn't disappear during a cycle with no active trips. Each arrival
+  carries its own trip's destination, shown as a sub-label under the
+  route label when every currently-shown arrival agrees on it (e.g.
+  "→ Front-Market"); if they don't, it shows "Mixed destinations" rather
+  than guessing. The nearest arrival is shown larger/brighter than the
   rest.
 - `scripts/find-stop.js` / `scripts/dry-run.js` — standalone CLI helpers,
   runnable with plain `node`, no MagicMirror needed.

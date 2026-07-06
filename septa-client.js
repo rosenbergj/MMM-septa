@@ -199,7 +199,6 @@ async function pollRoute(routeConfig, options = {}) {
       etas: [],
       detour: true,
       detourReason: reason,
-      headsign: null,
       stopName: findSkippedStopName(activeDetour.skipped_stops, String(stopId)),
       direction,
       hasTripError: false,
@@ -209,34 +208,37 @@ async function pollRoute(routeConfig, options = {}) {
 
   const trips = await fetchTrips(routeId, fetchImpl);
   const goodTrips = filterGoodTrips(trips, direction);
-  const headsign = (goodTrips[0] && goodTrips[0].trip_headsign) || null;
 
   const nowSeconds = nowDate.getTime() / 1000;
   const results = await Promise.allSettled(
     goodTrips.map((trip) => fetchTripUpdate(trip.trip_id, fetchImpl))
   );
 
+  // Each arrival keeps the headsign of the specific trip it came from --
+  // a route/direction can in principle have mixed headsigns across trips
+  // (short-turns, etc), so a single route-level headsign can't be trusted
+  // to describe every arrival shown.
   let hasTripError = false;
   let stopName = null;
   const etas = [];
-  for (const result of results) {
+  results.forEach((result, index) => {
     if (result.status === "rejected") {
       hasTripError = true;
-      continue;
+      return;
     }
     const stopTimes = result.value && result.value.stop_times;
     if (!stopName) stopName = findStopName(stopTimes, stopId);
+    const headsign = (goodTrips[index] && goodTrips[index].trip_headsign) || null;
     for (const stopTime of filterStopTimes(stopTimes, stopId, nowSeconds)) {
-      etas.push(Number(stopTime.eta));
+      etas.push({ eta: Number(stopTime.eta), headsign });
     }
-  }
-  etas.sort((a, b) => a - b);
+  });
+  etas.sort((a, b) => a.eta - b.eta);
 
   return {
     etas,
     detour: false,
     detourReason: null,
-    headsign,
     stopName,
     direction,
     hasTripError,

@@ -42,7 +42,6 @@ module.exports = NodeHelper.create({
         etas: [],
         detour: false,
         detourReason: null,
-        headsign: null,
         stopName: null,
         direction: route.direction,
         hasTripError: false,
@@ -67,11 +66,11 @@ module.exports = NodeHelper.create({
       state.etas = result.etas;
       state.detour = result.detour;
       state.detourReason = result.detourReason;
-      // headsign/stopName are effectively static (a route's destination and
-      // a stop's name don't change); don't let a cycle where no trips were
-      // running (so we couldn't look them up) blank out an already-known
-      // value.
-      if (result.headsign) state.headsign = result.headsign;
+      // stopName is effectively static (a stop's name doesn't change); don't
+      // let a cycle where no trips were running (so we couldn't look it up)
+      // blank out an already-known value. headsign travels per-arrival
+      // inside etas instead, which is always freshly replaced above, so it
+      // needs no separate caching here.
       if (result.stopName) state.stopName = result.stopName;
       state.direction = result.direction;
       state.hasTripError = result.hasTripError;
@@ -83,7 +82,6 @@ module.exports = NodeHelper.create({
         etas: state.etas,
         detour: state.detour,
         detourReason: state.detourReason,
-        headsign: state.headsign,
         stopName: state.stopName,
         direction: state.direction,
         hasTripError: state.hasTripError,

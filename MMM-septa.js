@@ -28,6 +28,16 @@ function septaEscapeHtml(text) {
   return div.innerHTML;
 }
 
+// null if there are no arrivals or any arrival is missing a headsign;
+// "Mixed destinations" if the shown arrivals don't all share one; otherwise
+// the shared headsign itself.
+function septaCommonHeadsign(arrivals) {
+  if (!Array.isArray(arrivals) || arrivals.length === 0) return null;
+  const first = arrivals[0].headsign;
+  if (!first) return null;
+  return arrivals.every((arrival) => arrival.headsign === first) ? first : "Mixed destinations";
+}
+
 // "Northbound" -> "NB", "Southbound" -> "SB", etc; falls back to the
 // original string for anything that doesn't fit the "___bound" pattern.
 function septaAbbreviateDirection(direction) {
@@ -115,16 +125,20 @@ Module.register("MMM-septa", {
       const row = document.createElement("tr");
       row.className = "septa-row";
 
+      const shownArrivals = state && Array.isArray(state.etas) ? state.etas.slice(0, this.config.maxArrivals) : [];
+      const commonHeadsign = septaCommonHeadsign(shownArrivals);
+
       const labelCell = document.createElement("td");
       labelCell.className = "septa-label";
       const labelMain = document.createElement("div");
       labelMain.className = "septa-label-main";
       labelMain.innerHTML = route.label || route.routeId;
       labelCell.appendChild(labelMain);
-      if (state && state.headsign) {
+      if (commonHeadsign) {
         const labelSub = document.createElement("div");
         labelSub.className = "septa-label-sub";
-        labelSub.innerHTML = `&rarr; ${septaEscapeHtml(state.headsign)}`;
+        labelSub.innerHTML =
+          commonHeadsign === "Mixed destinations" ? commonHeadsign : `&rarr; ${septaEscapeHtml(commonHeadsign)}`;
         labelCell.appendChild(labelSub);
       }
       row.appendChild(labelCell);
@@ -141,16 +155,16 @@ Module.register("MMM-septa", {
         if (state.detour) {
           arrivalsCell.classList.add("septa-detour");
           arrivalsCell.innerHTML = state.detourReason ? `DETOUR: ${septaEscapeHtml(state.detourReason)}` : "DETOUR";
-        } else if (!state.etas || state.etas.length === 0) {
+        } else if (shownArrivals.length === 0) {
           arrivalsCell.innerHTML = "&ndash;&ndash;";
         } else {
-          arrivalsCell.innerHTML = state.etas
-            .slice(0, this.config.maxArrivals)
-            .map((eta, index) => {
-              const minutes = septaMinutesUntil(eta, now);
+          arrivalsCell.innerHTML = shownArrivals
+            .map((arrival, index) => {
+              const minutes = septaMinutesUntil(arrival.eta, now);
               const urgencyClass = minutes <= this.config.warnMinutes ? "septa-urgent" : "septa-normal";
               const tierClass = index === 0 ? "septa-first" : "septa-later";
-              const text = minutes <= this.config.countdownWithinMinutes ? `${minutes}m` : septaFormatClockTime(eta);
+              const text =
+                minutes <= this.config.countdownWithinMinutes ? `${minutes}m` : septaFormatClockTime(arrival.eta);
               return `<span class="${urgencyClass} ${tierClass}">${text}</span>`;
             })
             .join(" ");

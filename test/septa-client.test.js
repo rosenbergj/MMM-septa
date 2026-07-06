@@ -251,10 +251,9 @@ test("pollRoute", async (t) => {
       { routeId: "17", stopId: 21289, direction: "Northbound" },
       { fetchImpl, now: fixedNow }
     );
-    assert.deepEqual(result.etas, [1783312200]);
+    assert.deepEqual(result.etas, [{ eta: 1783312200, headsign: "Front-Market" }]);
     assert.equal(result.detour, false);
     assert.equal(result.hasTripError, false);
-    assert.equal(result.headsign, "Front-Market");
     assert.equal(result.stopName, "20th St & Oregon Av");
   });
 
@@ -268,9 +267,8 @@ test("pollRoute", async (t) => {
       { routeId: "17", stopId: 10311, direction: "Southbound" },
       { fetchImpl, now: fixedNow }
     );
-    assert.deepEqual(result.etas, [1783312320]);
+    assert.deepEqual(result.etas, [{ eta: 1783312320, headsign: "20th-Johnston" }]);
     assert.equal(result.hasTripError, false);
-    assert.equal(result.headsign, "20th-Johnston");
     assert.equal(result.stopName, "Market St & 4th St");
   });
 
@@ -284,7 +282,6 @@ test("pollRoute", async (t) => {
       etas: [],
       detour: true,
       detourReason: null,
-      headsign: null,
       stopName: null,
       direction: "Northbound",
       hasTripError: false,
@@ -310,7 +307,39 @@ test("pollRoute", async (t) => {
       { fetchImpl, now: () => new Date(2026, 5, 1) }
     );
     assert.equal(result.stopName, "Westminster Av & 46th St");
-    assert.equal(result.headsign, null);
+  });
+
+  await t.test("each arrival keeps its own trip's headsign, not a shared route-level one", async () => {
+    const twoGoodTrips = [
+      trips[3], // trip_id 900002, headsign "Front-Market"
+      {
+        route_id: "17",
+        trip_id: "900003",
+        direction_name: "Northbound",
+        status: "ON-TIME",
+        next_stop_sequence: 2,
+        trip_headsign: "Different-Destination",
+      },
+    ];
+    const otherTripUpdate = {
+      stop_times: [
+        { stop_id: 21289, stop_name: "20th St & Oregon Av", stop_sequence: 2, eta: 1783312500, delay: 0, departed: false },
+      ],
+    };
+    const fetchImpl = stubFetch([
+      ["detours/?route=17", detoursEmpty],
+      ["trips/?route_id=17", twoGoodTrips],
+      ["trip-update/?trip_id=900002", tripUpdate900002],
+      ["trip-update/?trip_id=900003", otherTripUpdate],
+    ]);
+    const result = await pollRoute(
+      { routeId: "17", stopId: 21289, direction: "Northbound" },
+      { fetchImpl, now: fixedNow }
+    );
+    assert.deepEqual(result.etas, [
+      { eta: 1783312200, headsign: "Front-Market" },
+      { eta: 1783312500, headsign: "Different-Destination" },
+    ]);
   });
 
   await t.test("isolates a single failed trip-update: partial etas + hasTripError", async () => {
@@ -334,7 +363,7 @@ test("pollRoute", async (t) => {
       { routeId: "17", stopId: 21289, direction: "Northbound" },
       { fetchImpl, now: fixedNow }
     );
-    assert.deepEqual(result.etas, [1783312200]);
+    assert.deepEqual(result.etas, [{ eta: 1783312200, headsign: "Front-Market" }]);
     assert.equal(result.hasTripError, true);
   });
 
