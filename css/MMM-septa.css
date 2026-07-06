@@ -35,6 +35,7 @@
 
 .septa-table .septa-arrivals {
   color: #ccc;
+  font-size: 0.85em;
 }
 
 .septa-table .septa-arrivals .septa-normal {
@@ -47,12 +48,10 @@
 }
 
 .septa-table .septa-arrivals .septa-first {
-  font-size: 1.15em;
   font-weight: bold;
 }
 
 .septa-table .septa-arrivals .septa-later {
-  font-size: 0.85em;
   opacity: 0.7;
 }
 
