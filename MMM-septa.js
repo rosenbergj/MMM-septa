@@ -181,7 +181,12 @@ Module.register("MMM-septa", {
             .map((arrival, index) => {
               const minutes = septaMinutesUntil(arrival.eta, now);
               const urgencyClass = minutes <= this.config.warnMinutes ? "septa-urgent" : "septa-normal";
-              const tierClass = index === 0 ? "septa-first" : "septa-later";
+              // Bold is reserved for a genuinely confirmed "next bus" --
+              // the first shown arrival only earns it if it's tracked, not
+              // just because it's chronologically first. An all-untracked
+              // row has no bold entry at all rather than overstating
+              // confidence in a guess.
+              const tierClass = index === 0 && arrival.tracked !== false ? "septa-first" : "septa-later";
               const untrackedClass = arrival.tracked === false ? " septa-untracked" : "";
               const prefix = arrival.tracked === false ? "~" : "";
               const text =
