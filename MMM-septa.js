@@ -1,4 +1,4 @@
-/* global Module */
+/* global Module, config */
 "use strict";
 
 // Frontend module: renders upcoming SEPTA bus arrivals for a configured list
@@ -20,6 +20,15 @@ function septaMinutesUntil(etaSeconds, nowMs) {
   return Math.max(0, Math.round((etaSeconds * 1000 - nowMs) / 60000));
 }
 
+// Beyond countdownWithinMinutes, a clock time ("5:47 PM") is more useful than
+// a big minute count; respects the mirror's global 12h/24h config.timeFormat
+// if present (falls back to the browser's locale default otherwise).
+function septaFormatClockTime(etaSeconds) {
+  const timeFormat = typeof config !== "undefined" ? config.timeFormat : undefined;
+  const hour12 = timeFormat === 24 ? false : timeFormat === 12 ? true : undefined;
+  return new Date(etaSeconds * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12 });
+}
+
 Module.register("MMM-septa", {
   defaults: {
     routes: [], // [{ routeId, stopId, direction, label }]
@@ -27,6 +36,7 @@ Module.register("MMM-septa", {
     refreshIntervalSeconds: 120, // how often node_helper actually polls SEPTA
     retryIntervalSeconds: 30, // backoff after a failed poll
     warnMinutes: 5, // arrivals at/under this get the "urgent" style
+    countdownWithinMinutes: 30, // arrivals at/under this show "N min"; farther out show clock time
     countdownTickSeconds: 15, // client-side re-render cadence, no network
     animationSpeed: 1000,
   },
@@ -103,7 +113,8 @@ Module.register("MMM-septa", {
             .map((eta) => {
               const minutes = septaMinutesUntil(eta, now);
               const cls = minutes <= this.config.warnMinutes ? "septa-urgent" : "septa-normal";
-              return `<span class="${cls}">${minutes}m</span>`;
+              const text = minutes <= this.config.countdownWithinMinutes ? `${minutes}m` : septaFormatClockTime(eta);
+              return `<span class="${cls}">${text}</span>`;
             })
             .join(" ");
         }

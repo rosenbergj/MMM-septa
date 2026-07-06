@@ -90,6 +90,7 @@ Add to `config.js`:
     refreshIntervalSeconds: 120,
     retryIntervalSeconds: 30,
     warnMinutes: 5,
+    countdownWithinMinutes: 30,
   },
 }
 ```
@@ -101,7 +102,8 @@ Add to `config.js`:
 | `refreshIntervalSeconds`  | `120`   | How often the backend actually polls SEPTA                               |
 | `retryIntervalSeconds`    | `30`    | Backoff before retrying after a failed poll                              |
 | `warnMinutes`             | `5`     | Arrivals at or under this many minutes are styled as "urgent"            |
-| `countdownTickSeconds`    | `15`    | How often the displayed "N min" countdown re-renders client-side          |
+| `countdownWithinMinutes`  | `30`    | Arrivals at or under this many minutes show as "Nm"; farther out shows a clock time (e.g. "5:47 PM"), honoring the mirror's global `timeFormat` (12/24h) |
+| `countdownTickSeconds`    | `15`    | How often the displayed "Nm" countdown re-renders client-side            |
 
 Each route's `direction` must match SEPTA's `direction_name` for that route
 exactly (case-sensitive) — use `find-stop.js` to confirm it.
@@ -144,7 +146,7 @@ don't copy that into your real `config.js`.
   backend, pushes results to the frontend over MagicMirror's socket
   notifications.
 - `MMM-septa.js` — renders the last known state per route, and re-renders
-  the "N min" countdowns every `countdownTickSeconds` without needing a
+  the "Nm" countdowns every `countdownTickSeconds` without needing a
   fresh backend fetch.
 - `scripts/find-stop.js` / `scripts/dry-run.js` — standalone CLI helpers,
   runnable with plain `node`, no MagicMirror needed.
