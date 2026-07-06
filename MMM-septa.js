@@ -28,14 +28,31 @@ function septaEscapeHtml(text) {
   return div.innerHTML;
 }
 
-// null if there are no arrivals or any arrival is missing a headsign;
-// "Mixed destinations" if the shown arrivals don't all share one; otherwise
-// the shared headsign itself.
-function septaCommonHeadsign(arrivals) {
-  if (!Array.isArray(arrivals) || arrivals.length === 0) return null;
-  const first = arrivals[0].headsign;
-  if (!first) return null;
-  return arrivals.every((arrival) => arrival.headsign === first) ? first : "Mixed destinations";
+// Classic footnote marker sequence; falls back to "[N]" past the sixth
+// distinct destination (never expected given maxArrivals defaults to 3).
+const FOOTNOTE_MARKERS = ["*", "†", "‡", "§", "‖", "¶"];
+function septaFootnoteMarker(index) {
+  return FOOTNOTE_MARKERS[index] || `[${index + 1}]`;
+}
+
+// Groups shown arrivals by destination. With 0 or 1 distinct headsign among
+// them, returns { mixed: false, headsign } (headsign may be null if none is
+// known yet) -- rendered as a single "-> Destination" line, no per-arrival
+// markers. With 2+ distinct headsigns, returns { mixed: true, markerFor,
+// order } so each arrival's time can carry its own footnote marker and the
+// label-sub line can list every destination alongside its marker instead of
+// a vague "Mixed destinations".
+function septaGroupByDestination(arrivals) {
+  if (!Array.isArray(arrivals) || arrivals.length === 0) return { mixed: false, headsign: null };
+  const distinct = [];
+  for (const arrival of arrivals) {
+    if (!distinct.includes(arrival.headsign)) distinct.push(arrival.headsign);
+  }
+  if (distinct.length <= 1) return { mixed: false, headsign: distinct[0] || null };
+
+  const known = distinct.filter(Boolean);
+  const markerFor = new Map(known.map((headsign, index) => [headsign, septaFootnoteMarker(index)]));
+  return { mixed: true, markerFor, order: known };
 }
 
 // "Northbound" -> "NB", "Southbound" -> "SB", etc; falls back to the
@@ -138,7 +155,7 @@ Module.register("MMM-septa", {
       row.className = "septa-row";
 
       const shownArrivals = state && Array.isArray(state.etas) ? state.etas.slice(0, this.config.maxArrivals) : [];
-      const commonHeadsign = septaCommonHeadsign(shownArrivals);
+      const destinationInfo = septaGroupByDestination(shownArrivals);
 
       const labelCell = document.createElement("td");
       labelCell.className = "septa-label";
@@ -147,11 +164,18 @@ Module.register("MMM-septa", {
       const abbrev = septaAbbreviateDirection(route.direction);
       labelMain.innerHTML = `${route.label || route.routeId} <span class="septa-direction-abbrev">${abbrev}</span>`;
       labelCell.appendChild(labelMain);
-      if (commonHeadsign) {
+      if (destinationInfo.mixed) {
         const labelSub = document.createElement("div");
         labelSub.className = "septa-label-sub";
-        labelSub.innerHTML =
-          commonHeadsign === "Mixed destinations" ? commonHeadsign : `&rarr; ${septaEscapeHtml(commonHeadsign)}`;
+        const parts = destinationInfo.order.map(
+          (headsign) => `${septaEscapeHtml(headsign)}(${destinationInfo.markerFor.get(headsign)})`
+        );
+        labelSub.innerHTML = `&rarr; ${parts.join(", ")}`;
+        labelCell.appendChild(labelSub);
+      } else if (destinationInfo.headsign) {
+        const labelSub = document.createElement("div");
+        labelSub.className = "septa-label-sub";
+        labelSub.innerHTML = `&rarr; ${septaEscapeHtml(destinationInfo.headsign)}`;
         labelCell.appendChild(labelSub);
       }
       row.appendChild(labelCell);
@@ -191,7 +215,11 @@ Module.register("MMM-septa", {
               const prefix = arrival.tracked === false ? "~" : "";
               const text =
                 minutes <= this.config.countdownWithinMinutes ? `${minutes}m` : septaFormatClockTime(arrival.eta);
-              return `<span class="${urgencyClass} ${tierClass}${untrackedClass}">${prefix}${text}</span>`;
+              const marker =
+                destinationInfo.mixed && destinationInfo.markerFor.has(arrival.headsign)
+                  ? destinationInfo.markerFor.get(arrival.headsign)
+                  : "";
+              return `<span class="${urgencyClass} ${tierClass}${untrackedClass}">${prefix}${text}${marker}</span>`;
             })
             .join(separator);
         }
