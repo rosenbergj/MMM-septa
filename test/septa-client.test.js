@@ -13,6 +13,7 @@ const {
   findStopName,
   computeIsFresh,
   pollRoute,
+  mergeScheduledArrivals,
 } = require("../septa-client.js");
 
 function fixture(name) {
@@ -276,6 +277,47 @@ test("computeIsFresh", async (t) => {
   });
 });
 
+test("mergeScheduledArrivals", async (t) => {
+  await t.test("matches the 1/11-tracked, 3/12/27/47-scheduled walkthrough exactly", () => {
+    const tracked = [
+      { eta: 1, headsign: "A", tracked: true, tripId: "live-1" },
+      { eta: 11, headsign: "A", tracked: true, tripId: "live-2" },
+    ];
+    const candidates = [
+      { eta: 3, headsign: "A", tripId: "sched-3" },
+      { eta: 12, headsign: "A", tripId: "sched-12" },
+      { eta: 27, headsign: "A", tripId: "sched-27" },
+      { eta: 47, headsign: "A", tripId: "sched-47" },
+    ];
+    const merged = mergeScheduledArrivals(tracked, candidates);
+    assert.deepEqual(
+      merged.map((a) => a.eta),
+      [1, 11, 12, 27, 47]
+    );
+    assert.equal(merged[0].tracked, true);
+    assert.equal(merged[2].tracked, false);
+  });
+
+  await t.test("drops a candidate whose tripId matches an already-tracked trip, even past the cutoff", () => {
+    const tracked = [{ eta: 1, headsign: "A", tracked: true, tripId: "live-1" }];
+    const candidates = [{ eta: 50, headsign: "A", tripId: "live-1" }];
+    assert.deepEqual(mergeScheduledArrivals(tracked, candidates), tracked);
+  });
+
+  await t.test("with no tracked arrivals at all, every candidate survives (no cutoff)", () => {
+    const candidates = [
+      { eta: 5, headsign: "A", tripId: "sched-5" },
+      { eta: 40, headsign: "A", tripId: "sched-40" },
+    ];
+    const merged = mergeScheduledArrivals([], candidates);
+    assert.deepEqual(
+      merged.map((a) => a.eta),
+      [5, 40]
+    );
+    assert.ok(merged.every((a) => a.tracked === false));
+  });
+});
+
 test("pollRoute", async (t) => {
   const trips = fixture("trips-route17.json");
   const tripUpdate787404 = fixture("trip-update-787404.json");
@@ -297,8 +339,8 @@ test("pollRoute", async (t) => {
       { fetchImpl, now: fixedNow }
     );
     assert.deepEqual(result.etas, [
-      { eta: 1783312200, headsign: "Front-Market", tracked: true },
-      { eta: 1783312560, headsign: "Front-Market", tracked: false },
+      { eta: 1783312200, headsign: "Front-Market", tracked: true, tripId: "900002" },
+      { eta: 1783312560, headsign: "Front-Market", tracked: false, tripId: "787404" },
     ]);
     assert.equal(result.detour, false);
     assert.equal(result.hasTripError, false);
@@ -315,7 +357,7 @@ test("pollRoute", async (t) => {
       { routeId: "17", stopId: 21289, direction: "Northbound" },
       { fetchImpl, now: fixedNow, useScheduleSupplement: false }
     );
-    assert.deepEqual(result.etas, [{ eta: 1783312200, headsign: "Front-Market", tracked: true }]);
+    assert.deepEqual(result.etas, [{ eta: 1783312200, headsign: "Front-Market", tracked: true, tripId: "900002" }]);
     assert.equal(result.hasTripError, false);
   });
 
@@ -329,7 +371,7 @@ test("pollRoute", async (t) => {
       { routeId: "17", stopId: 10311, direction: "Southbound" },
       { fetchImpl, now: fixedNow }
     );
-    assert.deepEqual(result.etas, [{ eta: 1783312320, headsign: "20th-Johnston", tracked: true }]);
+    assert.deepEqual(result.etas, [{ eta: 1783312320, headsign: "20th-Johnston", tracked: true, tripId: "787763" }]);
     assert.equal(result.hasTripError, false);
     assert.equal(result.stopName, "Market St & 4th St");
   });
@@ -399,8 +441,8 @@ test("pollRoute", async (t) => {
       { fetchImpl, now: fixedNow }
     );
     assert.deepEqual(result.etas, [
-      { eta: 1783312200, headsign: "Front-Market", tracked: true },
-      { eta: 1783312500, headsign: "Different-Destination", tracked: true },
+      { eta: 1783312200, headsign: "Front-Market", tracked: true, tripId: "900002" },
+      { eta: 1783312500, headsign: "Different-Destination", tracked: true, tripId: "900003" },
     ]);
   });
 
@@ -425,7 +467,7 @@ test("pollRoute", async (t) => {
       { routeId: "17", stopId: 21289, direction: "Northbound" },
       { fetchImpl, now: fixedNow }
     );
-    assert.deepEqual(result.etas, [{ eta: 1783312200, headsign: "Front-Market", tracked: true }]);
+    assert.deepEqual(result.etas, [{ eta: 1783312200, headsign: "Front-Market", tracked: true, tripId: "900002" }]);
     assert.equal(result.hasTripError, true);
   });
 

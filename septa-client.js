@@ -252,8 +252,9 @@ async function pollRoute(routeConfig, options = {}) {
     const tripEntry = goodTrips[index];
     const headsign = (tripEntry && tripEntry.trip_headsign) || null;
     const tracked = isTripTracked(tripEntry, result.value && result.value.trip);
+    const tripId = (tripEntry && tripEntry.trip_id) || null;
     for (const stopTime of filterStopTimes(stopTimes, stopId, nowSeconds)) {
-      etas.push({ eta: Number(stopTime.eta), headsign, tracked });
+      etas.push({ eta: Number(stopTime.eta), headsign, tracked, tripId });
     }
   });
   etas.sort((a, b) => a.eta - b.eta);
@@ -267,6 +268,25 @@ async function pollRoute(routeConfig, options = {}) {
     hasTripError,
     fetchedAt: nowDate.getTime(),
   };
+}
+
+// Merges GTFS-schedule-derived candidates (see gtfs-schedule.js's
+// getScheduledArrivals) into an already-tracked etas list. A candidate is
+// dropped unconditionally if its eta is at or before the latest tracked
+// arrival (SEPTA's own live data should already cover anything that
+// imminent -- if it didn't show up there, something's off, so it's not
+// worth surfacing from the schedule instead) and otherwise dropped only if
+// its tripId matches a trip we're already showing (the same run counted
+// twice). Survivors are tagged tracked:false and merged in eta order.
+function mergeScheduledArrivals(trackedEtas, scheduledCandidates) {
+  const maxTrackedEta = trackedEtas.reduce((max, arrival) => Math.max(max, arrival.eta), -Infinity);
+  const trackedTripIds = new Set(trackedEtas.map((arrival) => arrival.tripId).filter(Boolean));
+
+  const survivors = scheduledCandidates
+    .filter((candidate) => candidate.eta > maxTrackedEta && !trackedTripIds.has(candidate.tripId))
+    .map((candidate) => ({ ...candidate, tracked: false }));
+
+  return [...trackedEtas, ...survivors].sort((a, b) => a.eta - b.eta);
 }
 
 module.exports = {
@@ -284,4 +304,5 @@ module.exports = {
   findStopName,
   computeIsFresh,
   pollRoute,
+  mergeScheduledArrivals,
 };
