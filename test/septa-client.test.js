@@ -9,6 +9,7 @@ const {
   findSkippedStopName,
   filterGoodTrips,
   isTripTracked,
+  isNoGpsSource,
   filterStopTimes,
   findStopName,
   computeIsFresh,
@@ -181,6 +182,28 @@ test("isTripTracked", async (t) => {
 
   await t.test("missing trip-update trip object -> true (no real-time:false signal to distrust)", () => {
     assert.equal(isTripTracked(baseTrip, undefined), true);
+  });
+});
+
+test("isNoGpsSource", async (t) => {
+  await t.test('status "NO GPS" -> true', () => {
+    assert.equal(isNoGpsSource({ status: "NO GPS", vehicle_id: "1234" }), true);
+  });
+
+  await t.test('vehicle_id "None" -> true', () => {
+    assert.equal(isNoGpsSource({ status: "ON-TIME", vehicle_id: "None" }), true);
+  });
+
+  await t.test("normal tracked trip -> false", () => {
+    assert.equal(isNoGpsSource({ status: "ON-TIME", vehicle_id: "1234", next_stop_sequence: 5 }), false);
+  });
+
+  await t.test("next_stop_sequence 1 with a real vehicle -> false (exempt; has real GPS/delay)", () => {
+    assert.equal(isNoGpsSource({ status: "ON-TIME", vehicle_id: "1234", next_stop_sequence: 1 }), false);
+  });
+
+  await t.test("missing tripsEntry -> false", () => {
+    assert.equal(isNoGpsSource(null), false);
   });
 });
 
@@ -359,6 +382,161 @@ test("pollRoute", async (t) => {
     );
     assert.deepEqual(result.etas, [{ eta: 1783312200, headsign: "Front-Market", tracked: true, tripId: "900002" }]);
     assert.equal(result.hasTripError, false);
+  });
+
+  await t.test("drops a NO-GPS trip's arrival when a later tracked arrival exists", async () => {
+    const twoTrips = [
+      {
+        route_id: "17",
+        trip_id: "no-gps-1",
+        direction_name: "Northbound",
+        status: "NO GPS",
+        vehicle_id: "None",
+        next_stop_sequence: null,
+        trip_headsign: "Front-Market",
+      },
+      {
+        route_id: "17",
+        trip_id: "tracked-1",
+        direction_name: "Northbound",
+        status: "ON-TIME",
+        vehicle_id: "1234",
+        next_stop_sequence: 10,
+        trip_headsign: "Front-Market",
+      },
+    ];
+    const noGpsUpdate = {
+      trip: { status: "NO GPS" },
+      stop_times: [{ stop_id: 21289, eta: 1783312150, delay: 0, departed: false }],
+    };
+    const trackedUpdate = {
+      trip: { status: "ON-TIME", "real-time": true },
+      stop_times: [{ stop_id: 21289, eta: 1783312900, delay: 0, departed: false }],
+    };
+    const fetchImpl = stubFetch([
+      ["detours/?route=17", detoursEmpty],
+      ["trips/?route_id=17", twoTrips],
+      ["trip-update/?trip_id=no-gps-1", noGpsUpdate],
+      ["trip-update/?trip_id=tracked-1", trackedUpdate],
+    ]);
+    const result = await pollRoute(
+      { routeId: "17", stopId: 21289, direction: "Northbound" },
+      { fetchImpl, now: fixedNow }
+    );
+    assert.deepEqual(result.etas.map((a) => a.tripId), ["tracked-1"]);
+  });
+
+  await t.test("keeps a NO-GPS trip's arrival when it's later than the latest tracked arrival", async () => {
+    const twoTrips = [
+      {
+        route_id: "17",
+        trip_id: "no-gps-1",
+        direction_name: "Northbound",
+        status: "NO GPS",
+        vehicle_id: "None",
+        next_stop_sequence: null,
+        trip_headsign: "Front-Market",
+      },
+      {
+        route_id: "17",
+        trip_id: "tracked-1",
+        direction_name: "Northbound",
+        status: "ON-TIME",
+        vehicle_id: "1234",
+        next_stop_sequence: 10,
+        trip_headsign: "Front-Market",
+      },
+    ];
+    const noGpsUpdate = {
+      trip: { status: "NO GPS" },
+      stop_times: [{ stop_id: 21289, eta: 1783313500, delay: 0, departed: false }],
+    };
+    const trackedUpdate = {
+      trip: { status: "ON-TIME", "real-time": true },
+      stop_times: [{ stop_id: 21289, eta: 1783312300, delay: 0, departed: false }],
+    };
+    const fetchImpl = stubFetch([
+      ["detours/?route=17", detoursEmpty],
+      ["trips/?route_id=17", twoTrips],
+      ["trip-update/?trip_id=no-gps-1", noGpsUpdate],
+      ["trip-update/?trip_id=tracked-1", trackedUpdate],
+    ]);
+    const result = await pollRoute(
+      { routeId: "17", stopId: 21289, direction: "Northbound" },
+      { fetchImpl, now: fixedNow }
+    );
+    assert.deepEqual(result.etas.map((a) => a.tripId), ["tracked-1", "no-gps-1"]);
+  });
+
+  await t.test("keeps a NO-GPS trip's arrival when there are no tracked arrivals at all", async () => {
+    const oneTrip = [
+      {
+        route_id: "17",
+        trip_id: "no-gps-1",
+        direction_name: "Northbound",
+        status: "NO GPS",
+        vehicle_id: "None",
+        next_stop_sequence: null,
+        trip_headsign: "Front-Market",
+      },
+    ];
+    const noGpsUpdate = {
+      trip: { status: "NO GPS" },
+      stop_times: [{ stop_id: 21289, eta: 1783312150, delay: 0, departed: false }],
+    };
+    const fetchImpl = stubFetch([
+      ["detours/?route=17", detoursEmpty],
+      ["trips/?route_id=17", oneTrip],
+      ["trip-update/?trip_id=no-gps-1", noGpsUpdate],
+    ]);
+    const result = await pollRoute(
+      { routeId: "17", stopId: 21289, direction: "Northbound" },
+      { fetchImpl, now: fixedNow }
+    );
+    assert.deepEqual(result.etas.map((a) => a.tripId), ["no-gps-1"]);
+  });
+
+  await t.test("does not apply the NO-GPS cutoff to a next_stop_sequence:1 trip (real GPS/delay, exempt)", async () => {
+    const twoTrips = [
+      {
+        route_id: "17",
+        trip_id: "seq1-1",
+        direction_name: "Northbound",
+        status: "ON-TIME",
+        vehicle_id: "5678",
+        next_stop_sequence: 1,
+        trip_headsign: "Front-Market",
+      },
+      {
+        route_id: "17",
+        trip_id: "tracked-1",
+        direction_name: "Northbound",
+        status: "ON-TIME",
+        vehicle_id: "1234",
+        next_stop_sequence: 10,
+        trip_headsign: "Front-Market",
+      },
+    ];
+    const seq1Update = {
+      trip: { status: "ON-TIME", "real-time": true },
+      stop_times: [{ stop_id: 21289, eta: 1783312150, delay: 0, departed: false }],
+    };
+    const trackedUpdate = {
+      trip: { status: "ON-TIME", "real-time": true },
+      stop_times: [{ stop_id: 21289, eta: 1783312900, delay: 0, departed: false }],
+    };
+    const fetchImpl = stubFetch([
+      ["detours/?route=17", detoursEmpty],
+      ["trips/?route_id=17", twoTrips],
+      ["trip-update/?trip_id=seq1-1", seq1Update],
+      ["trip-update/?trip_id=tracked-1", trackedUpdate],
+    ]);
+    const result = await pollRoute(
+      { routeId: "17", stopId: 21289, direction: "Northbound" },
+      { fetchImpl, now: fixedNow }
+    );
+    assert.deepEqual(result.etas.map((a) => a.tripId), ["seq1-1", "tracked-1"]);
+    assert.equal(result.etas[0].tracked, false);
   });
 
   await t.test("excludes delay-999 stop_times for a clean Southbound cycle", async () => {

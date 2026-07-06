@@ -153,6 +153,20 @@ function isTripTracked(tripsEntry, tripUpdateTrip) {
   return true;
 }
 
+// A stricter, narrower check than isTripTracked: true only for trips with
+// no real telemetry at all (status "NO GPS" or no vehicle assigned yet),
+// not for the next_stop_sequence===1 case (which has real GPS and a real
+// delay, just hasn't left its first stop -- that one is untracked for
+// display purposes but its ETA is genuinely trustworthy). Confirmed live
+// that these carry dummy sentinel values (delay 998, a fixed placeholder
+// timestamp) rather than real data, and that even after a vehicle_id
+// eventually appears, delay/next-stop stay null until status itself
+// changes -- so there's no trustworthy ETA to protect here either way.
+function isNoGpsSource(tripsEntry) {
+  if (!tripsEntry) return false;
+  return tripsEntry.status === "NO GPS" || tripsEntry.vehicle_id === "None";
+}
+
 // A stop_time counts as an upcoming arrival if it's for the configured
 // stop, hasn't already departed, is still in the future, and doesn't carry
 // SEPTA's "bad data" delay sentinel (>= 999).
@@ -252,15 +266,29 @@ async function pollRoute(routeConfig, options = {}) {
     const tripEntry = goodTrips[index];
     const headsign = (tripEntry && tripEntry.trip_headsign) || null;
     const tracked = isTripTracked(tripEntry, result.value && result.value.trip);
+    const noGpsSource = isNoGpsSource(tripEntry);
     const tripId = (tripEntry && tripEntry.trip_id) || null;
     for (const stopTime of filterStopTimes(stopTimes, stopId, nowSeconds)) {
-      etas.push({ eta: Number(stopTime.eta), headsign, tracked, tripId });
+      etas.push({ eta: Number(stopTime.eta), headsign, tracked, tripId, noGpsSource });
     }
   });
   etas.sort((a, b) => a.eta - b.eta);
 
+  // A "NO GPS" trip's ETA is pure unadjusted static-schedule math (no real
+  // delay to apply), and confirmed live that these can vanish entirely or
+  // sit unchanged for the better part of an hour -- no more trustworthy
+  // than a schedule-supplement candidate. Apply the exact same cutoff
+  // mergeScheduledArrivals uses: drop it if a later confirmed-tracked
+  // arrival already exists (nothing to compare against -> no cutoff).
+  // next_stop_sequence===1 trips are untracked too but have real GPS/delay
+  // and are deliberately exempt -- see isNoGpsSource's doc comment.
+  const maxTrackedEta = etas.reduce((max, arrival) => (arrival.tracked ? Math.max(max, arrival.eta) : max), -Infinity);
+  const filteredEtas = etas
+    .filter((arrival) => !arrival.noGpsSource || arrival.eta > maxTrackedEta)
+    .map(({ noGpsSource, ...rest }) => rest);
+
   return {
-    etas,
+    etas: filteredEtas,
     detour: false,
     detourReason: null,
     stopName,
@@ -300,6 +328,7 @@ module.exports = {
   findSkippedStopName,
   filterGoodTrips,
   isTripTracked,
+  isNoGpsSource,
   filterStopTimes,
   findStopName,
   computeIsFresh,

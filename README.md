@@ -175,7 +175,14 @@ don't copy that into your real `config.js`.
   (the default), arrivals SEPTA hasn't started GPS-tracking yet — still
   at their first stop, no vehicle assigned, or otherwise not "real-time"
   — are shown too, styled as "~Nm" (italic, muted) instead of being
-  dropped entirely.
+  dropped entirely. The one exception: a trip with no vehicle assigned
+  at all ("NO GPS") has no real delay data behind its ETA (confirmed
+  live that these can sit unchanged for the better part of an hour, or
+  vanish entirely, without ever getting a vehicle) — so if a later,
+  fully-confirmed arrival already exists, the "NO GPS" one is dropped
+  rather than shown ahead of it. A trip still at its first stop but
+  with a real assigned vehicle is unaffected by this — its GPS/delay
+  data is genuinely trustworthy, just not yet "in progress".
 - `gtfs-schedule.js` — fills in arrivals up to 60 minutes out that live
   tracking doesn't cover yet, using SEPTA's static GTFS schedule as a
   fallback (also shown "~Nm"). No sqlite, no GTFS-realtime protobuf, no
