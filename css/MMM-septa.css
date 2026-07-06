@@ -56,7 +56,7 @@
   opacity: 0.7;
 }
 
-.septa-table .septa-arrivals .septa-detour {
+.septa-table .septa-arrivals.septa-detour {
   color: #e0a050;
   text-transform: uppercase;
   letter-spacing: 1px;
