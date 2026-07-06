@@ -44,18 +44,62 @@ function parseSeptaDateTime(value) {
   return new Date(year, month - 1, day, hour, minute, second);
 }
 
-// A detour is "active" if now falls strictly between its start/end window
-// and the configured stop is one of the skipped stops.
+// SEPTA's detour skipped_stops has shown up as a flat array of stop-id
+// strings, but every live detour we've actually captured returns an object
+// keyed by stop id instead (values are [name, lat, lon], not needed here).
+// Handle both, plus null/missing.
+function detourSkipsStop(skippedStops, targetStopId) {
+  if (Array.isArray(skippedStops)) {
+    return skippedStops.map(String).includes(targetStopId);
+  }
+  if (skippedStops && typeof skippedStops === "object") {
+    return Object.prototype.hasOwnProperty.call(skippedStops, targetStopId);
+  }
+  return false;
+}
+
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function parseTimeOfDaySeconds(value) {
+  const match = /^(\d{1,2}):(\d{2}):(\d{2})$/.exec(String(value).trim());
+  if (!match) return null;
+  const [hour, minute, second] = match.slice(1).map(Number);
+  return hour * 3600 + minute * 60 + second;
+}
+
+// day_time_active_info gives each detour a per-weekday "HH:MM:SS-HH:MM:SS"
+// window on top of its overall start/end date range (e.g. a detour that's
+// only in effect during evening rush hour, every day, for a month). The
+// window can cross midnight (e.g. "16:30:00-04:30:00"). If the field is
+// missing entirely, the detour is active for its whole date range, which
+// matches SEPTA's own convention of an explicit "00:00:00-23:59:59" entry
+// meaning "all day".
+function isWithinDayTimeWindow(dayTimeInfo, now) {
+  if (!dayTimeInfo || typeof dayTimeInfo !== "object") return true;
+  const range = dayTimeInfo[DAY_NAMES[now.getDay()]];
+  if (!range) return false;
+  const [startStr, endStr] = String(range).split("-");
+  const start = parseTimeOfDaySeconds(startStr);
+  const end = parseTimeOfDaySeconds(endStr);
+  if (start == null || end == null) return true;
+  const nowSeconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+  return start <= end ? nowSeconds >= start && nowSeconds <= end : nowSeconds >= start || nowSeconds <= end;
+}
+
+// A detour is "active" if now falls strictly between its start/end date
+// range, the configured stop is one of its skipped stops, and (if present)
+// now falls within its day_time_active_info window for today.
 function isDetourActive(detours, stopId, now = new Date()) {
   if (!Array.isArray(detours)) return false;
   const targetStopId = String(stopId);
   return detours.some((detour) => {
-    if (!detour || !Array.isArray(detour.skipped_stops)) return false;
+    if (!detour) return false;
     const start = parseSeptaDateTime(detour.start);
     const end = parseSeptaDateTime(detour.end);
     if (!start || !end) return false;
     if (!(now > start && now < end)) return false;
-    return detour.skipped_stops.map(String).includes(targetStopId);
+    if (!detourSkipsStop(detour.skipped_stops, targetStopId)) return false;
+    return isWithinDayTimeWindow(detour.day_time_active_info, now);
   });
 }
 

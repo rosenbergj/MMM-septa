@@ -63,6 +63,56 @@ test("isDetourActive", async (t) => {
     const detours = fixture("detours-route17-empty.json");
     assert.equal(isDetourActive(detours, 21289, new Date(2026, 0, 1)), false);
   });
+
+  await t.test("object-shaped skipped_stops (real API shape) -> true for a matching stop", () => {
+    const detours = fixture("detours-route64-live-sample.json");
+    assert.equal(isDetourActive(detours, 15210, new Date(2026, 5, 1)), true);
+    assert.equal(isDetourActive(detours, "15210", new Date(2026, 5, 1)), true);
+  });
+
+  await t.test("object-shaped skipped_stops -> false for a stop not in the map", () => {
+    const detours = fixture("detours-route64-live-sample.json");
+    assert.equal(isDetourActive(detours, 99999, new Date(2026, 5, 1)), false);
+  });
+
+  await t.test("empty-object and null skipped_stops (real API shapes) never match, don't crash", () => {
+    const detours = fixture("detours-route2-live-sample.json");
+    assert.equal(isDetourActive(detours, 12345, new Date(2026, 6, 10, 10, 0, 0)), false);
+  });
+
+  await t.test("day_time_active_info restricts to its daily window (non-crossing)", () => {
+    // D12564 in the fixture: stop 8704, active 07:00-15:00 daily, 07/06-07/14.
+    const detours = fixture("detours-route2-live-sample.json");
+    assert.equal(isDetourActive(detours, 8704, new Date(2026, 6, 10, 10, 0, 0)), true);
+    assert.equal(isDetourActive(detours, 8704, new Date(2026, 6, 10, 20, 0, 0)), false);
+  });
+
+  await t.test("day_time_active_info window crossing midnight", () => {
+    const detours = [
+      {
+        start: "1/1/2020, 00:00:00",
+        end: "1/1/2099, 00:00:00",
+        skipped_stops: { 1: ["Test Stop", "0", "0"] },
+        day_time_active_info: {
+          Sun: "22:00:00-02:00:00",
+          Mon: "22:00:00-02:00:00",
+          Tue: "22:00:00-02:00:00",
+          Wed: "22:00:00-02:00:00",
+          Thu: "22:00:00-02:00:00",
+          Fri: "22:00:00-02:00:00",
+          Sat: "22:00:00-02:00:00",
+        },
+      },
+    ];
+    assert.equal(isDetourActive(detours, 1, new Date(2026, 0, 1, 23, 0, 0)), true);
+    assert.equal(isDetourActive(detours, 1, new Date(2026, 0, 1, 1, 0, 0)), true);
+    assert.equal(isDetourActive(detours, 1, new Date(2026, 0, 1, 12, 0, 0)), false);
+  });
+
+  await t.test("missing day_time_active_info -> active for the entire date range", () => {
+    const detours = fixture("detours-route17-active.json");
+    assert.equal(isDetourActive(detours, 21289, new Date(2026, 0, 1, 3, 0, 0)), true);
+  });
 });
 
 test("filterGoodTrips", async (t) => {
@@ -237,6 +287,17 @@ test("pollRoute", async (t) => {
       () => pollRoute({ routeId: "17", stopId: 21289, direction: "Northbound" }, { fetchImpl, now: fixedNow }),
       /detours down/
     );
+  });
+
+  await t.test("real API detour shape (object skipped_stops) triggers detour:true", async () => {
+    const detoursLive = fixture("detours-route64-live-sample.json");
+    const fetchImpl = stubFetch([["detours/?route=64", detoursLive]]);
+    const result = await pollRoute(
+      { routeId: "64", stopId: 15210, direction: "Westbound" },
+      { fetchImpl, now: () => new Date(2026, 5, 1) }
+    );
+    assert.equal(result.detour, true);
+    assert.deepEqual(result.etas, []);
   });
 
   await t.test("fetchTrips failure propagates (throws)", async () => {

@@ -1,0 +1,47 @@
+[
+  {
+    "detour_id": "D4087",
+    "route_id": "64",
+    "message": "WB via 48th St, Left on Brown St, Right on 49th St, Right on Westminster Ave, Reg Rt",
+    "raw_card_message": "\nUntil 12pm  Thurs 12/31/26\nWB via 48th St \nL  - Brown St \nR - 49th St \nR - Westminster Ave \nReg Rt",
+    "direction": "Westbound",
+    "direction_id": "0",
+    "reason": "Sinkhole ",
+    "start_location": "39.966309, -75.21665",
+    "end_location": "39.97637, -75.21846",
+    "start": "01/26/2026, 00:00:00",
+    "end": "12/31/2026, 12:00:00",
+    "skipped_stops": {
+      "692": ["Belmont Av & Girard Av", "39.973173", "-75.21213"],
+      "15210": ["Westminster Av & 46th St", "39.969213", "-75.213949"],
+      "22099": ["Belmont Av & Wyalusing Av", "39.971173", "-75.211722"],
+      "22100": ["Belmont Av & Thompson St", "39.974601", "-75.212527"],
+      "22102": ["Belmont Av & Leidy St", "39.975941", "-75.212877"],
+      "22103": ["Parkside Av & Belmont Av - FS", "39.97813", "-75.214182"],
+      "22210": ["Parkside Av & 49th St", "39.97899", "-75.216589"],
+      "24864": ["48th St & Parrish St", "39.96737", "-75.216718"],
+      "24865": ["48th St & Westminster Av", "39.968888", "-75.216915"],
+      "25914": ["Belmont Av & Mantua Av", "39.972467", "-75.211955"],
+      "30889": ["Westminster Av & Belmont Av", "39.96954", "-75.211987"],
+      "31516": ["Westminster Av & 47th St", "39.969002", "-75.215922"]
+    },
+    "day_time_active_info": {
+      "Mon": "00:00:00-23:59:59",
+      "Tue": "00:00:00-23:59:59",
+      "Wed": "00:00:00-23:59:59",
+      "Thu": "00:00:00-23:59:59",
+      "Fri": "00:00:00-23:59:59",
+      "Sat": "00:00:00-23:59:59",
+      "Sun": "00:00:00-23:59:59"
+    },
+    "coordinate_detail_from_message": {
+      "48th st and brown st": [39.966398, -75.216757, "48th St & Brown St"],
+      "brown st and 49th st": [39.96612, -75.21847],
+      "49th st and westminster ave": [39.96876, -75.21882]
+    },
+    "is_kml": false,
+    "is_parsed": false,
+    "exception": "Number of inactive stops are covering 15.0% of the total stops in the route",
+    "message_hash": "3ff109450f69376a8e1e03cb9d6ab218"
+  }
+]

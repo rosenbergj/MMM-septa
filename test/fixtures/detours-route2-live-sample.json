@@ -1,0 +1,89 @@
+[
+  {
+    "detour_id": "D12309",
+    "route_id": "2",
+    "message": "SB via 17th, Left on Lehigh, Right on Broad, Right on Fairmount, Right on Ridge, Left on Francis, Reg Rte",
+    "raw_card_message": "\n4:30 pm -4:30 am Until \n07/31/2026\nSB via 17th \nL  - Lehigh\nR - Broad \nR - Fairmount\nR-Ridge\nL  - Francis\nReg Rte \n",
+    "direction": "Southbound",
+    "direction_id": "0",
+    "reason": "Pot Hole ",
+    "start_location": "39.99455, -75.159359",
+    "end_location": "39.992959, -75.159709",
+    "start": "07/01/2026, 10:44:50",
+    "end": "07/31/2026, 04:30:00",
+    "skipped_stops": {},
+    "day_time_active_info": {
+      "Mon": "16:30:00-04:30:00",
+      "Tue": "16:30:00-04:30:00",
+      "Wed": "16:30:00-04:30:00",
+      "Thu": "16:30:00-04:30:00",
+      "Fri": "16:30:00-04:30:00",
+      "Sat": "16:30:00-04:30:00",
+      "Sun": "16:30:00-04:30:00"
+    },
+    "coordinate_detail_from_message": {
+      "17th and lehigh": [39.99455, -75.15936, "17th St & Lehigh Av"],
+      "lehigh and broad": [39.99395, -75.15454, "Lehigh Av & Broad St"],
+      "broad and fairmount": [null, null],
+      "fairmount and ridge": [null, null],
+      "ridge and francis": [39.96966, -75.16383, "Ridge Av & Francis St"]
+    },
+    "is_kml": true,
+    "is_parsed": true,
+    "exception": null,
+    "message_hash": "0621f2b46ccbe73eb4b83ef133db3519"
+  },
+  {
+    "detour_id": "D12534",
+    "route_id": "2",
+    "message": "Until 3pm on 07/06/26, NB via 16th, Left on  Spruce, Right on 18th, Right on Locust, Left on  16th, Reg Rte",
+    "raw_card_message": "\nUntil 3pm on 07/06/26\nNB via 16th \nL -  Spruce \nR - 18th \nR - Locust\nL -  16th \nReg Rte ",
+    "direction": "Northbound",
+    "direction_id": "1",
+    "reason": "PGW ",
+    "start_location": null,
+    "end_location": null,
+    "start": "07/05/2026, 20:31:54",
+    "end": "07/06/2026, 15:00:00",
+    "skipped_stops": null,
+    "day_time_active_info": null,
+    "coordinate_detail_from_message": null,
+    "is_kml": false,
+    "is_parsed": false,
+    "exception": "Exception while extracting geocode for ending direction of the detour from IBI geocoding API",
+    "message_hash": "1b7b3cfd4c214915f4fd51a1ae7af6cb"
+  },
+  {
+    "detour_id": "D12564",
+    "route_id": "2",
+    "message": "NB via 16th, Left on Lehigh, Right on 17th, Reg Rt",
+    "raw_card_message": "\n7am  - 3pm  until 7-14-26\nNB via 16th\nL-Lehigh\nR-17th\nReg Rt",
+    "direction": "Northbound",
+    "direction_id": "1",
+    "reason": "Construction",
+    "start_location": "39.99276, -75.158129",
+    "end_location": "39.99455, -75.159359",
+    "start": "07/06/2026, 08:03:29",
+    "end": "07/14/2026, 15:00:00",
+    "skipped_stops": {
+      "8704": ["Huntingdon St & 17th St", "39.993027", "-75.15956"]
+    },
+    "day_time_active_info": {
+      "Mon": "07:00:00-15:00:00",
+      "Tue": "07:00:00-15:00:00",
+      "Wed": "07:00:00-15:00:00",
+      "Thu": "07:00:00-15:00:00",
+      "Fri": "07:00:00-15:00:00",
+      "Sat": "07:00:00-15:00:00",
+      "Sun": "07:00:00-15:00:00"
+    },
+    "coordinate_detail_from_message": {
+      "16th and lehigh": [39.99437, -75.15779, "Lehigh Av & 16th St"],
+      "lehigh and 17th": [39.99455, -75.15936, "17th St & Lehigh Av"]
+    },
+    "is_kml": true,
+    "is_parsed": true,
+    "exception": null,
+    "message_hash": "2b418fac255cbb5c6f3fe33938941bfb"
+  }
+]
