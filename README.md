@@ -53,6 +53,21 @@ Route 17 — Southbound (trip 787763)
   ...
 ```
 
+Add `--full` to get ready-to-paste `routes[]` entries instead of the table
+— each stop prints its name followed by the exact object to drop into
+config.js:
+
+```sh
+node scripts/find-stop.js 17 --full
+```
+
+```
+Route 17 — Northbound (trip 787404)
+  20th St & Oregon Av
+  { routeId: "17", stopId: 21289, direction: "Northbound", label: "17" },
+  ...
+```
+
 Copy the `stop_id` and the direction name (exactly as printed) into your
 config. If your stop is missing from the printout, the sample trip used to
 generate it had already passed that stop when you ran the command — just

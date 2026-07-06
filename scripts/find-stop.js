@@ -8,8 +8,12 @@
 // trip's full stop list out of trip-update (its stop_times array includes
 // stop_name for every stop along the route, not just one).
 //
-// Usage: node scripts/find-stop.js <routeId>
+// Usage: node scripts/find-stop.js <routeId> [--full]
 // Example: node scripts/find-stop.js 17
+// Example: node scripts/find-stop.js 17 --full
+//
+// --full prints, per stop, the stop name followed by a ready-to-paste
+// routes[] entry for config.js instead of the seq/stop_id/stop_name table.
 
 const { fetchTrips, fetchTripUpdate } = require("../septa-client.js");
 
@@ -37,6 +41,16 @@ function pickRepresentativeTrip(trips) {
   return candidates[0];
 }
 
+function printStaleNote(sorted) {
+  const firstSeq = Number(sorted[0] && sorted[0].stop_sequence);
+  if (Number.isFinite(firstSeq) && firstSeq > 1) {
+    console.log(
+      `  Note: this sample trip has already passed its first ${firstSeq - 1} stop(s); ` +
+        `if your stop isn't listed, re-run in a few minutes to catch an earlier trip.`
+    );
+  }
+}
+
 function printStopTable(direction, trip, stopTimes) {
   console.log(`\nRoute ${trip.route_id} — ${direction} (trip ${trip.trip_id})`);
   const sorted = [...stopTimes].sort((a, b) => Number(a.stop_sequence) - Number(b.stop_sequence));
@@ -48,20 +62,40 @@ function printStopTable(direction, trip, stopTimes) {
       `  ${String(stopTime.stop_sequence).padEnd(seqWidth)}  ${String(stopTime.stop_id).padEnd(idWidth)}  ${stopTime.stop_name || ""}`
     );
   }
-  const firstSeq = Number(sorted[0] && sorted[0].stop_sequence);
-  if (Number.isFinite(firstSeq) && firstSeq > 1) {
+  printStaleNote(sorted);
+}
+
+function printStopEntriesFull(direction, trip, stopTimes) {
+  console.log(`\nRoute ${trip.route_id} — ${direction} (trip ${trip.trip_id})`);
+  const sorted = [...stopTimes].sort((a, b) => Number(a.stop_sequence) - Number(b.stop_sequence));
+  for (const stopTime of sorted) {
+    console.log(`  ${stopTime.stop_name || ""}`);
     console.log(
-      `  Note: this sample trip has already passed its first ${firstSeq - 1} stop(s); ` +
-        `if your stop isn't listed, re-run in a few minutes to catch an earlier trip.`
+      `  { routeId: "${trip.route_id}", stopId: ${Number(stopTime.stop_id)}, direction: "${direction}", label: "${trip.route_id}" },`
     );
   }
+  printStaleNote(sorted);
+}
+
+function parseArgs(argv) {
+  let routeId = null;
+  let full = false;
+  for (const arg of argv) {
+    if (arg === "--full" || arg === "-f") {
+      full = true;
+    } else if (!routeId) {
+      routeId = arg;
+    }
+  }
+  return { routeId, full };
 }
 
 async function main() {
-  const routeId = process.argv[2];
+  const { routeId, full } = parseArgs(process.argv.slice(2));
   if (!routeId) {
-    console.error("Usage: node scripts/find-stop.js <routeId>");
+    console.error("Usage: node scripts/find-stop.js <routeId> [--full]");
     console.error("Example: node scripts/find-stop.js 17");
+    console.error("Example: node scripts/find-stop.js 17 --full");
     process.exit(1);
   }
 
@@ -92,16 +126,27 @@ async function main() {
     const trip = pickRepresentativeTrip(directionTrips);
     try {
       const tripUpdate = await fetchTripUpdate(trip.trip_id);
-      printStopTable(direction, trip, tripUpdate.stop_times || []);
+      if (full) {
+        printStopEntriesFull(direction, trip, tripUpdate.stop_times || []);
+      } else {
+        printStopTable(direction, trip, tripUpdate.stop_times || []);
+      }
     } catch (err) {
       console.error(`\nRoute ${routeId} — ${direction}: failed to fetch trip-update for trip ${trip.trip_id}: ${err.message}`);
     }
   }
 
-  console.log(
-    "\nCopy the stop_id and the direction name exactly as shown above (e.g. \"Northbound\") " +
-      "into your config.js route entry."
-  );
+  if (full) {
+    console.log(
+      '\nCopy the object for your stop straight into the "routes" array in config.js ' +
+        "(adjust label if you'd like something other than the route number)."
+    );
+  } else {
+    console.log(
+      "\nCopy the stop_id and the direction name exactly as shown above (e.g. \"Northbound\") " +
+        "into your config.js route entry. Or re-run with --full to get ready-to-paste routes[] entries."
+    );
+  }
 }
 
 main();
