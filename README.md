@@ -87,7 +87,7 @@ MagicMirror module option, outside `config`) to override it.
   config: {
     routes: [
       { routeId: "17", stopId: 21289, direction: "Northbound", label: "17" },
-      { routeId: "64", stopId: 21265, direction: "Westbound", label: "64" },
+      { routeId: "64", stopId: 21265, direction: "Westbound", label: "64", warnMinutes: 2 },
     ],
     maxArrivals: 3,
     refreshIntervalSeconds: 120,
@@ -101,11 +101,11 @@ MagicMirror module option, outside `config`) to override it.
 
 | Option                    | Default | Description                                                              |
 | ------------------------- | ------- | -------------------------------------------------------------------------- |
-| `routes`                  | `[]`    | Array of `{ routeId, stopId, direction, label }`                          |
+| `routes`                  | `[]`    | Array of `{ routeId, stopId, direction, label, warnMinutes }` -- `warnMinutes` is optional per-route and overrides the global value below |
 | `maxArrivals`             | `3`     | Number of upcoming arrivals shown per route                              |
 | `refreshIntervalSeconds`  | `120`   | How often the backend actually polls SEPTA                               |
 | `retryIntervalSeconds`    | `30`    | Backoff before retrying after a failed poll                              |
-| `warnMinutes`             | `5`     | Arrivals at or under this many minutes are styled as "urgent"            |
+| `warnMinutes`             | `5`     | Arrivals at or under this many minutes are styled as "urgent" (global default; can be overridden per route) |
 | `countdownWithinMinutes`  | `30`    | Arrivals at or under this many minutes show as "Nm"; farther out shows a clock time (e.g. "5:47 PM"), honoring the mirror's global `timeFormat` (12/24h) |
 | `countdownTickSeconds`    | `15`    | How often the displayed "Nm" countdown re-renders client-side            |
 | `useScheduleSupplement`   | `true`  | Include arrivals SEPTA hasn't fully GPS-confirmed yet, plus static-schedule arrivals up to 60 minutes out that live tracking doesn't cover yet (both shown as "~Nm", italic/muted). Set `false` to show only GPS-confirmed arrivals. |

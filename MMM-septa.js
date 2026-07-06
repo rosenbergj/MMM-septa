@@ -88,7 +88,7 @@ function septaFormatClockTime(etaSeconds) {
 
 Module.register("MMM-septa", {
   defaults: {
-    routes: [], // [{ routeId, stopId, direction, label }]
+    routes: [], // [{ routeId, stopId, direction, label, warnMinutes }] -- warnMinutes is optional, overrides the global value below
     maxArrivals: 3,
     refreshIntervalSeconds: 120, // how often node_helper actually polls SEPTA
     retryIntervalSeconds: 30, // backoff after a failed poll
@@ -170,6 +170,11 @@ Module.register("MMM-septa", {
 
       const shownArrivals = state && Array.isArray(state.etas) ? state.etas.slice(0, this.config.maxArrivals) : [];
       const destinationInfo = septaGroupByDestination(shownArrivals, state && state.headsignOrder);
+      // Per-route warnMinutes overrides the global config value, which in
+      // turn overrides the module default -- MagicMirror already merges
+      // the global-vs-default step via this.config, so only the route-level
+      // override needs handling here.
+      const warnMinutes = typeof route.warnMinutes === "number" ? route.warnMinutes : this.config.warnMinutes;
 
       const labelCell = document.createElement("td");
       labelCell.className = "septa-label";
@@ -220,7 +225,7 @@ Module.register("MMM-septa", {
           arrivalsCell.innerHTML = shownArrivals
             .map((arrival, index) => {
               const minutes = septaMinutesUntil(arrival.eta, now);
-              const urgencyClass = minutes <= this.config.warnMinutes ? "septa-urgent" : "septa-normal";
+              const urgencyClass = minutes <= warnMinutes ? "septa-urgent" : "septa-normal";
               // Bold is reserved for a genuinely confirmed "next bus" --
               // the first shown arrival only earns it if it's tracked, not
               // just because it's chronologically first. An all-untracked
