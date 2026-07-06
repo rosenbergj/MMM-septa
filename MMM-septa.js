@@ -124,7 +124,7 @@ Module.register("MMM-septa", {
       if (state && state.headsign) {
         const labelSub = document.createElement("div");
         labelSub.className = "septa-label-sub";
-        labelSub.innerHTML = septaEscapeHtml(state.headsign);
+        labelSub.innerHTML = `&rarr; ${septaEscapeHtml(state.headsign)}`;
         labelCell.appendChild(labelSub);
       }
       row.appendChild(labelCell);

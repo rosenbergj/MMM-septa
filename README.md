@@ -151,7 +151,7 @@ don't copy that into your real `config.js`.
   "DETOUR" (with SEPTA's stated reason, e.g. "DETOUR: Sinkhole", if one
   was provided) instead of arrival times. Each route also gets a small
   header line (e.g. "NB · 20th St & Oregon Av") and a destination
-  sub-label (e.g. "Front-Market") under its route label — both are
+  sub-label (e.g. "→ Front-Market") under its route label — both are
   discovered automatically from SEPTA's live data (no config needed) and
   cached once known, so they don't disappear during a cycle with no
   active trips. The nearest arrival is shown larger/brighter than the
