@@ -101,7 +101,7 @@ MagicMirror module option, outside `config`) to override it.
 
 | Option                    | Default | Description                                                              |
 | ------------------------- | ------- | -------------------------------------------------------------------------- |
-| `routes`                  | `[]`    | Array of `{ routeId, stopId, direction, label, warnMinutes }` -- `warnMinutes` is optional per-route and overrides the global value below |
+| `routes`                  | `[]`    | Array of `{ routeId, stopId, direction, label, warnMinutes }` -- `label` is optional and defaults to `routeId` if omitted; `warnMinutes` is optional per-route and overrides the global value below |
 | `maxArrivals`             | `3`     | Number of upcoming arrivals shown per route                              |
 | `refreshIntervalSeconds`  | `120`   | How often the backend actually polls SEPTA                               |
 | `retryIntervalSeconds`    | `30`    | Backoff before retrying after a failed poll                              |
