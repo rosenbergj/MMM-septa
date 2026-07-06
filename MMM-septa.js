@@ -171,6 +171,12 @@ Module.register("MMM-septa", {
         } else if (shownArrivals.length === 0) {
           arrivalsCell.innerHTML = "&ndash;&ndash;";
         } else {
+          // With multiple untracked (italic/"~") arrivals in the same row,
+          // a bare space between entries reads as visually ambiguous --
+          // especially once countdown- and clock-style entries mix (e.g.
+          // "3m ~18m ~2:19pm"). A comma makes each entry's boundary clear.
+          const untrackedCount = shownArrivals.filter((arrival) => arrival.tracked === false).length;
+          const separator = untrackedCount >= 2 ? ", " : " ";
           arrivalsCell.innerHTML = shownArrivals
             .map((arrival, index) => {
               const minutes = septaMinutesUntil(arrival.eta, now);
@@ -182,7 +188,7 @@ Module.register("MMM-septa", {
                 minutes <= this.config.countdownWithinMinutes ? `${minutes}m` : septaFormatClockTime(arrival.eta);
               return `<span class="${urgencyClass} ${tierClass}${untrackedClass}">${prefix}${text}</span>`;
             })
-            .join(" ");
+            .join(separator);
         }
 
         if (state.hasTripError) {
