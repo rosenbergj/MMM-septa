@@ -10,17 +10,20 @@ const path = require("node:path");
 const {
   readZipEntries,
   parseTripsForRoutes,
+  parseStops,
   parseStopTimesForTrips,
   parseCalendar,
   parseCalendarDates,
   isServiceActiveOn,
   buildScheduleCache,
+  buildRouteStopPatterns,
   getScheduledArrivals,
   getAllHeadsignsForStop,
   getHeadsignsSkippingStop,
   loadCacheFromDisk,
   saveCacheToDisk,
   fetchScheduleCache,
+  fetchRouteStopPatterns,
 } = require("../gtfs-schedule.js");
 
 // Hand-builds a minimal, valid ZIP archive (local file headers + central
@@ -139,12 +142,34 @@ test("parseTripsForRoutes", async (t) => {
   await t.test("filters to only the requested route_ids", () => {
     const trips = parseTripsForRoutes(csv, ["17", "64"]);
     assert.equal(trips.size, 2);
-    assert.deepEqual(trips.get("1001"), { routeId: "17", serviceId: "10", headsign: "Front-Market" });
+    assert.deepEqual(trips.get("1001"), { routeId: "17", serviceId: "10", headsign: "Front-Market", directionId: "0" });
   });
 
   await t.test("handles a quoted headsign containing a comma", () => {
     const trips = parseTripsForRoutes(csv, ["64"]);
-    assert.deepEqual(trips.get("2001"), { routeId: "64", serviceId: "11", headsign: "Columbus, Blvd Pier 70" });
+    assert.deepEqual(trips.get("2001"), {
+      routeId: "64",
+      serviceId: "11",
+      headsign: "Columbus, Blvd Pier 70",
+      directionId: "1",
+    });
+  });
+});
+
+test("parseStops", async (t) => {
+  const csv =
+    "stop_id,stop_code,stop_name,stop_desc,stop_lat,stop_lon,zone_id,stop_url,location_type,parent_station,wheelchair_boarding\n" +
+    "21289,,20th St & Oregon Av,,39.9,-75.1,,,,,\n" +
+    '8704,,"Huntingdon St & 17th St",,40.0,-75.1,,,,,\n';
+
+  await t.test("maps stop_id to stop_name", () => {
+    const stops = parseStops(csv);
+    assert.equal(stops.get("21289"), "20th St & Oregon Av");
+    assert.equal(stops.get("8704"), "Huntingdon St & 17th St");
+  });
+
+  await t.test("unknown stop_id -> undefined", () => {
+    assert.equal(parseStops(csv).get("99999"), undefined);
   });
 });
 
@@ -162,14 +187,38 @@ test("parseStopTimesForTrips", async (t) => {
   await t.test("keeps only rows for known trips and requested stops", () => {
     const entries = parseStopTimesForTrips(csv, tripsById, [100]);
     assert.deepEqual(entries, [
-      { routeId: "17", stopId: 100, tripId: "1001", serviceId: "10", arrivalTimeSeconds: 8 * 3600 + 15 * 60, headsign: "Front-Market" },
-      { routeId: "17", stopId: 100, tripId: "1002", serviceId: "10", arrivalTimeSeconds: 25 * 3600 + 5 * 60, headsign: "Front-Market" },
+      {
+        routeId: "17",
+        stopId: 100,
+        stopSequence: 1,
+        tripId: "1001",
+        serviceId: "10",
+        arrivalTimeSeconds: 8 * 3600 + 15 * 60,
+        headsign: "Front-Market",
+      },
+      {
+        routeId: "17",
+        stopId: 100,
+        stopSequence: 1,
+        tripId: "1002",
+        serviceId: "10",
+        arrivalTimeSeconds: 25 * 3600 + 5 * 60,
+        headsign: "Front-Market",
+      },
     ]);
   });
 
   await t.test("drops rows for trips not in tripsById (other routes)", () => {
     const entries = parseStopTimesForTrips(csv, new Map(), [100]);
     assert.deepEqual(entries, []);
+  });
+
+  await t.test("no stopIds given -> keeps every stop for every known trip", () => {
+    const entries = parseStopTimesForTrips(csv, tripsById);
+    assert.deepEqual(
+      entries.map((e) => `${e.tripId}:${e.stopId}:${e.stopSequence}`),
+      ["1001:100:1", "1001:200:2", "1002:100:1"]
+    );
   });
 });
 
@@ -355,6 +404,101 @@ test("getHeadsignsSkippingStop", async (t) => {
 
   await t.test("no matching route/stop -> empty array", () => {
     assert.deepEqual(getHeadsignsSkippingStop(cache, "99", 21289, 99000), []);
+  });
+});
+
+test("buildRouteStopPatterns", async (t) => {
+  const fileTexts = {
+    "trips.txt":
+      "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed\n" +
+      "17,weekday,9001,Front-Market,,0,1,1,1,1\n" + // full pattern, reaches 99000
+      "17,weekday,9002,Broad-Pattison,,1,2,2,1,1\n" + // short-turn, other direction, never reaches 99000
+      "64,weekday,9004,Other-Route,,0,4,4,1,1\n", // different route -- excluded
+    "stop_times.txt":
+      "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n" +
+      "9001,06:00:00,06:00:00,21289,1,,0,0,,1\n" +
+      "9001,06:10:00,06:10:00,99000,2,,0,0,,1\n" +
+      "9002,14:00:00,14:00:00,21289,1,,0,0,,1\n" +
+      "9004,08:00:00,08:00:00,21289,1,,0,0,,1\n",
+    "stops.txt":
+      "stop_id,stop_code,stop_name,stop_desc,stop_lat,stop_lon,zone_id,stop_url,location_type,parent_station,wheelchair_boarding\n" +
+      "21289,,20th St & Oregon Av,,,,,,,,\n" +
+      "99000,,Broad St & Pattison Av,,,,,,,,\n",
+  };
+
+  await t.test("returns every trip's full stop sequence, in order, with names", () => {
+    const patterns = buildRouteStopPatterns(fileTexts, "17");
+    const full = patterns.find((p) => p.tripId === "9001");
+    assert.deepEqual(full, {
+      tripId: "9001",
+      headsign: "Front-Market",
+      directionId: "0",
+      stops: [
+        { stopId: 21289, stopSequence: 1, stopName: "20th St & Oregon Av" },
+        { stopId: 99000, stopSequence: 2, stopName: "Broad St & Pattison Av" },
+      ],
+    });
+  });
+
+  await t.test("includes a short-turn trip that never reaches a stop the full pattern does", () => {
+    const patterns = buildRouteStopPatterns(fileTexts, "17");
+    const shortTurn = patterns.find((p) => p.tripId === "9002");
+    assert.deepEqual(
+      shortTurn.stops.map((s) => s.stopId),
+      [21289]
+    );
+    assert.equal(shortTurn.headsign, "Broad-Pattison");
+    assert.equal(shortTurn.directionId, "1");
+  });
+
+  await t.test("excludes trips from a different route", () => {
+    const patterns = buildRouteStopPatterns(fileTexts, "17");
+    assert.equal(patterns.some((p) => p.tripId === "9004"), false);
+  });
+
+  await t.test("unknown stop name -> stopName null instead of throwing", () => {
+    const missingStopName = {
+      ...fileTexts,
+      "stops.txt": "stop_id,stop_name\n21289,20th St & Oregon Av\n", // 99000 omitted
+    };
+    const patterns = buildRouteStopPatterns(missingStopName, "17");
+    const full = patterns.find((p) => p.tripId === "9001");
+    assert.equal(full.stops[1].stopName, null);
+  });
+});
+
+test("fetchRouteStopPatterns", async (t) => {
+  await t.test("downloads, unzips, and parses the feed end-to-end", async () => {
+    const zip = buildTestZip([
+      {
+        name: "trips.txt",
+        content:
+          "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed\n" +
+          "17,weekday,9001,Front-Market,,0,1,1,1,1\n",
+      },
+      {
+        name: "stop_times.txt",
+        content:
+          "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n" +
+          "9001,08:15:00,08:15:00,21289,1,,0,0,,1\n",
+      },
+      { name: "stops.txt", content: "stop_id,stop_name\n21289,20th St & Oregon Av\n" },
+    ]);
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      arrayBuffer: async () => zip.buffer.slice(zip.byteOffset, zip.byteOffset + zip.byteLength),
+    });
+
+    const patterns = await fetchRouteStopPatterns("17", fetchImpl);
+    assert.equal(patterns.length, 1);
+    assert.equal(patterns[0].stops[0].stopName, "20th St & Oregon Av");
+  });
+
+  await t.test("throws on a failed download", async () => {
+    const fetchImpl = async () => ({ ok: false, status: 500, statusText: "Internal Server Error" });
+    await assert.rejects(() => fetchRouteStopPatterns("17", fetchImpl), /500/);
   });
 });
 

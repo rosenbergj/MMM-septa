@@ -3,10 +3,15 @@
 
 // Helper for figuring out which stop_id/direction_name to put in your
 // config.js, without needing a separate "stops" API (SEPTA doesn't
-// document one we could verify). Reuses the same two endpoints the module
-// polls at runtime: fetch a trip per direction on the route, then read that
-// trip's full stop list out of trip-update (its stop_times array includes
-// stop_name for every stop along the route, not just one).
+// document one we could verify).
+//
+// Lists every stop, for every scheduled stop pattern (headsign) on the
+// route, straight from SEPTA's static GTFS schedule -- including
+// short-turn/express patterns that have no currently-running trip, which a
+// purely live-data approach can miss entirely (you'd have to happen to run
+// this while one of those trips was in service). Live /trips/ data is still
+// fetched, but only to resolve each pattern's friendly direction_name string
+// (e.g. "Northbound") and to note which patterns are currently running.
 //
 // Usage: node scripts/find-stop.js <routeId> [--full]
 // Example: node scripts/find-stop.js 17
@@ -15,66 +20,74 @@
 // --full prints, per stop, the stop name followed by a ready-to-paste
 // routes[] entry for config.js instead of the seq/stop_id/stop_name table.
 
-const { fetchTrips, fetchTripUpdate } = require("../septa-client.js");
+const { fetchTrips } = require("../septa-client.js");
+const { fetchRouteStopPatterns } = require("../gtfs-schedule.js");
 
-function groupByDirection(trips) {
-  const groups = new Map();
-  for (const trip of trips) {
+// One representative trip per distinct headsign -- trips sharing a headsign
+// should share a stop pattern, so picking the one with the most stops (the
+// least likely to be an anomalous/truncated instance) is a reasonable
+// stand-in for "the" pattern of that headsign.
+function pickRepresentativePatterns(patterns) {
+  const byHeadsign = new Map();
+  for (const pattern of patterns) {
+    const key = pattern.headsign || `(no headsign, trip ${pattern.tripId})`;
+    const existing = byHeadsign.get(key);
+    if (!existing || pattern.stops.length > existing.stops.length) byHeadsign.set(key, pattern);
+  }
+  return [...byHeadsign.values()];
+}
+
+// Maps each GTFS direction_id to a live direction_name string, using
+// whichever live trips happen to be running right now -- any live trip in a
+// given direction resolves the *whole* direction_id (not just its own
+// headsign's pattern), since direction_id is shared across headsigns.
+function buildDirectionNameMap(liveTrips, patterns) {
+  const directionIdByTripId = new Map(patterns.map((p) => [p.tripId, p.directionId]));
+  const names = new Map();
+  for (const trip of liveTrips || []) {
     if (!trip || !trip.direction_name) continue;
-    if (!groups.has(trip.direction_name)) groups.set(trip.direction_name, []);
-    groups.get(trip.direction_name).push(trip);
+    const directionId = directionIdByTripId.get(trip.trip_id);
+    if (directionId != null && !names.has(directionId)) names.set(directionId, trip.direction_name);
   }
-  return groups;
+  return names;
 }
 
-// Prefer a trip that's still near the start of its run (low
-// next_stop_sequence) so the printed stop list covers as much of the route
-// as possible; prefer non-canceled trips; otherwise just take whatever's
-// available.
-function pickRepresentativeTrip(trips) {
-  const candidates = [...trips].sort((a, b) => {
-    const aCanceled = a.status === "CANCELED" ? 1 : 0;
-    const bCanceled = b.status === "CANCELED" ? 1 : 0;
-    if (aCanceled !== bCanceled) return aCanceled - bCanceled;
-    return Number(a.next_stop_sequence || 0) - Number(b.next_stop_sequence || 0);
-  });
-  return candidates[0];
+function directionLabel(directionNames, directionId) {
+  const name = directionNames.get(directionId);
+  return name || `direction_id ${directionId} (name unconfirmed -- no live trip running this direction right now)`;
 }
 
-function printStaleNote(sorted) {
-  const firstSeq = Number(sorted[0] && sorted[0].stop_sequence);
-  if (Number.isFinite(firstSeq) && firstSeq > 1) {
-    console.log(
-      `  Note: this sample trip has already passed its first ${firstSeq - 1} stop(s); ` +
-        `if your stop isn't listed, re-run in a few minutes to catch an earlier trip.`
-    );
-  }
-}
-
-function printStopTable(direction, trip, stopTimes) {
-  console.log(`\nRoute ${trip.route_id} — ${direction} (trip ${trip.trip_id})`);
-  const sorted = [...stopTimes].sort((a, b) => Number(a.stop_sequence) - Number(b.stop_sequence));
-  const seqWidth = Math.max(3, ...sorted.map((s) => String(s.stop_sequence).length));
-  const idWidth = Math.max(7, ...sorted.map((s) => String(s.stop_id).length));
+function printStopTable(routeId, pattern, directionNames, isLive) {
+  const label = directionLabel(directionNames, pattern.directionId);
+  const liveNote = isLive ? "currently running" : "schedule only, not currently running";
+  console.log(
+    `\nRoute ${routeId}${pattern.headsign ? ` — "${pattern.headsign}"` : ""} — ${label} (trip ${pattern.tripId}, ${liveNote})`
+  );
+  const seqWidth = Math.max(3, ...pattern.stops.map((s) => String(s.stopSequence).length));
+  const idWidth = Math.max(7, ...pattern.stops.map((s) => String(s.stopId).length));
   console.log(`  ${"seq".padEnd(seqWidth)}  ${"stop_id".padEnd(idWidth)}  stop_name`);
-  for (const stopTime of sorted) {
-    console.log(
-      `  ${String(stopTime.stop_sequence).padEnd(seqWidth)}  ${String(stopTime.stop_id).padEnd(idWidth)}  ${stopTime.stop_name || ""}`
-    );
+  for (const stop of pattern.stops) {
+    console.log(`  ${String(stop.stopSequence).padEnd(seqWidth)}  ${String(stop.stopId).padEnd(idWidth)}  ${stop.stopName || ""}`);
   }
-  printStaleNote(sorted);
 }
 
-function printStopEntriesFull(direction, trip, stopTimes) {
-  console.log(`\nRoute ${trip.route_id} — ${direction} (trip ${trip.trip_id})`);
-  const sorted = [...stopTimes].sort((a, b) => Number(a.stop_sequence) - Number(b.stop_sequence));
-  for (const stopTime of sorted) {
-    console.log(`  ${stopTime.stop_name || ""}`);
-    console.log(
-      `  { routeId: "${trip.route_id}", stopId: ${Number(stopTime.stop_id)}, direction: "${direction}", label: "${trip.route_id}" },`
-    );
+function printStopEntriesFull(routeId, pattern, directionNames, isLive) {
+  const label = directionLabel(directionNames, pattern.directionId);
+  const liveNote = isLive ? "currently running" : "schedule only, not currently running";
+  console.log(`\nRoute ${routeId}${pattern.headsign ? ` — "${pattern.headsign}"` : ""} — ${label} (trip ${pattern.tripId}, ${liveNote})`);
+  const resolvedDirection = directionNames.get(pattern.directionId);
+  for (const stop of pattern.stops) {
+    console.log(`  ${stop.stopName || ""}`);
+    if (resolvedDirection) {
+      console.log(
+        `  { routeId: "${routeId}", stopId: ${stop.stopId}, direction: "${resolvedDirection}", label: "${routeId}" },`
+      );
+    } else {
+      console.log(
+        `  { routeId: "${routeId}", stopId: ${stop.stopId}, direction: "TODO_CONFIRM_DIRECTION" /* direction_id ${pattern.directionId}, no live trip to confirm the name -- check SEPTA's site or re-run later */, label: "${routeId}" },`
+      );
+    }
   }
-  printStaleNote(sorted);
 }
 
 function parseArgs(argv) {
@@ -99,47 +112,56 @@ async function main() {
     process.exit(1);
   }
 
-  let trips;
+  console.error(`Downloading SEPTA's static schedule feed (one-time per run, ~20MB)...`);
+  let patterns;
   try {
-    trips = await fetchTrips(routeId);
+    patterns = await fetchRouteStopPatterns(routeId);
   } catch (err) {
-    console.error(`Failed to fetch trips for route ${routeId}: ${err.message}`);
+    console.error(`Failed to fetch/parse the schedule feed for route ${routeId}: ${err.message}`);
     process.exit(1);
   }
 
-  if (!Array.isArray(trips) || trips.length === 0) {
-    console.error(
-      `No trips currently running for route ${routeId}. SEPTA only reports trips that are ` +
-        `actively scheduled/in service right now — try again during route ${routeId}'s service hours.`
-    );
+  if (patterns.length === 0) {
+    console.error(`No scheduled trips found for route ${routeId} in the static schedule. Check the route_id.`);
     process.exit(1);
   }
 
-  const groups = groupByDirection(trips);
-  if (groups.size === 0) {
-    console.error(`Got trips for route ${routeId}, but none had a usable direction_name. Raw response:`);
-    console.error(JSON.stringify(trips, null, 2));
-    process.exit(1);
+  // Live data is best-effort here -- only used to label directions and flag
+  // which patterns are currently running, so a failure shouldn't block the
+  // (more complete) schedule-based listing.
+  let liveTrips = [];
+  try {
+    liveTrips = await fetchTrips(routeId);
+  } catch (err) {
+    console.error(`Warning: couldn't fetch live trips (${err.message}) -- direction names will be unconfirmed.`);
   }
+  // "Currently running" is checked by headsign, not by the exact
+  // representative trip_id above -- that trip_id is just whichever static
+  // schedule instance happened to have the most stops, essentially never the
+  // literal trip that's live right now even when its headsign is.
+  const liveHeadsigns = new Set((liveTrips || []).map((trip) => trip && trip.trip_headsign).filter(Boolean));
+  const directionNames = buildDirectionNameMap(liveTrips, patterns);
 
-  for (const [direction, directionTrips] of groups) {
-    const trip = pickRepresentativeTrip(directionTrips);
-    try {
-      const tripUpdate = await fetchTripUpdate(trip.trip_id);
-      if (full) {
-        printStopEntriesFull(direction, trip, tripUpdate.stop_times || []);
-      } else {
-        printStopTable(direction, trip, tripUpdate.stop_times || []);
-      }
-    } catch (err) {
-      console.error(`\nRoute ${routeId} — ${direction}: failed to fetch trip-update for trip ${trip.trip_id}: ${err.message}`);
+  const representative = pickRepresentativePatterns(patterns).sort((a, b) => {
+    if (a.directionId !== b.directionId) return String(a.directionId).localeCompare(String(b.directionId));
+    return String(a.headsign).localeCompare(String(b.headsign));
+  });
+
+  for (const pattern of representative) {
+    const isLive = liveHeadsigns.has(pattern.headsign);
+    if (full) {
+      printStopEntriesFull(routeId, pattern, directionNames, isLive);
+    } else {
+      printStopTable(routeId, pattern, directionNames, isLive);
     }
   }
 
   if (full) {
     console.log(
       '\nCopy the object for your stop straight into the "routes" array in config.js ' +
-        "(adjust label if you'd like something other than the route number)."
+        "(adjust label if you'd like something other than the route number). Entries marked " +
+        "TODO_CONFIRM_DIRECTION need the direction name filled in by hand -- re-run this command " +
+        "while a trip in that direction is running, or check SEPTA's site."
     );
   } else {
     console.log(

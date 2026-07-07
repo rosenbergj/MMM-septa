@@ -31,27 +31,40 @@ on Node's built-in test runner, also with no dependencies to install.)
 
 You'll need a SEPTA `route_id`, a `stop_id`, and the exact `direction_name`
 SEPTA uses for that route (e.g. `"Northbound"`). If you don't already know
-these, use the included helper — it hits the same SEPTA endpoints the module
-uses at runtime, so there's nothing extra to configure:
+these, use the included helper:
 
 ```sh
 node scripts/find-stop.js 17
 ```
 
-This prints every stop along the route, per direction, e.g.:
+This prints every stop, for every distinct scheduled pattern (headsign) on
+the route, straight from SEPTA's static GTFS schedule — including
+short-turn/express patterns with no trip running right now, which is the
+whole reason it uses the static schedule rather than only live data: a
+purely live-data lookup can only ever show whichever trips happen to be
+running at the moment you run it, and would silently miss a short-turn
+pattern's stops if none of its trips were currently active. Live `/trips/`
+data is still fetched, just to label each pattern with its real
+`direction_name` string and flag whether it's currently running, e.g.:
 
 ```
-Route 17 — Northbound (trip 787404)
+Route 17 — "2nd-Market" — Northbound (trip 787527, currently running)
+  seq  stop_id  stop_name
+  1    31593    11th St & Constitution Av
+  2    31602    Constitution Av & 12th St
+  ...
+
+Route 17 — "Front-Market" — Northbound (trip 787397, schedule only, not currently running)
   seq  stop_id  stop_name
   1    40       20th St & Johnston St
   2    21289    20th St & Oregon Av
   ...
-
-Route 17 — Southbound (trip 787763)
-  seq  stop_id  stop_name
-  1    69       Front St & Market St Loop
-  ...
 ```
+
+If no live trip is currently running in a given direction, that direction is
+labeled `direction_id N (name unconfirmed -- no live trip running this
+direction right now)` instead of a real name — re-run the command while a
+trip that way is running, or check SEPTA's site, to confirm it.
 
 Add `--full` to get ready-to-paste `routes[]` entries instead of the table
 — each stop prints its name followed by the exact object to drop into
@@ -62,16 +75,16 @@ node scripts/find-stop.js 17 --full
 ```
 
 ```
-Route 17 — Northbound (trip 787404)
-  20th St & Oregon Av
-  { routeId: "17", stopId: 21289, direction: "Northbound", label: "17" },
+Route 17 — "2nd-Market" — Northbound (trip 787527, currently running)
+  11th St & Constitution Av
+  { routeId: "17", stopId: 31593, direction: "Northbound", label: "17" },
   ...
 ```
 
 Copy the `stop_id` and the direction name (exactly as printed) into your
-config. If your stop is missing from the printout, the sample trip used to
-generate it had already passed that stop when you ran the command — just
-re-run it (ideally earlier in the route's service window).
+config. This downloads SEPTA's full static schedule feed (~20MB) each time
+you run it — that's normal, and only happens for this one-off lookup script,
+never at runtime (the module's own polling never touches it).
 
 ## Configuration
 

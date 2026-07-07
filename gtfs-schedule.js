@@ -131,7 +131,8 @@ function parseCsv(text, splitLine) {
   return rows;
 }
 
-// trips.txt filtered to a set of route_ids -> Map<trip_id, {routeId, serviceId, headsign}>
+// trips.txt filtered to a set of route_ids ->
+// Map<trip_id, {routeId, serviceId, headsign, directionId}>
 function parseTripsForRoutes(text, routeIds) {
   const targetRoutes = new Set(routeIds.map(String));
   const trips = new Map();
@@ -141,9 +142,22 @@ function parseTripsForRoutes(text, routeIds) {
       routeId: row.route_id,
       serviceId: row.service_id,
       headsign: row.trip_headsign || null,
+      directionId: row.direction_id,
     });
   }
   return trips;
+}
+
+// stops.txt -> Map<stop_id, stop_name>. Only ever read by
+// scripts/find-stop.js (a one-off dev tool) -- node_helper.js's runtime
+// schedule cache deliberately never touches stops.txt, to keep the daily
+// refresh/cache footprint tiny (see fetchScheduleCache/NEEDED_FILES).
+function parseStops(text) {
+  const stops = new Map();
+  for (const row of parseCsv(text, splitCsvLineQuoted)) {
+    if (row.stop_id) stops.set(row.stop_id, row.stop_name || null);
+  }
+  return stops;
 }
 
 function timeToSeconds(value) {
@@ -153,43 +167,53 @@ function timeToSeconds(value) {
   return h * 3600 + m * 60 + s;
 }
 
-// stop_times.txt filtered to trips in tripsById and stops in stopIds ->
-// array of {routeId, stopId, tripId, serviceId, arrivalTimeSeconds, headsign}
+// stop_times.txt filtered to trips in tripsById, and (if stopIds is given)
+// stops in stopIds -> array of {routeId, stopId, stopSequence, tripId,
+// serviceId, arrivalTimeSeconds, headsign}. Passing no stopIds (or null)
+// keeps every stop for every known trip -- used by
+// scripts/find-stop.js's buildRouteStopPatterns to see a trip's full stop
+// sequence; the runtime schedule cache always passes a real (small) stopIds
+// set, so this stays off the hot path.
 function parseStopTimesForTrips(text, tripsById, stopIds) {
-  const targetStops = new Set(stopIds.map(String));
+  const targetStops = stopIds ? new Set(stopIds.map(String)) : null;
   const entries = [];
   const lines = text.split("\n");
   const header = splitCsvLineSimple(lines[0]).map((h) => h.trim());
   const tripIdx = header.indexOf("trip_id");
   const arrivalIdx = header.indexOf("arrival_time");
   const stopIdx = header.indexOf("stop_id");
+  const seqIdx = header.indexOf("stop_sequence");
 
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
     if (!line) continue;
     // Cheap pre-check before splitting: skip lines that can't possibly
-    // reference one of our (comparatively few) target stop_ids.
-    let matchesStop = false;
-    for (const stopId of targetStops) {
-      if (line.includes(`,${stopId},`)) {
-        matchesStop = true;
-        break;
+    // reference one of our (comparatively few) target stop_ids. Skipped
+    // entirely when unfiltered (targetStops === null).
+    if (targetStops) {
+      let matchesStop = false;
+      for (const stopId of targetStops) {
+        if (line.includes(`,${stopId},`)) {
+          matchesStop = true;
+          break;
+        }
       }
+      if (!matchesStop) continue;
     }
-    if (!matchesStop) continue;
 
     const cols = splitCsvLineSimple(line);
     const tripId = cols[tripIdx];
     const trip = tripsById.get(tripId);
     if (!trip) continue;
     const stopId = cols[stopIdx];
-    if (!targetStops.has(stopId)) continue;
+    if (targetStops && !targetStops.has(stopId)) continue;
     const arrivalTimeSeconds = timeToSeconds(cols[arrivalIdx]);
     if (arrivalTimeSeconds == null) continue;
 
     entries.push({
       routeId: trip.routeId,
       stopId: Number(stopId),
+      stopSequence: Number(cols[seqIdx]),
       tripId,
       serviceId: trip.serviceId,
       arrivalTimeSeconds,
@@ -261,6 +285,39 @@ function buildScheduleCache(fileTexts, routeIds, stopIds) {
   return { builtAt: Date.now(), entries, calendar, calendarExceptions };
 }
 
+// Every trip on a route, stop-by-stop with names, straight from the static
+// schedule -- so a short-turn pattern with no currently-running trip still
+// shows up (unlike scripts/find-stop.js's old live-only approach, which
+// could only ever show whichever trip happened to be running). Pure given
+// the extracted GTFS text; requires stops.txt in fileTexts (the runtime
+// schedule cache never fetches it -- see parseStops).
+function buildRouteStopPatterns(fileTexts, routeId) {
+  const trips = parseTripsForRoutes(fileTexts["trips.txt"], [routeId]);
+  const stopNames = parseStops(fileTexts["stops.txt"]);
+  const allStopTimes = parseStopTimesForTrips(fileTexts["stop_times.txt"], trips);
+
+  const stopTimesByTrip = new Map();
+  for (const entry of allStopTimes) {
+    if (!stopTimesByTrip.has(entry.tripId)) stopTimesByTrip.set(entry.tripId, []);
+    stopTimesByTrip.get(entry.tripId).push(entry);
+  }
+
+  const patterns = [];
+  for (const [tripId, trip] of trips) {
+    const stopTimes = stopTimesByTrip.get(tripId);
+    if (!stopTimes || stopTimes.length === 0) continue;
+    const stops = [...stopTimes]
+      .sort((a, b) => a.stopSequence - b.stopSequence)
+      .map((s) => ({
+        stopId: s.stopId,
+        stopSequence: s.stopSequence,
+        stopName: stopNames.get(String(s.stopId)) || null,
+      }));
+    patterns.push({ tripId, headsign: trip.headsign, directionId: trip.directionId, stops });
+  }
+  return patterns;
+}
+
 // Returns scheduled arrivals for one route/stop within the next
 // horizonMinutes, each shaped to match septa-client.js's etas entries
 // (minus `tracked`, which callers should set to false -- these are always
@@ -319,25 +376,42 @@ function getHeadsignsSkippingStop(cache, routeId, primaryStopId, secondaryStopId
   return primaryHeadsigns.filter((headsign) => !secondaryHeadsigns.has(headsign));
 }
 
-// Downloads the live feed and builds a fresh cache. I/O-only wrapper around
-// the pure functions above, so those can be unit tested without a network
-// call.
-async function fetchScheduleCache(routeIds, stopIds, fetchImpl = fetch) {
+// Downloads the live feed and extracts just the requested files as text.
+// I/O-only helper shared by fetchScheduleCache (the runtime cache's small
+// NEEDED_FILES set) and fetchRouteStopPatterns (find-stop.js's heavier,
+// stops.txt-inclusive one-off set) -- so both stay unit-testable without a
+// network call, and the runtime path's file list is untouched by the
+// script's needs.
+async function downloadGtfsFiles(fileNames, fetchImpl = fetch) {
   const response = await fetchImpl(GTFS_URL);
   if (!response.ok) {
     throw new Error(`gtfs-schedule: failed to download feed: ${response.status} ${response.statusText}`);
   }
   const buffer = Buffer.from(await response.arrayBuffer());
-  const zipEntries = readZipEntries(buffer, NEEDED_FILES);
+  const zipEntries = readZipEntries(buffer, fileNames);
 
   const fileTexts = {};
-  for (const name of NEEDED_FILES) {
+  for (const name of fileNames) {
     const data = zipEntries.get(name);
     if (!data) throw new Error(`gtfs-schedule: ${name} not found in feed`);
     fileTexts[name] = data.toString("utf8");
   }
+  return fileTexts;
+}
 
+async function fetchScheduleCache(routeIds, stopIds, fetchImpl = fetch) {
+  const fileTexts = await downloadGtfsFiles(NEEDED_FILES, fetchImpl);
   return buildScheduleCache(fileTexts, routeIds, stopIds);
+}
+
+const ROUTE_STOP_PATTERN_FILES = ["trips.txt", "stop_times.txt", "stops.txt"];
+
+// Downloads just enough of the feed to list every scheduled stop pattern for
+// one route (see buildRouteStopPatterns) -- used only by
+// scripts/find-stop.js.
+async function fetchRouteStopPatterns(routeId, fetchImpl = fetch) {
+  const fileTexts = await downloadGtfsFiles(ROUTE_STOP_PATTERN_FILES, fetchImpl);
+  return buildRouteStopPatterns(fileTexts, routeId);
 }
 
 // Lets the cache survive a MagicMirror restart without redownloading the
@@ -364,15 +438,18 @@ module.exports = {
   NEEDED_FILES,
   readZipEntries,
   parseTripsForRoutes,
+  parseStops,
   parseStopTimesForTrips,
   parseCalendar,
   parseCalendarDates,
   isServiceActiveOn,
   buildScheduleCache,
+  buildRouteStopPatterns,
   getScheduledArrivals,
   getAllHeadsignsForStop,
   getHeadsignsSkippingStop,
   fetchScheduleCache,
+  fetchRouteStopPatterns,
   loadCacheFromDisk,
   saveCacheToDisk,
 };
