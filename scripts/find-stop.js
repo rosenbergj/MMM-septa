@@ -93,12 +93,23 @@ function directionHeaderLabel(entry, directionId) {
   return `${entry.name} (inferred as the opposite of ${entry.inferredFrom} -- not live-confirmed, double-check)`;
 }
 
+// { value, comment }: value always drops in cleanly as the `direction` field
+// with nothing extra inside it, so a correctly-confirmed (or, once you've
+// double-checked it, correctly-inferred) entry is directly copyable as-is.
+// Any caveat goes in `comment`, printed as a trailing `//` comment *after*
+// the object instead of embedded inside the field value.
 function directionConfigFragment(entry, directionId) {
   if (!entry) {
-    return `"TODO_CONFIRM_DIRECTION" /* direction_id ${directionId}, no live trip to confirm the name -- check SEPTA's site or re-run later */`;
+    return {
+      value: `"TODO_CONFIRM_DIRECTION"`,
+      comment: `direction_id ${directionId}, no live trip to confirm the name -- check SEPTA's site or re-run later`,
+    };
   }
-  if (entry.confirmed) return `"${entry.name}"`;
-  return `"${entry.name}" /* inferred as the opposite of ${entry.inferredFrom} -- not live-confirmed, double-check */`;
+  if (entry.confirmed) return { value: `"${entry.name}"`, comment: null };
+  return {
+    value: `"${entry.name}"`,
+    comment: `inferred as the opposite of ${entry.inferredFrom} -- not live-confirmed, double-check`,
+  };
 }
 
 // "Front-Market" -> `"Front-Market"`; ["A","B"] -> `"A" and "B"`; ["A","B","C"]
@@ -132,13 +143,13 @@ function printMergedDirection(routeId, label, merged) {
 
 function printMergedDirectionFull(routeId, label, merged, directionEntry, directionId) {
   console.log(`\nRoute ${routeId} — ${label} — ${formatHeadsignList(merged.headsigns)}`);
+  const { value, comment } = directionConfigFragment(directionEntry, directionId);
+  const commentSuffix = comment ? ` // ${comment}` : "";
   let prevType = null;
   for (const row of merged.rows) {
     if (prevType !== null && row.type !== prevType) console.log("");
     console.log(`  ${row.stopName || ""}`);
-    console.log(
-      `  { routeId: "${routeId}", stopId: ${row.stopId}, direction: ${directionConfigFragment(directionEntry, directionId)}, label: "${routeId}" },`
-    );
+    console.log(`  { routeId: "${routeId}", stopId: ${row.stopId}, direction: ${value}, label: "${routeId}" },${commentSuffix}`);
     prevType = row.type;
   }
 }
