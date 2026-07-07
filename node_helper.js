@@ -138,6 +138,21 @@ module.exports = NodeHelper.create({
       // Same "never blank out a known value" caching as stopName above.
       if (result.secondaryStopName) state.secondaryStopName = result.secondaryStopName;
 
+      // Live data only reveals a stop's name via a trip that actually passes
+      // through it -- a secondary stop that every currently-running headsign
+      // structurally skips might never resolve that way. The schedule
+      // cache's stopNames (see gtfs-schedule.js's buildScheduleCache) covers
+      // every configured stop regardless of what's running right now, so use
+      // it as a fallback once live data has had its chance.
+      if (!state.stopName && this.scheduleCache && this.scheduleCache.stopNames) {
+        const scheduleName = this.scheduleCache.stopNames[String(state.config.stopId)];
+        if (scheduleName) state.stopName = scheduleName;
+      }
+      if (!state.secondaryStopName && state.config.secondaryStopId && this.scheduleCache && this.scheduleCache.stopNames) {
+        const scheduleName = this.scheduleCache.stopNames[String(state.config.secondaryStopId)];
+        if (scheduleName) state.secondaryStopName = scheduleName;
+      }
+
       // A detour means SEPTA is actively skipping this stop -- the static
       // schedule has no idea and would just show phantom arrivals, so only
       // merge in the schedule supplement when there's no detour in effect.

@@ -7,13 +7,13 @@
 // downloaded/parsed rarely (see node_helper.js's once-daily refresh), never
 // on the hot per-route polling path.
 //
-// Only trips.txt, stop_times.txt, calendar.txt, and calendar_dates.txt are
-// read out of the zip; shapes.txt/stops.txt/etc are never touched. The
-// result is filtered immediately down to the user's configured
-// (routeId, stopId) pairs, so what actually stays resident/cached is tiny
-// (dozens to low hundreds of rows), even though scanning stop_times.txt
-// itself means streaming through every row in the feed (confirmed live:
-// ~1s for 2 million rows).
+// Only trips.txt, stop_times.txt, calendar.txt, calendar_dates.txt, and
+// (as of the stopNames addition below) stops.txt are read out of the zip;
+// shapes.txt/etc are still never touched. The result is filtered immediately
+// down to the user's configured (routeId, stopId) pairs, so what actually
+// stays resident/cached is tiny (dozens to low hundreds of rows), even
+// though scanning stop_times.txt itself means streaming through every row in
+// the feed (confirmed live: ~1s for 2 million rows).
 
 const zlib = require("zlib");
 const fs = require("fs");
@@ -21,7 +21,7 @@ const path = require("path");
 
 const GTFS_URL = "https://www3.septa.org/developer/google_bus.zip";
 const DEFAULT_CACHE_PATH = path.join(__dirname, "gtfs-cache.json");
-const NEEDED_FILES = ["trips.txt", "stop_times.txt", "calendar.txt", "calendar_dates.txt"];
+const NEEDED_FILES = ["trips.txt", "stop_times.txt", "calendar.txt", "calendar_dates.txt", "stops.txt"];
 const DOW_KEYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]; // index by Date#getDay()
 
 // --- ZIP reading (central directory only; plain 32-bit fields, no ZIP64 --
@@ -148,14 +148,18 @@ function parseTripsForRoutes(text, routeIds) {
   return trips;
 }
 
-// stops.txt -> Map<stop_id, stop_name>. Only ever read by
-// scripts/find-stop.js (a one-off dev tool) -- node_helper.js's runtime
-// schedule cache deliberately never touches stops.txt, to keep the daily
-// refresh/cache footprint tiny (see fetchScheduleCache/NEEDED_FILES).
-function parseStops(text) {
+// stops.txt -> Map<stop_id, stop_name>. Passing stopIds filters to just
+// those stops (used by buildScheduleCache to keep the runtime cache's
+// stopNames tiny, the same way parseStopTimesForTrips filters); omit it to
+// keep every stop (used by scripts/find-stop.js, which doesn't know its
+// stop_ids up front).
+function parseStops(text, stopIds) {
+  const targetStops = stopIds ? new Set(stopIds.map(String)) : null;
   const stops = new Map();
   for (const row of parseCsv(text, splitCsvLineQuoted)) {
-    if (row.stop_id) stops.set(row.stop_id, row.stop_name || null);
+    if (!row.stop_id) continue;
+    if (targetStops && !targetStops.has(row.stop_id)) continue;
+    stops.set(row.stop_id, row.stop_name || null);
   }
   return stops;
 }
@@ -277,12 +281,19 @@ function isServiceActiveOn(calendar, calendarExceptions, serviceId, date) {
 
 // Builds the full (unfiltered-by-date) cache object from raw zip file
 // contents. Pure given the extracted text -- no I/O, easy to unit test.
+// stopNames is filtered down to just stopIds (like entries is) so a
+// configured stop's name is always resolvable from the daily schedule
+// refresh, not just whenever a live trip happens to pass through it (which a
+// structurally-skipping headsign, e.g. a secondary stop, might never do) --
+// stops.txt in fileTexts is optional so callers that don't need names (or
+// don't have it, e.g. NEEDED_FILES-less test fixtures) still work.
 function buildScheduleCache(fileTexts, routeIds, stopIds) {
   const trips = parseTripsForRoutes(fileTexts["trips.txt"], routeIds);
   const entries = parseStopTimesForTrips(fileTexts["stop_times.txt"], trips, stopIds);
   const calendar = parseCalendar(fileTexts["calendar.txt"]);
   const calendarExceptions = parseCalendarDates(fileTexts["calendar_dates.txt"]);
-  return { builtAt: Date.now(), entries, calendar, calendarExceptions };
+  const stopNames = fileTexts["stops.txt"] ? Object.fromEntries(parseStops(fileTexts["stops.txt"], stopIds)) : {};
+  return { builtAt: Date.now(), entries, calendar, calendarExceptions, stopNames };
 }
 
 // Every trip on a route, stop-by-stop with names, straight from the static

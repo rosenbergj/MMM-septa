@@ -83,8 +83,11 @@ Route 17 — "2nd-Market" — Northbound (trip 787527, currently running)
 
 Copy the `stop_id` and the direction name (exactly as printed) into your
 config. This downloads SEPTA's full static schedule feed (~20MB) each time
-you run it — that's normal, and only happens for this one-off lookup script,
-never at runtime (the module's own polling never touches it).
+you run it — that's normal for this one-off lookup script. The module's own
+runtime polling never re-downloads it per-poll either (see "How it works"
+below) — it already downloads the same feed once daily for the schedule
+supplement, and reads a bit more out of that same download to resolve stop
+names.
 
 ## Configuration
 
@@ -132,28 +135,16 @@ If you only care about arrivals that actually continue past your stop to
 some further destination — e.g. a short-turn trip that ends before reaching
 where you're headed, or a stop you're worried a detour might skip — set
 `secondaryStopId` on that route to that further stop's `stop_id`. It doesn't
-change which arrivals are shown, just how they're colored:
+change which arrivals are shown: if a trip or an entire headsign doesn't
+reach the secondary stop (whether structurally or because of an active
+detour), that's flagged in text (e.g. "no stop at Broad St & Kitty Hawk Av")
+and colored orange instead of the usual red/green/gray.
 
-- If a trip's destination pattern never reaches the secondary stop (a
-  short-turn headsign), that headsign's line and its non-detour arrival
-  times are colored orange instead of red/green, with "(no stop at
-  &lt;secondary stop name&gt;)" appended. For a currently-tracked arrival,
-  this is checked against that specific trip's own live stop list first
-  (ground truth) and only falls back to the static schedule's
-  headsign-level classification when live data isn't available — some
-  SEPTA headsigns cover more than one physical pattern (route 17's
-  "Broad-Pattison", for example, is both a normal trip and a much longer
-  weekend Navy Yard extension), so trusting the headsign alone isn't
-  always accurate.
-- If an active detour is currently skipping the secondary stop (but not your
-  primary stop, so trips are still shown), all arrival times for that route
-  are colored orange, with a "Detour skips stop at &lt;secondary stop
-  name&gt;" line appended below the destinations.
-- Untracked ("~") arrivals keep their usual italic/muted look either way,
-  just recolored orange instead of gray/green/red.
-
-The secondary stop's name is resolved automatically the same way the
-primary stop's is (no config needed) and cached once known.
+The secondary stop's name is resolved automatically (no config needed) —
+first from live trip data the same way the primary stop's is, falling back
+to the daily static-schedule refresh if no live trip happens to pass through
+it (which a structurally-skipping headsign might never do) — and cached
+once known either way.
 
 ## Testing
 
@@ -236,7 +227,9 @@ don't copy that into your real `config.js`.
   it's rebuilt automatically on the next refresh. A scheduled arrival is
   dropped if it's no later than the latest live-tracked arrival (live data
   should already cover anything that imminent) or if it turns out to be
-  the same trip as one already shown.
+  the same trip as one already shown. The same daily refresh also resolves
+  your configured stops' names (filtered to just those stop_ids, same as
+  everything else here) as a fallback for when live data hasn't/can't.
 - `scripts/find-stop.js` / `scripts/dry-run.js` — standalone CLI helpers,
   runnable with plain `node`, no MagicMirror needed.
 

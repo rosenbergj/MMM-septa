@@ -302,6 +302,20 @@ test("buildScheduleCache + getScheduledArrivals", async (t) => {
     assert.ok(cache.calendar.weekday);
   });
 
+  await t.test("buildScheduleCache: no stops.txt in fileTexts -> stopNames is an empty object, not a crash", () => {
+    const cache = buildScheduleCache(fileTexts, ["17"], [21289]);
+    assert.deepEqual(cache.stopNames, {});
+  });
+
+  await t.test("buildScheduleCache: stops.txt present -> stopNames filtered to just stopIds", () => {
+    const withStops = {
+      ...fileTexts,
+      "stops.txt": "stop_id,stop_name\n21289,20th St & Oregon Av\n99999,Somewhere Else\n",
+    };
+    const cache = buildScheduleCache(withStops, ["17"], [21289]);
+    assert.deepEqual(cache.stopNames, { 21289: "20th St & Oregon Av" });
+  });
+
   await t.test("getScheduledArrivals returns the trip when within horizon and service is active", () => {
     const cache = buildScheduleCache(fileTexts, ["17"], [21289]);
     // 2026-07-06 is a Monday; "now" is 08:00, trip arrives 08:15 (15 min out).
@@ -524,6 +538,7 @@ test("fetchScheduleCache", async (t) => {
           "weekday,1,1,1,1,1,0,0,20260101,20261231\n",
       },
       { name: "calendar_dates.txt", content: "service_id,date,exception_type\n" },
+      { name: "stops.txt", content: "stop_id,stop_name\n21289,20th St & Oregon Av\n" },
     ]);
     const fetchImpl = async () => ({
       ok: true,
@@ -535,6 +550,7 @@ test("fetchScheduleCache", async (t) => {
     const cache = await fetchScheduleCache(["17"], [21289], fetchImpl);
     assert.equal(cache.entries.length, 1);
     assert.equal(cache.entries[0].tripId, "9001");
+    assert.equal(cache.stopNames["21289"], "20th St & Oregon Av");
   });
 
   await t.test("throws on a failed download", async () => {

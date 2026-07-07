@@ -192,36 +192,48 @@ Module.register("MMM-septa", {
       const abbrev = septaAbbreviateDirection(route.direction);
       labelMain.innerHTML = `${route.label || route.routeId} <span class="septa-direction-abbrev">${abbrev}</span>`;
       labelCell.appendChild(labelMain);
+      // Mixed (2+) destinations always render as full-width colspan=2 rows
+      // below the route (appended after this route's main row, same pattern
+      // as the stop-name header row above), one per destination, in order --
+      // never comma-joined or stacked in the narrow label column, which
+      // would either stretch that column for every route or (for a flagged
+      // destination's longer "no stop at X" text) wrap awkwardly next to a
+      // mostly-blank arrivals cell. Doing this unconditionally (not just
+      // when something's flagged) keeps every destination in the same
+      // place, in the same order, whether or not a secondaryStopId is even
+      // configured -- rather than splitting flagged ones into one location
+      // and non-flagged ones into another, which would scramble their
+      // visual order relative to each other and their footnote markers.
+      const fullWidthRows = [];
       if (destinationInfo.mixed) {
-        // One destination per line (each with its own arrow), not
-        // comma-joined onto one line -- this is a plain HTML table, so a
-        // single long line in one row's label cell widens that column for
-        // every row, shifting all the arrival times to the right.
-        const labelSub = document.createElement("div");
-        labelSub.className = "septa-label-sub";
-        labelSub.innerHTML = destinationInfo.order
-          .map((headsign) => {
-            const marker = destinationInfo.markerFor.get(headsign);
-            const line = `&rarr; ${septaEscapeHtml(headsign)}(${marker})`;
-            if (!secondaryStopSkippedHeadsigns.includes(headsign)) return line;
-            return `<span class="septa-secondary-skip">${line} (no stop at ${septaEscapeHtml(secondaryStopDisplayName)})</span>`;
-          })
-          .join("<br>");
-        labelCell.appendChild(labelSub);
+        for (const headsign of destinationInfo.order) {
+          const marker = destinationInfo.markerFor.get(headsign);
+          const line = `&rarr; ${septaEscapeHtml(headsign)}(${marker})`;
+          const flagged = secondaryStopSkippedHeadsigns.includes(headsign);
+          fullWidthRows.push({
+            flagged,
+            html: flagged ? `${line} (no stop at ${septaEscapeHtml(secondaryStopDisplayName)})` : line,
+          });
+        }
       } else if (destinationInfo.headsign) {
-        const labelSub = document.createElement("div");
-        labelSub.className = "septa-label-sub";
         const line = `&rarr; ${septaEscapeHtml(destinationInfo.headsign)}`;
-        labelSub.innerHTML = secondaryStopSkippedHeadsigns.includes(destinationInfo.headsign)
-          ? `<span class="septa-secondary-skip">${line} (no stop at ${septaEscapeHtml(secondaryStopDisplayName)})</span>`
-          : line;
-        labelCell.appendChild(labelSub);
+        if (secondaryStopSkippedHeadsigns.includes(destinationInfo.headsign)) {
+          fullWidthRows.push({
+            flagged: true,
+            html: `${line} (no stop at ${septaEscapeHtml(secondaryStopDisplayName)})`,
+          });
+        } else {
+          const labelSub = document.createElement("div");
+          labelSub.className = "septa-label-sub";
+          labelSub.innerHTML = line;
+          labelCell.appendChild(labelSub);
+        }
       }
       if (secondaryStopDetour && shownArrivals.length > 0) {
-        const detourNote = document.createElement("div");
-        detourNote.className = "septa-label-sub";
-        detourNote.innerHTML = `<span class="septa-secondary-skip">Detour skips stop at ${septaEscapeHtml(secondaryStopDisplayName)}</span>`;
-        labelCell.appendChild(detourNote);
+        fullWidthRows.push({
+          flagged: true,
+          html: `Detour skips stop at ${septaEscapeHtml(secondaryStopDisplayName)}`,
+        });
       }
       row.appendChild(labelCell);
 
@@ -298,6 +310,16 @@ Module.register("MMM-septa", {
 
       row.appendChild(arrivalsCell);
       wrapper.appendChild(row);
+
+      for (const entry of fullWidthRows) {
+        const entryRow = document.createElement("tr");
+        const entryCell = document.createElement("td");
+        entryCell.className = entry.flagged ? "septa-secondary-note septa-secondary-skip" : "septa-secondary-note";
+        entryCell.colSpan = 2;
+        entryCell.innerHTML = entry.html;
+        entryRow.appendChild(entryCell);
+        wrapper.appendChild(entryRow);
+      }
     }
 
     return wrapper;
