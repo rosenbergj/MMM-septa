@@ -210,7 +210,9 @@ don't copy that into your real `config.js`.
   discovered automatically from SEPTA's live data (no config needed) and
   cached once known, so it doesn't disappear during a cycle with no
   active trips. Each arrival carries its own trip's destination, shown
-  as a sub-label under the route label when every currently-shown
+  as a full-width line below the route (not squeezed into the label
+  column, which would stretch it for every route once a longer note is
+  involved — see "Secondary stop" below) when every currently-shown
   arrival agrees on it (e.g. "→ Front-Market"). When they don't, each
   distinct destination among the shown arrivals gets a footnote marker
   (*, †, ‡, ...) appended to its times (e.g. "14m* 22m†"), with every

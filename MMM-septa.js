@@ -192,18 +192,16 @@ Module.register("MMM-septa", {
       const abbrev = septaAbbreviateDirection(route.direction);
       labelMain.innerHTML = `${route.label || route.routeId} <span class="septa-direction-abbrev">${abbrev}</span>`;
       labelCell.appendChild(labelMain);
-      // Mixed (2+) destinations always render as full-width colspan=2 rows
-      // below the route (appended after this route's main row, same pattern
-      // as the stop-name header row above), one per destination, in order --
-      // never comma-joined or stacked in the narrow label column, which
-      // would either stretch that column for every route or (for a flagged
-      // destination's longer "no stop at X" text) wrap awkwardly next to a
-      // mostly-blank arrivals cell. Doing this unconditionally (not just
-      // when something's flagged) keeps every destination in the same
-      // place, in the same order, whether or not a secondaryStopId is even
-      // configured -- rather than splitting flagged ones into one location
-      // and non-flagged ones into another, which would scramble their
-      // visual order relative to each other and their footnote markers.
+      // Every destination line -- whether there's one or several, flagged
+      // or not -- always renders as a full-width colspan=2 row below the
+      // route (appended after this route's main row, same pattern as the
+      // stop-name header row above), never stacked in the narrow label
+      // column. That's true even for a single, unflagged destination: a
+      // long headsign name or a flagged neighbor elsewhere in the table
+      // would otherwise still stretch that shared column for every row, and
+      // keeping the rule unconditional means there's no special case where
+      // a destination's location (label column vs. below) depends on
+      // whether *anything* happens to be flagged.
       const fullWidthRows = [];
       if (destinationInfo.mixed) {
         for (const headsign of destinationInfo.order) {
@@ -217,17 +215,11 @@ Module.register("MMM-septa", {
         }
       } else if (destinationInfo.headsign) {
         const line = `&rarr; ${septaEscapeHtml(destinationInfo.headsign)}`;
-        if (secondaryStopSkippedHeadsigns.includes(destinationInfo.headsign)) {
-          fullWidthRows.push({
-            flagged: true,
-            html: `${line} (no stop at ${septaEscapeHtml(secondaryStopDisplayName)})`,
-          });
-        } else {
-          const labelSub = document.createElement("div");
-          labelSub.className = "septa-label-sub";
-          labelSub.innerHTML = line;
-          labelCell.appendChild(labelSub);
-        }
+        const flagged = secondaryStopSkippedHeadsigns.includes(destinationInfo.headsign);
+        fullWidthRows.push({
+          flagged,
+          html: flagged ? `${line} (no stop at ${septaEscapeHtml(secondaryStopDisplayName)})` : line,
+        });
       }
       if (secondaryStopDetour && shownArrivals.length > 0) {
         fullWidthRows.push({
@@ -314,7 +306,7 @@ Module.register("MMM-septa", {
       for (const entry of fullWidthRows) {
         const entryRow = document.createElement("tr");
         const entryCell = document.createElement("td");
-        entryCell.className = entry.flagged ? "septa-secondary-note septa-secondary-skip" : "septa-secondary-note";
+        entryCell.className = entry.flagged ? "septa-full-width septa-secondary-skip" : "septa-full-width";
         entryCell.colSpan = 2;
         entryCell.innerHTML = entry.html;
         entryRow.appendChild(entryCell);

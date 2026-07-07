@@ -35,12 +35,6 @@
   opacity: 0.6;
 }
 
-.septa-table .septa-label-sub {
-  margin-top: 2px;
-  font-size: 0.7em;
-  opacity: 0.6;
-}
-
 .septa-table .septa-arrivals {
   color: #ccc;
   font-size: 0.85em;
@@ -70,21 +64,20 @@
   color: #e0a050;
 }
 
-/* Secondary-stop destination lines and notes ("no stop at X" / "Detour
-   skips stop at X") -- a full-width row below the route's label+arrivals
-   row (colspan=2, same pattern as .septa-stop-header) so long stop names
-   have the whole table's width to flow in, instead of being confined to
-   (and stretching) the narrow label column. Muted like .septa-label-sub by
-   default (a plain destination that isn't flagged, just relocated here to
-   keep every destination in one place/order); .septa-secondary-skip
-   overrides to full-brightness orange for the flagged ones. */
-.septa-table .septa-secondary-note {
+/* Every destination line and note ("no stop at X" / "Detour skips stop at
+   X") -- a full-width row below the route's label+arrivals row (colspan=2,
+   same pattern as .septa-stop-header) so long stop names have the whole
+   table's width to flow in, instead of being confined to (and stretching)
+   the narrow label column. Muted by default (a plain, unflagged
+   destination); .septa-secondary-skip overrides to full-brightness orange
+   for the flagged ones. */
+.septa-table .septa-full-width {
   font-size: 0.7em;
   padding-top: 2px;
   opacity: 0.6;
 }
 
-.septa-table .septa-secondary-note.septa-secondary-skip {
+.septa-table .septa-full-width.septa-secondary-skip {
   color: #e0a050;
   opacity: 1;
 }
