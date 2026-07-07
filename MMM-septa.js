@@ -248,13 +248,21 @@ Module.register("MMM-septa", {
           arrivalsCell.innerHTML = shownArrivals
             .map((arrival, index) => {
               const minutes = septaMinutesUntil(arrival.eta, now);
-              // Arrivals that skip the secondary stop -- either structurally
-              // (headsign) or via an active detour -- read as orange instead
-              // of red/green urgency. Untracked ("~") arrivals keep their
-              // existing tilde/italic/opacity treatment (added via
-              // untrackedClass below) on top of this color.
+              // Arrivals that skip the secondary stop -- via an active
+              // detour, via this specific trip's own live stop_times (ground
+              // truth, when known -- see septa-client.js's tripReachesStop;
+              // some headsigns cover more than one physical pattern, e.g.
+              // route 17's "Broad-Pattison" is both a normal trip and a much
+              // longer weekend Navy Yard extension, so this is checked per
+              // trip rather than trusting the headsign alone), or otherwise
+              // via the headsign-level static-schedule fallback -- read as
+              // orange instead of red/green urgency. Untracked ("~")
+              // arrivals keep their existing tilde/italic/opacity treatment
+              // (added via untrackedClass below) on top of this color.
               const skipsSecondaryStop =
-                secondaryStopDetour || secondaryStopSkippedHeadsigns.includes(arrival.headsign);
+                secondaryStopDetour ||
+                arrival.reachesSecondaryStop === false ||
+                (arrival.reachesSecondaryStop == null && secondaryStopSkippedHeadsigns.includes(arrival.headsign));
               const urgencyClass = skipsSecondaryStop
                 ? "septa-secondary-skip"
                 : minutes <= warnMinutes

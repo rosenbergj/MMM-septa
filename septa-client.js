@@ -199,6 +199,23 @@ function findStopName(stopTimes, stopId) {
   return (match && match.stop_name) || null;
 }
 
+// Ground-truth check for whether a specific trip's own stop_times includes a
+// given stop, anywhere in its sequence (past or future) -- unlike the
+// static-schedule headsign check in gtfs-schedule.js's
+// getHeadsignsSkippingStop, this is per-trip, not per-headsign. That matters
+// because SEPTA doesn't always give a distinct headsign to a distinct
+// pattern: route 17's "Broad-Pattison" headsign, for example, covers both a
+// normal-length trip and a much longer weekend Navy Yard extension, so the
+// headsign-level check alone can't tell them apart. Returns null (not
+// false) when stopTimes isn't available at all (e.g. this trip's
+// trip-update fetch failed) -- callers should treat that as "unknown, fall
+// back to the headsign check" rather than "confirmed skip".
+function tripReachesStop(stopTimes, stopId) {
+  if (!Array.isArray(stopTimes)) return null;
+  const targetStopId = Number(stopId);
+  return stopTimes.some((stopTime) => stopTime && Number(stopTime.stop_id) === targetStopId);
+}
+
 // Data is "fresh" until it ages past 3x the refresh interval, matching
 // lightpi's get_data() staleness window (fetchers.py:212-226).
 function computeIsFresh(lastFetchTime, refreshIntervalSeconds, now = Date.now()) {
@@ -287,8 +304,15 @@ async function pollRoute(routeConfig, options = {}) {
     const tracked = isTripTracked(tripEntry, result.value && result.value.trip);
     const noGpsSource = isNoGpsSource(tripEntry);
     const tripId = (tripEntry && tripEntry.trip_id) || null;
+    // Only computed when a secondary stop is configured, and only added to
+    // the eta object in that case -- see tripReachesStop's doc comment for
+    // why this per-trip check exists alongside (and takes priority over)
+    // node_helper.js's headsign-level static-schedule check.
+    const secondaryStopFields = routeConfig.secondaryStopId
+      ? { reachesSecondaryStop: tripReachesStop(stopTimes, routeConfig.secondaryStopId) }
+      : {};
     for (const stopTime of filterStopTimes(stopTimes, stopId, nowSeconds)) {
-      etas.push({ eta: Number(stopTime.eta), headsign, tracked, tripId, noGpsSource });
+      etas.push({ eta: Number(stopTime.eta), headsign, tracked, tripId, noGpsSource, ...secondaryStopFields });
     }
   });
   etas.sort((a, b) => a.eta - b.eta);
@@ -352,6 +376,7 @@ module.exports = {
   isNoGpsSource,
   filterStopTimes,
   findStopName,
+  tripReachesStop,
   computeIsFresh,
   pollRoute,
   mergeScheduledArrivals,

@@ -12,6 +12,7 @@ const {
   isNoGpsSource,
   filterStopTimes,
   findStopName,
+  tripReachesStop,
   computeIsFresh,
   pollRoute,
   mergeScheduledArrivals,
@@ -276,6 +277,27 @@ test("findStopName", async (t) => {
 
   await t.test("non-array input -> null", () => {
     assert.equal(findStopName(null, 21289), null);
+  });
+});
+
+test("tripReachesStop", async (t) => {
+  const stopTimes = fixture("trip-update-900002.json").stop_times;
+
+  await t.test("stop present anywhere in the trip's stop_times -> true", () => {
+    assert.equal(tripReachesStop(stopTimes, 21289), true);
+  });
+
+  await t.test("matches string stop_id (numeric coercion)", () => {
+    assert.equal(tripReachesStop(stopTimes, "21289"), true);
+  });
+
+  await t.test("stop not in this trip's sequence at all -> false (ground truth: confirmed skip)", () => {
+    assert.equal(tripReachesStop(stopTimes, 99999), false);
+  });
+
+  await t.test("non-array input (stop_times unavailable) -> null (unknown, not a confirmed skip)", () => {
+    assert.equal(tripReachesStop(null, 21289), null);
+    assert.equal(tripReachesStop(undefined, 21289), null);
   });
 });
 
@@ -770,5 +792,68 @@ test("pollRoute", async (t) => {
     );
     assert.equal(result.secondaryStopDetour, false);
     assert.equal(result.secondaryStopName, "Huntingdon St & 17th St");
+  });
+
+  await t.test("reachesSecondaryStop is per-trip, not per-headsign -- distinguishes two same-headsign patterns", async () => {
+    // Reproduces route 17's real "Broad-Pattison" ambiguity: one trip_id
+    // reaches the configured secondary stop, another with the identical
+    // headsign doesn't (a short-turn sharing a headsign with a longer
+    // pattern) -- ground truth must come from each trip's own stop_times,
+    // not a route/headsign-level classification.
+    const twoTrips = [
+      {
+        route_id: "17",
+        trip_id: "reaches-1",
+        direction_name: "Southbound",
+        status: "ON-TIME",
+        vehicle_id: "1234",
+        next_stop_sequence: 10,
+        trip_headsign: "Broad-Pattison",
+      },
+      {
+        route_id: "17",
+        trip_id: "short-turn-1",
+        direction_name: "Southbound",
+        status: "ON-TIME",
+        vehicle_id: "5678",
+        next_stop_sequence: 10,
+        trip_headsign: "Broad-Pattison",
+      },
+    ];
+    const reachesUpdate = {
+      trip: { status: "ON-TIME", "real-time": true },
+      stop_times: [
+        { stop_id: 21289, eta: 1783312900, delay: 0, departed: false },
+        { stop_id: 21271, eta: 1783313200, delay: 0, departed: false }, // Broad St & Kitty Hawk Av
+      ],
+    };
+    const shortTurnUpdate = {
+      trip: { status: "ON-TIME", "real-time": true },
+      stop_times: [{ stop_id: 21289, eta: 1783312950, delay: 0, departed: false }], // never reaches 21271
+    };
+    const fetchImpl = stubFetch([
+      ["detours/?route=17", detoursEmpty],
+      ["trips/?route_id=17", twoTrips],
+      ["trip-update/?trip_id=reaches-1", reachesUpdate],
+      ["trip-update/?trip_id=short-turn-1", shortTurnUpdate],
+    ]);
+    const result = await pollRoute(
+      { routeId: "17", stopId: 21289, direction: "Southbound", secondaryStopId: 21271 },
+      { fetchImpl, now: fixedNow }
+    );
+    const byTripId = Object.fromEntries(result.etas.map((a) => [a.tripId, a.reachesSecondaryStop]));
+    assert.equal(byTripId["reaches-1"], true);
+    assert.equal(byTripId["short-turn-1"], false);
+  });
+
+  await t.test("no secondaryStopId configured: etas carry no reachesSecondaryStop field at all", async () => {
+    const fetchImpl = stubFetch([
+      ["detours/?route=17", detoursEmpty],
+      ["trips/?route_id=17", trips],
+      ["trip-update/?trip_id=787404", tripUpdate787404],
+      ["trip-update/?trip_id=900002", tripUpdate900002],
+    ]);
+    const result = await pollRoute({ routeId: "17", stopId: 21289, direction: "Northbound" }, { fetchImpl, now: fixedNow });
+    assert.ok(result.etas.every((a) => !("reachesSecondaryStop" in a)));
   });
 });

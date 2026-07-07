@@ -137,7 +137,14 @@ change which arrivals are shown, just how they're colored:
 - If a trip's destination pattern never reaches the secondary stop (a
   short-turn headsign), that headsign's line and its non-detour arrival
   times are colored orange instead of red/green, with "(no stop at
-  &lt;secondary stop name&gt;)" appended.
+  &lt;secondary stop name&gt;)" appended. For a currently-tracked arrival,
+  this is checked against that specific trip's own live stop list first
+  (ground truth) and only falls back to the static schedule's
+  headsign-level classification when live data isn't available — some
+  SEPTA headsigns cover more than one physical pattern (route 17's
+  "Broad-Pattison", for example, is both a normal trip and a much longer
+  weekend Navy Yard extension), so trusting the headsign alone isn't
+  always accurate.
 - If an active detour is currently skipping the secondary stop (but not your
   primary stop, so trips are still shown), all arrival times for that route
   are colored orange, with a "Detour skips stop at &lt;secondary stop
