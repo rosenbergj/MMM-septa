@@ -63,6 +63,14 @@
   font-weight: bold;
 }
 
+/* A trip that won't reach the configured secondary stop (headsign pattern or
+   active detour) -- same orange as the detour/partial-error styling below,
+   takes precedence over the red/green urgency coloring above. */
+.septa-table .septa-arrivals .septa-secondary-skip,
+.septa-table .septa-label-sub .septa-secondary-skip {
+  color: #e0a050;
+}
+
 .septa-table .septa-arrivals .septa-first {
   font-weight: bold;
 }

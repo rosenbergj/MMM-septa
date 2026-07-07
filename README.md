@@ -101,7 +101,7 @@ MagicMirror module option, outside `config`) to override it.
 
 | Option                    | Default | Description                                                              |
 | ------------------------- | ------- | -------------------------------------------------------------------------- |
-| `routes`                  | `[]`    | Array of `{ routeId, stopId, direction, label, warnMinutes }` -- `label` is optional and defaults to `routeId` if omitted; `warnMinutes` is optional per-route and overrides the global value below |
+| `routes`                  | `[]`    | Array of `{ routeId, stopId, direction, label, warnMinutes, secondaryStopId }` -- `label` is optional and defaults to `routeId` if omitted; `warnMinutes` is optional per-route and overrides the global value below; `secondaryStopId` is optional, see below |
 | `maxArrivals`             | `3`     | Number of upcoming arrivals shown per route                              |
 | `refreshIntervalSeconds`  | `120`   | How often the backend actually polls SEPTA                               |
 | `retryIntervalSeconds`    | `30`    | Backoff before retrying after a failed poll                              |
@@ -112,6 +112,28 @@ MagicMirror module option, outside `config`) to override it.
 
 Each route's `direction` must match SEPTA's `direction_name` for that route
 exactly (case-sensitive) — use `find-stop.js` to confirm it.
+
+### Secondary stop (optional)
+
+If you only care about arrivals that actually continue past your stop to
+some further destination — e.g. a short-turn trip that ends before reaching
+where you're headed, or a stop you're worried a detour might skip — set
+`secondaryStopId` on that route to that further stop's `stop_id`. It doesn't
+change which arrivals are shown, just how they're colored:
+
+- If a trip's destination pattern never reaches the secondary stop (a
+  short-turn headsign), that headsign's line and its non-detour arrival
+  times are colored orange instead of red/green, with "(no stop at
+  &lt;secondary stop name&gt;)" appended.
+- If an active detour is currently skipping the secondary stop (but not your
+  primary stop, so trips are still shown), all arrival times for that route
+  are colored orange, with a "Detour skips stop at &lt;secondary stop
+  name&gt;" line appended below the destinations.
+- Untracked ("~") arrivals keep their usual italic/muted look either way,
+  just recolored orange instead of gray/green/red.
+
+The secondary stop's name is resolved automatically the same way the
+primary stop's is (no config needed) and cached once known.
 
 ## Testing
 

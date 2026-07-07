@@ -692,4 +692,83 @@ test("pollRoute", async (t) => {
       /trips down/
     );
   });
+
+  await t.test("no secondaryStopId configured: secondaryStopDetour/secondaryStopName default false/null", async () => {
+    const fetchImpl = stubFetch([
+      ["detours/?route=17", detoursEmpty],
+      ["trips/?route_id=17", trips],
+      ["trip-update/?trip_id=787404", tripUpdate787404],
+      ["trip-update/?trip_id=900002", tripUpdate900002],
+    ]);
+    const result = await pollRoute({ routeId: "17", stopId: 21289, direction: "Northbound" }, { fetchImpl, now: fixedNow });
+    assert.equal(result.secondaryStopDetour, false);
+    assert.equal(result.secondaryStopName, null);
+  });
+
+  await t.test("secondaryStopId skipped by a (different, concurrent) active detour: flagged + named from skipped_stops", async () => {
+    // Reuses route 2's live detour fixture purely for its D12564 entry
+    // (skips stop 8704, active 07:00-15:00 daily, 07/06-07/14/2026) --
+    // pollRoute never checks a detour's own route_id field against
+    // routeConfig.routeId, so it's a valid stand-in here.
+    const detoursLive = fixture("detours-route2-live-sample.json");
+    const oneTrip = [
+      {
+        route_id: "17",
+        trip_id: "tracked-1",
+        direction_name: "Northbound",
+        status: "ON-TIME",
+        vehicle_id: "1234",
+        next_stop_sequence: 10,
+        trip_headsign: "Front-Market",
+      },
+    ];
+    const trackedUpdate = {
+      trip: { status: "ON-TIME", "real-time": true },
+      stop_times: [{ stop_id: 21289, eta: 1783312900, delay: 0, departed: false }],
+    };
+    const fetchImpl = stubFetch([
+      ["detours/?route=17", detoursLive],
+      ["trips/?route_id=17", oneTrip],
+      ["trip-update/?trip_id=tracked-1", trackedUpdate],
+    ]);
+    const result = await pollRoute(
+      { routeId: "17", stopId: 21289, direction: "Northbound", secondaryStopId: 8704 },
+      { fetchImpl, now: () => new Date(2026, 6, 10, 10, 0, 0) }
+    );
+    assert.equal(result.detour, false); // primary stop itself isn't skipped -- trips still shown
+    assert.equal(result.secondaryStopDetour, true);
+    assert.equal(result.secondaryStopName, "Huntingdon St & 17th St");
+  });
+
+  await t.test("secondaryStopId not under any active detour: false, name resolved from a trip's own stop_times", async () => {
+    const oneTrip = [
+      {
+        route_id: "17",
+        trip_id: "tracked-1",
+        direction_name: "Northbound",
+        status: "ON-TIME",
+        vehicle_id: "1234",
+        next_stop_sequence: 10,
+        trip_headsign: "Front-Market",
+      },
+    ];
+    const trackedUpdate = {
+      trip: { status: "ON-TIME", "real-time": true },
+      stop_times: [
+        { stop_id: 21289, eta: 1783312900, delay: 0, departed: false },
+        { stop_id: 8704, stop_name: "Huntingdon St & 17th St", eta: 1783313200, delay: 0, departed: false },
+      ],
+    };
+    const fetchImpl = stubFetch([
+      ["detours/?route=17", detoursEmpty],
+      ["trips/?route_id=17", oneTrip],
+      ["trip-update/?trip_id=tracked-1", trackedUpdate],
+    ]);
+    const result = await pollRoute(
+      { routeId: "17", stopId: 21289, direction: "Northbound", secondaryStopId: 8704 },
+      { fetchImpl, now: fixedNow }
+    );
+    assert.equal(result.secondaryStopDetour, false);
+    assert.equal(result.secondaryStopName, "Huntingdon St & 17th St");
+  });
 });

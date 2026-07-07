@@ -17,6 +17,7 @@ const {
   buildScheduleCache,
   getScheduledArrivals,
   getAllHeadsignsForStop,
+  getHeadsignsSkippingStop,
   loadCacheFromDisk,
   saveCacheToDisk,
   fetchScheduleCache,
@@ -321,6 +322,39 @@ test("getAllHeadsignsForStop", async (t) => {
 
   await t.test("no matching route/stop -> empty array", () => {
     assert.deepEqual(getAllHeadsignsForStop(cache, "17", 99999), []);
+  });
+});
+
+test("getHeadsignsSkippingStop", async (t) => {
+  const fileTexts = {
+    "trips.txt":
+      "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed\n" +
+      "17,weekday,9001,Front-Market,,0,1,1,1,1\n" + // serves both stops
+      "17,weekday,9002,Broad-Pattison,,0,2,2,1,1\n" + // short-turn: primary stop only
+      "17,weekday,9003,Front-Market,,0,3,3,1,1\n", // same headsign as 9001, primary stop only on this instance
+    "stop_times.txt":
+      "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n" +
+      "9001,06:00:00,06:00:00,21289,2,,0,0,,1\n" +
+      "9001,06:10:00,06:10:00,99000,3,,0,0,,1\n" +
+      "9002,14:00:00,14:00:00,21289,2,,0,0,,1\n" +
+      "9003,22:00:00,22:00:00,21289,2,,0,0,,1\n",
+    "calendar.txt":
+      "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\n" +
+      "weekday,1,1,1,1,1,0,0,20260101,20261231\n",
+    "calendar_dates.txt": "service_id,date,exception_type\n",
+  };
+  const cache = buildScheduleCache(fileTexts, ["17"], [21289, 99000]);
+
+  await t.test("a headsign served by at least one trip reaching the secondary stop is not flagged", () => {
+    assert.deepEqual(getHeadsignsSkippingStop(cache, "17", 21289, 99000), ["Broad-Pattison"]);
+  });
+
+  await t.test("no secondary-stop data at all -> every primary headsign flagged", () => {
+    assert.deepEqual(getHeadsignsSkippingStop(cache, "17", 21289, 88888), ["Broad-Pattison", "Front-Market"]);
+  });
+
+  await t.test("no matching route/stop -> empty array", () => {
+    assert.deepEqual(getHeadsignsSkippingStop(cache, "99", 21289, 99000), []);
   });
 });
 

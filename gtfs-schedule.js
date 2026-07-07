@@ -308,6 +308,17 @@ function getAllHeadsignsForStop(cache, routeId, stopId) {
   return [...headsigns].sort();
 }
 
+// Headsigns scheduled at (routeId, primaryStopId) that are never scheduled at
+// (routeId, secondaryStopId) -- i.e. destinations whose pattern structurally
+// never reaches the secondary stop (a short-turn trip, etc), independent of
+// any detour. Used to flag "this bus won't take you to your secondary stop"
+// regardless of which specific trip happens to be next.
+function getHeadsignsSkippingStop(cache, routeId, primaryStopId, secondaryStopId) {
+  const primaryHeadsigns = getAllHeadsignsForStop(cache, routeId, primaryStopId);
+  const secondaryHeadsigns = new Set(getAllHeadsignsForStop(cache, routeId, secondaryStopId));
+  return primaryHeadsigns.filter((headsign) => !secondaryHeadsigns.has(headsign));
+}
+
 // Downloads the live feed and builds a fresh cache. I/O-only wrapper around
 // the pure functions above, so those can be unit tested without a network
 // call.
@@ -360,6 +371,7 @@ module.exports = {
   buildScheduleCache,
   getScheduledArrivals,
   getAllHeadsignsForStop,
+  getHeadsignsSkippingStop,
   fetchScheduleCache,
   loadCacheFromDisk,
   saveCacheToDisk,

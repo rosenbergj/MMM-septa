@@ -170,6 +170,15 @@ Module.register("MMM-septa", {
 
       const shownArrivals = state && Array.isArray(state.etas) ? state.etas.slice(0, this.config.maxArrivals) : [];
       const destinationInfo = septaGroupByDestination(shownArrivals, state && state.headsignOrder);
+      // secondaryStopId (route config): headsigns that structurally never
+      // reach it come from the static schedule (secondaryStopSkippedHeadsigns);
+      // an active detour skipping it applies route-wide regardless of
+      // headsign (secondaryStopDetour). Both default to "no effect" when the
+      // route has no secondaryStopId configured or state hasn't arrived yet.
+      const secondaryStopSkippedHeadsigns = (state && state.secondaryStopSkippedHeadsigns) || [];
+      const secondaryStopDetour = Boolean(state && state.secondaryStopDetour);
+      const secondaryStopDisplayName =
+        (state && state.secondaryStopName) || (route.secondaryStopId != null ? String(route.secondaryStopId) : "");
       // Per-route warnMinutes overrides the global config value, which in
       // turn overrides the module default -- MagicMirror already merges
       // the global-vs-default step via this.config, so only the route-level
@@ -191,14 +200,28 @@ Module.register("MMM-septa", {
         const labelSub = document.createElement("div");
         labelSub.className = "septa-label-sub";
         labelSub.innerHTML = destinationInfo.order
-          .map((headsign) => `&rarr; ${septaEscapeHtml(headsign)}(${destinationInfo.markerFor.get(headsign)})`)
+          .map((headsign) => {
+            const marker = destinationInfo.markerFor.get(headsign);
+            const line = `&rarr; ${septaEscapeHtml(headsign)}(${marker})`;
+            if (!secondaryStopSkippedHeadsigns.includes(headsign)) return line;
+            return `<span class="septa-secondary-skip">${line} (no stop at ${septaEscapeHtml(secondaryStopDisplayName)})</span>`;
+          })
           .join("<br>");
         labelCell.appendChild(labelSub);
       } else if (destinationInfo.headsign) {
         const labelSub = document.createElement("div");
         labelSub.className = "septa-label-sub";
-        labelSub.innerHTML = `&rarr; ${septaEscapeHtml(destinationInfo.headsign)}`;
+        const line = `&rarr; ${septaEscapeHtml(destinationInfo.headsign)}`;
+        labelSub.innerHTML = secondaryStopSkippedHeadsigns.includes(destinationInfo.headsign)
+          ? `<span class="septa-secondary-skip">${line} (no stop at ${septaEscapeHtml(secondaryStopDisplayName)})</span>`
+          : line;
         labelCell.appendChild(labelSub);
+      }
+      if (secondaryStopDetour && shownArrivals.length > 0) {
+        const detourNote = document.createElement("div");
+        detourNote.className = "septa-label-sub";
+        detourNote.innerHTML = `<span class="septa-secondary-skip">Detour skips stop at ${septaEscapeHtml(secondaryStopDisplayName)}</span>`;
+        labelCell.appendChild(detourNote);
       }
       row.appendChild(labelCell);
 
@@ -225,7 +248,18 @@ Module.register("MMM-septa", {
           arrivalsCell.innerHTML = shownArrivals
             .map((arrival, index) => {
               const minutes = septaMinutesUntil(arrival.eta, now);
-              const urgencyClass = minutes <= warnMinutes ? "septa-urgent" : "septa-normal";
+              // Arrivals that skip the secondary stop -- either structurally
+              // (headsign) or via an active detour -- read as orange instead
+              // of red/green urgency. Untracked ("~") arrivals keep their
+              // existing tilde/italic/opacity treatment (added via
+              // untrackedClass below) on top of this color.
+              const skipsSecondaryStop =
+                secondaryStopDetour || secondaryStopSkippedHeadsigns.includes(arrival.headsign);
+              const urgencyClass = skipsSecondaryStop
+                ? "septa-secondary-skip"
+                : minutes <= warnMinutes
+                  ? "septa-urgent"
+                  : "septa-normal";
               // Bold is reserved for a genuinely confirmed "next bus" --
               // the first shown arrival only earns it if it's tracked, not
               // just because it's chronologically first. An all-untracked

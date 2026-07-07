@@ -6,6 +6,7 @@ const {
   fetchScheduleCache,
   getScheduledArrivals,
   getAllHeadsignsForStop,
+  getHeadsignsSkippingStop,
   loadCacheFromDisk,
   saveCacheToDisk,
 } = require("./gtfs-schedule.js");
@@ -52,6 +53,7 @@ module.exports = NodeHelper.create({
       if (state.useScheduleSupplement === false) continue;
       routeIds.add(state.config.routeId);
       stopIds.add(state.config.stopId);
+      if (state.config.secondaryStopId) stopIds.add(state.config.secondaryStopId);
     }
 
     if (routeIds.size === 0) {
@@ -84,7 +86,12 @@ module.exports = NodeHelper.create({
       if (this.routes.has(fullKey)) continue; // already polling this route
 
       const state = {
-        config: { routeId: route.routeId, stopId: route.stopId, direction: route.direction },
+        config: {
+          routeId: route.routeId,
+          stopId: route.stopId,
+          direction: route.direction,
+          secondaryStopId: route.secondaryStopId,
+        },
         useScheduleSupplement: useScheduleSupplement !== false,
         instanceId,
         routeKey: routeKey(route),
@@ -94,6 +101,8 @@ module.exports = NodeHelper.create({
         detour: false,
         detourReason: null,
         stopName: null,
+        secondaryStopDetour: false,
+        secondaryStopName: null,
         direction: route.direction,
         hasTripError: false,
         lastFetchTime: null,
@@ -125,6 +134,9 @@ module.exports = NodeHelper.create({
       state.direction = result.direction;
       state.hasTripError = result.hasTripError;
       state.lastFetchTime = result.fetchedAt;
+      state.secondaryStopDetour = Boolean(result.secondaryStopDetour);
+      // Same "never blank out a known value" caching as stopName above.
+      if (result.secondaryStopName) state.secondaryStopName = result.secondaryStopName;
 
       // A detour means SEPTA is actively skipping this stop -- the static
       // schedule has no idea and would just show phantom arrivals, so only
@@ -151,6 +163,20 @@ module.exports = NodeHelper.create({
         ? getAllHeadsignsForStop(this.scheduleCache, state.config.routeId, state.config.stopId)
         : [];
 
+      // Structural (schedule-based) secondary-stop skip: headsigns whose
+      // pattern never reaches the secondary stop, regardless of any detour.
+      // See septa-client.js's pollRoute for the separate, live detour-based
+      // check (state.secondaryStopDetour above).
+      const secondaryStopSkippedHeadsigns =
+        state.config.secondaryStopId && this.scheduleCache
+          ? getHeadsignsSkippingStop(
+              this.scheduleCache,
+              state.config.routeId,
+              state.config.stopId,
+              state.config.secondaryStopId
+            )
+          : [];
+
       this.sendSocketNotification("SEPTA_UPDATE", {
         instanceId: state.instanceId,
         routeKey: state.routeKey,
@@ -163,6 +189,9 @@ module.exports = NodeHelper.create({
         lastFetchTime: state.lastFetchTime,
         refreshIntervalSeconds: state.refreshIntervalSeconds,
         headsignOrder,
+        secondaryStopDetour: state.secondaryStopDetour,
+        secondaryStopName: state.secondaryStopName,
+        secondaryStopSkippedHeadsigns,
       });
 
       state.timer = setTimeout(() => this.runCycle(fullKey), state.refreshIntervalSeconds * 1000);

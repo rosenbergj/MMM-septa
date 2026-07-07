@@ -241,6 +241,22 @@ async function pollRoute(routeConfig, options = {}) {
     };
   }
 
+  // Reuse the detours already fetched for the primary-stop check above: a
+  // route can have multiple concurrent detours, so the one skipping the
+  // secondary stop (if any) may be a different detour object than the one
+  // (not) skipping the primary stop. Only checked once we know trips will
+  // actually be shown -- if the primary stop were skipped we'd have returned
+  // already, and this only matters when there are trips to color/annotate.
+  let secondaryStopDetour = false;
+  let secondaryStopName = null;
+  if (routeConfig.secondaryStopId) {
+    const secondaryDetour = findActiveDetour(detours, routeConfig.secondaryStopId, nowDate);
+    if (secondaryDetour) {
+      secondaryStopDetour = true;
+      secondaryStopName = findSkippedStopName(secondaryDetour.skipped_stops, String(routeConfig.secondaryStopId));
+    }
+  }
+
   const trips = await fetchTrips(routeId, fetchImpl);
   const goodTrips = filterGoodTrips(trips, direction, useScheduleSupplement);
 
@@ -263,6 +279,9 @@ async function pollRoute(routeConfig, options = {}) {
     }
     const stopTimes = result.value && result.value.stop_times;
     if (!stopName) stopName = findStopName(stopTimes, stopId);
+    if (routeConfig.secondaryStopId && !secondaryStopName) {
+      secondaryStopName = findStopName(stopTimes, routeConfig.secondaryStopId);
+    }
     const tripEntry = goodTrips[index];
     const headsign = (tripEntry && tripEntry.trip_headsign) || null;
     const tracked = isTripTracked(tripEntry, result.value && result.value.trip);
@@ -295,6 +314,8 @@ async function pollRoute(routeConfig, options = {}) {
     direction,
     hasTripError,
     fetchedAt: nowDate.getTime(),
+    secondaryStopDetour,
+    secondaryStopName,
   };
 }
 
