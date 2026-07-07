@@ -173,8 +173,8 @@ function timeToSeconds(value) {
 
 // stop_times.txt filtered to trips in tripsById, and (if stopIds is given)
 // stops in stopIds -> array of {routeId, stopId, stopSequence, tripId,
-// serviceId, arrivalTimeSeconds, headsign}. Passing no stopIds (or null)
-// keeps every stop for every known trip -- used by
+// serviceId, arrivalTimeSeconds, headsign, directionId}. Passing no stopIds
+// (or null) keeps every stop for every known trip -- used by
 // scripts/find-stop.js's buildRouteStopPatterns to see a trip's full stop
 // sequence; the runtime schedule cache always passes a real (small) stopIds
 // set, so this stays off the hot path.
@@ -222,6 +222,7 @@ function parseStopTimesForTrips(text, tripsById, stopIds) {
       serviceId: trip.serviceId,
       arrivalTimeSeconds,
       headsign: trip.headsign,
+      directionId: trip.directionId,
     });
   }
   return entries;
@@ -421,15 +422,27 @@ function mergeDirectionPatterns(directionPatterns) {
 // times >= 24:00:00 for trips that start the previous service day) resolve
 // correctly; at most one basis can ever fall within a 60-minute-scale
 // horizon, so no double-counting is possible.
-function getScheduledArrivals(cache, routeId, stopId, now, horizonMinutes) {
+//
+// directionId, when given, filters to just that direction -- some stop_ids
+// are (rarely, but confirmed live -- e.g. route 2 stop 40) served by both
+// directions of the same route, and without this a schedule-supplement
+// arrival or headsign from the *opposite* configured direction would leak
+// into the display. Omit it (undefined/null) to fall back to the old
+// unfiltered behavior -- used when the caller hasn't yet resolved which
+// directionId corresponds to the configured direction (see
+// septa-client.js's pollRoute), since that's the common case (a stop used
+// by only one direction) and unfiltered is still correct there.
+function getScheduledArrivals(cache, routeId, stopId, now, horizonMinutes, directionId) {
   const targetRouteId = String(routeId);
   const targetStopId = Number(stopId);
+  const targetDirectionId = directionId == null ? null : String(directionId);
   const nowMs = now.getTime();
   const horizonMs = horizonMinutes * 60000;
 
   const results = [];
   for (const entry of cache.entries) {
     if (entry.routeId !== targetRouteId || entry.stopId !== targetStopId) continue;
+    if (targetDirectionId != null && entry.directionId !== targetDirectionId) continue;
     for (const dayOffset of [0, -1]) {
       const basisDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset);
       if (!isServiceActiveOn(cache.calendar, cache.calendarExceptions, entry.serviceId, basisDate)) continue;
@@ -449,12 +462,17 @@ function getScheduledArrivals(cache, routeId, stopId, now, horizonMinutes) {
 // consistently, rather than by whichever trip happens to be next right now
 // -- that would make the same destination's marker change from one poll to
 // the next as different trips rotate through.
-function getAllHeadsignsForStop(cache, routeId, stopId) {
+//
+// directionId filtering: see getScheduledArrivals's doc comment -- same
+// reasoning, same rare-but-real cross-direction leak this guards against.
+function getAllHeadsignsForStop(cache, routeId, stopId, directionId) {
   const targetRouteId = String(routeId);
   const targetStopId = Number(stopId);
+  const targetDirectionId = directionId == null ? null : String(directionId);
   const headsigns = new Set();
   for (const entry of cache.entries) {
     if (entry.routeId !== targetRouteId || entry.stopId !== targetStopId) continue;
+    if (targetDirectionId != null && entry.directionId !== targetDirectionId) continue;
     if (entry.headsign) headsigns.add(entry.headsign);
   }
   return [...headsigns].sort();
@@ -464,10 +482,11 @@ function getAllHeadsignsForStop(cache, routeId, stopId) {
 // (routeId, secondaryStopId) -- i.e. destinations whose pattern structurally
 // never reaches the secondary stop (a short-turn trip, etc), independent of
 // any detour. Used to flag "this bus won't take you to your secondary stop"
-// regardless of which specific trip happens to be next.
-function getHeadsignsSkippingStop(cache, routeId, primaryStopId, secondaryStopId) {
-  const primaryHeadsigns = getAllHeadsignsForStop(cache, routeId, primaryStopId);
-  const secondaryHeadsigns = new Set(getAllHeadsignsForStop(cache, routeId, secondaryStopId));
+// regardless of which specific trip happens to be next. directionId is
+// applied to both lookups -- see getScheduledArrivals's doc comment.
+function getHeadsignsSkippingStop(cache, routeId, primaryStopId, secondaryStopId, directionId) {
+  const primaryHeadsigns = getAllHeadsignsForStop(cache, routeId, primaryStopId, directionId);
+  const secondaryHeadsigns = new Set(getAllHeadsignsForStop(cache, routeId, secondaryStopId, directionId));
   return primaryHeadsigns.filter((headsign) => !secondaryHeadsigns.has(headsign));
 }
 

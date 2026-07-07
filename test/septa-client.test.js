@@ -856,4 +856,36 @@ test("pollRoute", async (t) => {
     const result = await pollRoute({ routeId: "17", stopId: 21289, direction: "Northbound" }, { fetchImpl, now: fixedNow });
     assert.ok(result.etas.every((a) => !("reachesSecondaryStop" in a)));
   });
+
+  await t.test("directionId is resolved from any trip matching the configured direction", async () => {
+    const fetchImpl = stubFetch([
+      ["detours/?route=17", detoursEmpty],
+      ["trips/?route_id=17", trips],
+      ["trip-update/?trip_id=787404", tripUpdate787404],
+      ["trip-update/?trip_id=900002", tripUpdate900002],
+    ]);
+    const result = await pollRoute({ routeId: "17", stopId: 21289, direction: "Northbound" }, { fetchImpl, now: fixedNow });
+    assert.equal(result.directionId, "0");
+  });
+
+  await t.test("directionId is resolved for Southbound independently of Northbound", async () => {
+    const fetchImpl = stubFetch([
+      ["detours/?route=17", detoursEmpty],
+      ["trips/?route_id=17", trips],
+      ["trip-update/?trip_id=787763", tripUpdate787763],
+    ]);
+    const result = await pollRoute({ routeId: "17", stopId: 10311, direction: "Southbound" }, { fetchImpl, now: fixedNow });
+    assert.equal(result.directionId, "1");
+  });
+
+  await t.test("directionId is null when no trip matches the configured direction", async () => {
+    const noMatchTrips = trips.filter((t) => t.direction_name !== "Northbound");
+    const fetchImpl = stubFetch([
+      ["detours/?route=17", detoursEmpty],
+      ["trips/?route_id=17", noMatchTrips],
+      ["trip-update/?trip_id=787763", tripUpdate787763],
+    ]);
+    const result = await pollRoute({ routeId: "17", stopId: 21289, direction: "Northbound" }, { fetchImpl, now: fixedNow });
+    assert.equal(result.directionId, null);
+  });
 });

@@ -101,6 +101,7 @@ module.exports = NodeHelper.create({
         detour: false,
         detourReason: null,
         stopName: null,
+        directionId: null,
         secondaryStopDetour: false,
         secondaryStopName: null,
         direction: route.direction,
@@ -137,6 +138,13 @@ module.exports = NodeHelper.create({
       state.secondaryStopDetour = Boolean(result.secondaryStopDetour);
       // Same "never blank out a known value" caching as stopName above.
       if (result.secondaryStopName) state.secondaryStopName = result.secondaryStopName;
+      // Resolved from live data (see pollRoute) once any trip matching this
+      // route's configured direction has been seen -- needed to filter the
+      // GTFS schedule cache to just this direction, since a stop_id can
+      // rarely (but really) be served by both directions of the same
+      // route, and the static schedule alone has no direction_name to
+      // check against, only a bare direction_id.
+      if (result.directionId != null) state.directionId = result.directionId;
 
       // Live data only reveals a stop's name via a trip that actually passes
       // through it -- a secondary stop that every currently-running headsign
@@ -162,7 +170,8 @@ module.exports = NodeHelper.create({
           state.config.routeId,
           state.config.stopId,
           new Date(),
-          SCHEDULE_HORIZON_MINUTES
+          SCHEDULE_HORIZON_MINUTES,
+          state.directionId
         );
         state.etas = mergeScheduledArrivals(result.etas, scheduled);
       } else {
@@ -175,7 +184,7 @@ module.exports = NodeHelper.create({
       // now, so a given destination's marker doesn't change as different
       // trips rotate through.
       const headsignOrder = this.scheduleCache
-        ? getAllHeadsignsForStop(this.scheduleCache, state.config.routeId, state.config.stopId)
+        ? getAllHeadsignsForStop(this.scheduleCache, state.config.routeId, state.config.stopId, state.directionId)
         : [];
 
       // Structural (schedule-based) secondary-stop skip: headsigns whose
@@ -188,7 +197,8 @@ module.exports = NodeHelper.create({
               this.scheduleCache,
               state.config.routeId,
               state.config.stopId,
-              state.config.secondaryStopId
+              state.config.secondaryStopId,
+              state.directionId
             )
           : [];
 

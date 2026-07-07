@@ -181,8 +181,8 @@ test("parseStopTimesForTrips", async (t) => {
     "1001,08:20:00,08:20:00,200,2,,0,0,0.5,0\n" +
     "1002,25:05:00,25:05:00,100,1,,0,0,,1\n"; // past-midnight time (>=24:00:00)
   const tripsById = new Map([
-    ["1001", { routeId: "17", serviceId: "10", headsign: "Front-Market" }],
-    ["1002", { routeId: "17", serviceId: "10", headsign: "Front-Market" }],
+    ["1001", { routeId: "17", serviceId: "10", headsign: "Front-Market", directionId: "0" }],
+    ["1002", { routeId: "17", serviceId: "10", headsign: "Front-Market", directionId: "0" }],
   ]);
 
   await t.test("keeps only rows for known trips and requested stops", () => {
@@ -196,6 +196,7 @@ test("parseStopTimesForTrips", async (t) => {
         serviceId: "10",
         arrivalTimeSeconds: 8 * 3600 + 15 * 60,
         headsign: "Front-Market",
+        directionId: "0",
       },
       {
         routeId: "17",
@@ -205,6 +206,7 @@ test("parseStopTimesForTrips", async (t) => {
         serviceId: "10",
         arrivalTimeSeconds: 25 * 3600 + 5 * 60,
         headsign: "Front-Market",
+        directionId: "0",
       },
     ]);
   });
@@ -352,6 +354,47 @@ test("buildScheduleCache + getScheduledArrivals", async (t) => {
     assert.equal(results.length, 1);
     assert.equal(results[0].tripId, "9001");
   });
+
+  // Reproduces a real bug found live: route 2 stop 40 is served by trips in
+  // *both* directions (direction_id 0 -> "20th-Johnston", direction_id 1 ->
+  // other headsigns) -- rare, but real, and the static schedule has no
+  // direction_name to distinguish them, only a bare direction_id.
+  await t.test("directionId filters out the opposite direction's trips at a stop served by both", async (t) => {
+    const bothDirectionsTexts = {
+      "trips.txt":
+        "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed\n" +
+        "2,weekday,9001,20th-Johnston,,0,1,1,1,1\n" +
+        "2,weekday,9002,Pulaski-Hunting Park,,1,2,2,1,1\n",
+      "stop_times.txt":
+        "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n" +
+        "9001,08:15:00,08:15:00,40,81,,0,0,,1\n" +
+        "9002,08:20:00,08:20:00,40,1,,0,0,,1\n",
+      "calendar.txt":
+        "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\n" +
+        "weekday,1,1,1,1,1,0,0,20260101,20261231\n",
+      "calendar_dates.txt": "service_id,date,exception_type\n",
+    };
+    const cache = buildScheduleCache(bothDirectionsTexts, ["2"], [40]);
+    const now = new Date(2026, 6, 6, 8, 0, 0); // Monday 08:00
+
+    await t.test("no directionId given -> both directions' trips leak through (old behavior)", () => {
+      const results = getScheduledArrivals(cache, "2", 40, now, 60);
+      assert.deepEqual(
+        results.map((r) => r.headsign),
+        ["20th-Johnston", "Pulaski-Hunting Park"]
+      );
+    });
+
+    await t.test("directionId given -> only that direction's trips", () => {
+      const results = getScheduledArrivals(cache, "2", 40, now, 60, "1");
+      assert.deepEqual(results.map((r) => r.headsign), ["Pulaski-Hunting Park"]);
+    });
+
+    await t.test("directionId given (number, not string) -> still matches via coercion", () => {
+      const results = getScheduledArrivals(cache, "2", 40, now, 60, 1);
+      assert.deepEqual(results.map((r) => r.headsign), ["Pulaski-Hunting Park"]);
+    });
+  });
 });
 
 test("getAllHeadsignsForStop", async (t) => {
@@ -387,6 +430,17 @@ test("getAllHeadsignsForStop", async (t) => {
   await t.test("no matching route/stop -> empty array", () => {
     assert.deepEqual(getAllHeadsignsForStop(cache, "17", 99999), []);
   });
+
+  await t.test("directionId filters to just that direction's headsigns", () => {
+    const mixedDirectionTexts = {
+      ...fileTexts,
+      "trips.txt": fileTexts["trips.txt"].replace("17,weekday,9002,Broad-Pattison,,0,2,2,1,1\n", "17,weekday,9002,Broad-Pattison,,1,2,2,1,1\n"),
+    };
+    const mixedCache = buildScheduleCache(mixedDirectionTexts, ["17", "64"], [21289]);
+    assert.deepEqual(getAllHeadsignsForStop(mixedCache, "17", 21289, "0"), ["Front-Market"]);
+    assert.deepEqual(getAllHeadsignsForStop(mixedCache, "17", 21289, "1"), ["Broad-Pattison"]);
+    assert.deepEqual(getAllHeadsignsForStop(mixedCache, "17", 21289), ["Broad-Pattison", "Front-Market"]);
+  });
 });
 
 test("getHeadsignsSkippingStop", async (t) => {
@@ -419,6 +473,22 @@ test("getHeadsignsSkippingStop", async (t) => {
 
   await t.test("no matching route/stop -> empty array", () => {
     assert.deepEqual(getHeadsignsSkippingStop(cache, "99", 21289, 99000), []);
+  });
+
+  await t.test("directionId is applied to both the primary and secondary stop lookups", () => {
+    const mixedDirectionTexts = {
+      ...fileTexts,
+      // 9002 (Broad-Pattison, the one that skips the secondary stop) is now
+      // the *other* direction -- it shouldn't be flagged when asking about
+      // direction "0", since it isn't part of direction "0" at all.
+      "trips.txt": fileTexts["trips.txt"].replace(
+        "17,weekday,9002,Broad-Pattison,,0,2,2,1,1\n",
+        "17,weekday,9002,Broad-Pattison,,1,2,2,1,1\n"
+      ),
+    };
+    const mixedCache = buildScheduleCache(mixedDirectionTexts, ["17"], [21289, 99000]);
+    assert.deepEqual(getHeadsignsSkippingStop(mixedCache, "17", 21289, 99000, "0"), []);
+    assert.deepEqual(getHeadsignsSkippingStop(mixedCache, "17", 21289, 99000, "1"), ["Broad-Pattison"]);
   });
 });
 

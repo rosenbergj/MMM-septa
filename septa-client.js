@@ -275,6 +275,18 @@ async function pollRoute(routeConfig, options = {}) {
   }
 
   const trips = await fetchTrips(routeId, fetchImpl);
+
+  // Resolved from *any* trip matching the configured direction (regardless
+  // of canceled/tracked status -- this is purely about learning the
+  // direction_id<->direction_name pairing, not about which trips to show).
+  // Used by node_helper.js to filter the GTFS schedule cache to just this
+  // direction: some stop_ids are, rarely but really, served by both
+  // directions of the same route (confirmed live: route 2 stop 40), and
+  // the static schedule alone has no direction_name, only a bare
+  // direction_id, so this is the only way to connect the two.
+  const directionMatch = trips.find((trip) => trip && trip.direction_name === direction);
+  const directionId = directionMatch ? String(directionMatch.direction_id) : null;
+
   const goodTrips = filterGoodTrips(trips, direction, useScheduleSupplement);
 
   const nowSeconds = nowDate.getTime() / 1000;
@@ -340,6 +352,7 @@ async function pollRoute(routeConfig, options = {}) {
     fetchedAt: nowDate.getTime(),
     secondaryStopDetour,
     secondaryStopName,
+    directionId,
   };
 }
 
