@@ -329,6 +329,90 @@ function buildRouteStopPatterns(fileTexts, routeId) {
   return patterns;
 }
 
+// Merges same-direction stop patterns (one per headsign -- see
+// scripts/find-stop.js's pickRepresentativePatterns, which reduces
+// buildRouteStopPatterns' one-per-trip output down to this first) into a
+// single deduped, ordered view instead of printing each headsign's full
+// stop list separately. Used by scripts/find-stop.js to keep its output
+// short even for a route with many headsigns/short-turns.
+//
+// The longest pattern becomes the "reference". Every other pattern is
+// walked stop-by-stop and matched against the reference via a
+// monotonically-advancing stopId->index lookup (a match must be at a later
+// reference index than the previous match, so a repeated stop_id -- e.g. a
+// loop -- can't match backwards). Matched stops are "anchors"; stops that
+// don't match anything in the reference are "extra", grouped into
+// contiguous runs and anchored to whichever reference stop precedes them
+// (or "before everything" if there's no preceding anchor yet).
+//
+// A pattern with zero extra stops is fully contained in the reference (SEPTA
+// often just runs a shorter/truncated version of the same route) and
+// contributes nothing beyond its headsign name. Patterns are processed in
+// alphabetical-headsign order (not whatever order they happened to arrive
+// in) so a shared extra stop always gets credited to the same pattern on
+// every run, and no stop is ever repeated in the output even if multiple
+// patterns would otherwise both claim it.
+//
+// Returns { headsigns: string[], rows: [{ type: "stop"|"alt", stopId,
+// stopSequence, stopName }] } -- rows is the reference's own stops in
+// order, with each pattern's extra runs spliced in at the right position.
+function mergeDirectionPatterns(directionPatterns) {
+  const headsigns = [...new Set(directionPatterns.map((p) => p.headsign).filter(Boolean))].sort();
+  if (directionPatterns.length === 0) return { headsigns, rows: [] };
+
+  const reference = directionPatterns.reduce((a, b) => (b.stops.length > a.stops.length ? b : a));
+  const referenceIndexByStopId = new Map();
+  reference.stops.forEach((stop, index) => {
+    if (!referenceIndexByStopId.has(stop.stopId)) referenceIndexByStopId.set(stop.stopId, index);
+  });
+
+  // gapRuns key: the reference index an extra run follows (-1 = before the
+  // reference's own first stop). Value: extra stops (in order) to insert
+  // there.
+  const gapRuns = new Map();
+  const alreadyIncluded = new Set(reference.stops.map((stop) => stop.stopId));
+
+  const others = directionPatterns.filter((p) => p !== reference).sort((a, b) => a.headsign.localeCompare(b.headsign));
+  for (const pattern of others) {
+    let lastMatchedIndex = -1;
+    let pending = [];
+    const flushPending = () => {
+      if (pending.length === 0) return;
+      if (!gapRuns.has(lastMatchedIndex)) gapRuns.set(lastMatchedIndex, []);
+      gapRuns.get(lastMatchedIndex).push(...pending);
+      pending = [];
+    };
+    for (const stop of pattern.stops) {
+      const refIndex = referenceIndexByStopId.get(stop.stopId);
+      if (refIndex != null && refIndex > lastMatchedIndex) {
+        flushPending();
+        lastMatchedIndex = refIndex;
+      } else if (!alreadyIncluded.has(stop.stopId)) {
+        pending.push(stop);
+        alreadyIncluded.add(stop.stopId);
+      }
+      // else: already represented (on the reference itself, just not
+      // reachable monotonically from here -- e.g. a loop -- or already
+      // claimed by an earlier pattern's extra run) -- never repeat it.
+    }
+    flushPending();
+  }
+
+  const rows = [];
+  const appendGapRun = (index) => {
+    for (const stop of gapRuns.get(index) || []) {
+      rows.push({ type: "alt", stopId: stop.stopId, stopSequence: stop.stopSequence, stopName: stop.stopName });
+    }
+  };
+  appendGapRun(-1);
+  reference.stops.forEach((stop, index) => {
+    rows.push({ type: "stop", stopId: stop.stopId, stopSequence: stop.stopSequence, stopName: stop.stopName });
+    appendGapRun(index);
+  });
+
+  return { headsigns, rows };
+}
+
 // Returns scheduled arrivals for one route/stop within the next
 // horizonMinutes, each shaped to match septa-client.js's etas entries
 // (minus `tracked`, which callers should set to false -- these are always
@@ -456,6 +540,7 @@ module.exports = {
   isServiceActiveOn,
   buildScheduleCache,
   buildRouteStopPatterns,
+  mergeDirectionPatterns,
   getScheduledArrivals,
   getAllHeadsignsForStop,
   getHeadsignsSkippingStop,

@@ -43,41 +43,58 @@ short-turn/express patterns with no trip running right now, which is the
 whole reason it uses the static schedule rather than only live data: a
 purely live-data lookup can only ever show whichever trips happen to be
 running at the moment you run it, and would silently miss a short-turn
-pattern's stops if none of its trips were currently active. Live `/trips/`
-data is still fetched, just to label each pattern with its real
-`direction_name` string and flag whether it's currently running, e.g.:
+pattern's stops if none of its trips were currently active.
+
+Patterns sharing a direction are merged into one listing instead of printed
+separately: the longest pattern is the reference, and any other pattern's
+stops the reference doesn't already have are spliced in as unlabeled `alt`
+rows right where they diverge (before, after, or in the middle of the main
+sequence). A pattern that's fully covered by the reference (SEPTA often just
+runs a shorter version of the same route) contributes nothing beyond its
+name appearing in the header. Output is deterministic — no "currently
+running" status, no filtering by day, same result every time you run it for
+a given feed — e.g.:
 
 ```
-Route 17 — "2nd-Market" — Northbound (trip 787527, currently running)
+Route 17 — Southbound — "20th-Johnston" and "Broad-Pattison"
   seq  stop_id  stop_name
-  1    31593    11th St & Constitution Av
-  2    31602    Constitution Av & 12th St
+  1    31442    2nd St & Church St
+  2    20961    2nd St & Market St
   ...
+  44   21340    19th St & Oregon Av
 
-Route 17 — "Front-Market" — Northbound (trip 787397, schedule only, not currently running)
-  seq  stop_id  stop_name
-  1    40       20th St & Johnston St
-  2    21289    20th St & Oregon Av
+  alt  21341    19th St & Johnston St
+  alt  38       19th St & Moyamensing Av
+  alt  31456    Moyamensing Av & 20th St
+  alt  40       20th St & Johnston St
+
+  45   30872    20th St & Oregon Av - FS
   ...
 ```
 
-If no live trip is currently running in a given direction, that direction is
-labeled `direction_id N (name unconfirmed -- no live trip running this
-direction right now)` instead of a real name — re-run the command while a
-trip that way is running, or check SEPTA's site, to confirm it.
+Live `/trips/` data is still fetched, but only to label each direction with
+its real `direction_name` string (the static feed only has a bare 0/1
+direction_id, not a name). If no live trip is running in a direction right
+now, it's labeled `direction_id N (name unconfirmed -- no live trip running
+this direction right now)` instead — unless the route has exactly two
+directions and the other one *is* confirmed live, in which case the missing
+one is inferred as its cardinal opposite (Northbound↔Southbound,
+Eastbound↔Westbound) and flagged as such rather than presented as certain:
+`Southbound (inferred as the opposite of Northbound -- not live-confirmed,
+double-check)`.
 
 Add `--full` to get ready-to-paste `routes[]` entries instead of the table
-— each stop prints its name followed by the exact object to drop into
-config.js:
+— same merged stop list and grouping, each stop's name followed by the
+exact object to drop into config.js:
 
 ```sh
 node scripts/find-stop.js 17 --full
 ```
 
 ```
-Route 17 — "2nd-Market" — Northbound (trip 787527, currently running)
-  11th St & Constitution Av
-  { routeId: "17", stopId: 31593, direction: "Northbound", label: "17" },
+Route 17 — Southbound — "20th-Johnston" and "Broad-Pattison"
+  2nd St & Church St
+  { routeId: "17", stopId: 31442, direction: "Southbound", label: "17" },
   ...
 ```
 

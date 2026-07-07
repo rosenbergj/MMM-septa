@@ -7,21 +7,39 @@
 //
 // Lists every stop, for every scheduled stop pattern (headsign) on the
 // route, straight from SEPTA's static GTFS schedule -- including
-// short-turn/express patterns that have no currently-running trip, which a
+// short-turn/express patterns with no currently-running trip, which a
 // purely live-data approach can miss entirely (you'd have to happen to run
-// this while one of those trips was in service). Live /trips/ data is still
-// fetched, but only to resolve each pattern's friendly direction_name string
-// (e.g. "Northbound") and to note which patterns are currently running.
+// this while one of those trips was in service).
+//
+// Same-direction patterns are merged into one deduped view rather than
+// printed as separate blocks: the longest pattern becomes the reference,
+// and any other pattern's stops the reference doesn't already have are
+// spliced in as unlabeled "alt" rows at the point where they diverge (a
+// pattern with nothing extra -- SEPTA often just runs a shorter version of
+// the same route -- contributes nothing beyond its headsign name). See
+// gtfs-schedule.js's mergeDirectionPatterns for the actual algorithm.
+//
+// Output is deterministic across runs: no "currently running" annotation,
+// no calendar/day filtering (a weekend-only pattern shows up even if you
+// run this on a Tuesday), same result every time for a given GTFS feed.
+// Live /trips/ data is used for exactly one thing -- resolving each
+// direction's real direction_name string -- since that's the one piece of
+// real information the static feed can't provide (it only has direction_id
+// 0/1, not a name).
 //
 // Usage: node scripts/find-stop.js <routeId> [--full]
 // Example: node scripts/find-stop.js 17
 // Example: node scripts/find-stop.js 17 --full
-//
-// --full prints, per stop, the stop name followed by a ready-to-paste
-// routes[] entry for config.js instead of the seq/stop_id/stop_name table.
 
 const { fetchTrips } = require("../septa-client.js");
-const { fetchRouteStopPatterns } = require("../gtfs-schedule.js");
+const { fetchRouteStopPatterns, mergeDirectionPatterns } = require("../gtfs-schedule.js");
+
+const OPPOSITE_DIRECTION = {
+  Northbound: "Southbound",
+  Southbound: "Northbound",
+  Eastbound: "Westbound",
+  Westbound: "Eastbound",
+};
 
 // One representative trip per distinct headsign -- trips sharing a headsign
 // should share a stop pattern, so picking the one with the most stops (the
@@ -37,56 +55,91 @@ function pickRepresentativePatterns(patterns) {
   return [...byHeadsign.values()];
 }
 
-// Maps each GTFS direction_id to a live direction_name string, using
-// whichever live trips happen to be running right now -- any live trip in a
-// given direction resolves the *whole* direction_id (not just its own
-// headsign's pattern), since direction_id is shared across headsigns.
+// Map<directionId, { name, confirmed: true }> from whichever live trips
+// happen to be running right now -- any live trip in a given direction
+// resolves the *whole* direction_id (not just its own headsign's pattern),
+// since direction_id is shared across headsigns.
 function buildDirectionNameMap(liveTrips, patterns) {
   const directionIdByTripId = new Map(patterns.map((p) => [p.tripId, p.directionId]));
   const names = new Map();
   for (const trip of liveTrips || []) {
     if (!trip || !trip.direction_name) continue;
     const directionId = directionIdByTripId.get(trip.trip_id);
-    if (directionId != null && !names.has(directionId)) names.set(directionId, trip.direction_name);
+    if (directionId != null && !names.has(directionId)) names.set(directionId, { name: trip.direction_name, confirmed: true });
   }
   return names;
 }
 
-function directionLabel(directionNames, directionId) {
-  const name = directionNames.get(directionId);
-  return name || `direction_id ${directionId} (name unconfirmed -- no live trip running this direction right now)`;
+// If there are exactly two directions total and exactly one is confirmed
+// live, infer the other as its cardinal opposite (Northbound<->Southbound,
+// Eastbound<->Westbound) -- but tag it as inferred, not confirmed, so
+// callers can still flag it for double-checking. Leaves directionNames
+// alone in every other case (more than two directions, zero or both
+// already confirmed, or an unrecognized confirmed name).
+function inferOppositeDirectionNames(directionNames, allDirectionIds) {
+  const result = new Map(directionNames);
+  if (allDirectionIds.length !== 2 || result.size !== 1) return result;
+  const [[knownId, knownEntry]] = result.entries();
+  const opposite = OPPOSITE_DIRECTION[knownEntry.name];
+  if (!opposite) return result;
+  const otherId = allDirectionIds.find((id) => id !== knownId);
+  result.set(otherId, { name: opposite, confirmed: false, inferredFrom: knownEntry.name });
+  return result;
 }
 
-function printStopTable(routeId, pattern, directionNames, isLive) {
-  const label = directionLabel(directionNames, pattern.directionId);
-  const liveNote = isLive ? "currently running" : "schedule only, not currently running";
-  console.log(
-    `\nRoute ${routeId}${pattern.headsign ? ` — "${pattern.headsign}"` : ""} — ${label} (trip ${pattern.tripId}, ${liveNote})`
-  );
-  const seqWidth = Math.max(3, ...pattern.stops.map((s) => String(s.stopSequence).length));
-  const idWidth = Math.max(7, ...pattern.stops.map((s) => String(s.stopId).length));
+function directionHeaderLabel(entry, directionId) {
+  if (!entry) return `direction_id ${directionId} (name unconfirmed -- no live trip running this direction right now)`;
+  if (entry.confirmed) return entry.name;
+  return `${entry.name} (inferred as the opposite of ${entry.inferredFrom} -- not live-confirmed, double-check)`;
+}
+
+function directionConfigFragment(entry, directionId) {
+  if (!entry) {
+    return `"TODO_CONFIRM_DIRECTION" /* direction_id ${directionId}, no live trip to confirm the name -- check SEPTA's site or re-run later */`;
+  }
+  if (entry.confirmed) return `"${entry.name}"`;
+  return `"${entry.name}" /* inferred as the opposite of ${entry.inferredFrom} -- not live-confirmed, double-check */`;
+}
+
+// "Front-Market" -> `"Front-Market"`; ["A","B"] -> `"A" and "B"`; ["A","B","C"]
+// -> `"A", "B", and "C"` (oxford comma).
+function formatHeadsignList(headsigns) {
+  const quoted = headsigns.map((h) => `"${h}"`);
+  if (quoted.length <= 1) return quoted.join("");
+  if (quoted.length === 2) return `${quoted[0]} and ${quoted[1]}`;
+  return `${quoted.slice(0, -1).join(", ")}, and ${quoted[quoted.length - 1]}`;
+}
+
+// Prints a blank line at every transition between "stop" and "alt" rows
+// (but never before the very first row), which is what visually sets an
+// alt block apart from the main sequence regardless of whether it's a
+// leading, trailing, or interior block -- see gtfs-schedule.js's
+// mergeDirectionPatterns for how rows are ordered.
+function printMergedDirection(routeId, label, merged) {
+  console.log(`\nRoute ${routeId} — ${label} — ${formatHeadsignList(merged.headsigns)}`);
+  const stopRows = merged.rows.filter((r) => r.type === "stop");
+  const seqWidth = Math.max(3, ...stopRows.map((r) => String(r.stopSequence).length));
+  const idWidth = Math.max(7, ...merged.rows.map((r) => String(r.stopId).length));
   console.log(`  ${"seq".padEnd(seqWidth)}  ${"stop_id".padEnd(idWidth)}  stop_name`);
-  for (const stop of pattern.stops) {
-    console.log(`  ${String(stop.stopSequence).padEnd(seqWidth)}  ${String(stop.stopId).padEnd(idWidth)}  ${stop.stopName || ""}`);
+  let prevType = null;
+  for (const row of merged.rows) {
+    if (prevType !== null && row.type !== prevType) console.log("");
+    const seqLabel = row.type === "alt" ? "alt" : String(row.stopSequence);
+    console.log(`  ${seqLabel.padEnd(seqWidth)}  ${String(row.stopId).padEnd(idWidth)}  ${row.stopName || ""}`);
+    prevType = row.type;
   }
 }
 
-function printStopEntriesFull(routeId, pattern, directionNames, isLive) {
-  const label = directionLabel(directionNames, pattern.directionId);
-  const liveNote = isLive ? "currently running" : "schedule only, not currently running";
-  console.log(`\nRoute ${routeId}${pattern.headsign ? ` — "${pattern.headsign}"` : ""} — ${label} (trip ${pattern.tripId}, ${liveNote})`);
-  const resolvedDirection = directionNames.get(pattern.directionId);
-  for (const stop of pattern.stops) {
-    console.log(`  ${stop.stopName || ""}`);
-    if (resolvedDirection) {
-      console.log(
-        `  { routeId: "${routeId}", stopId: ${stop.stopId}, direction: "${resolvedDirection}", label: "${routeId}" },`
-      );
-    } else {
-      console.log(
-        `  { routeId: "${routeId}", stopId: ${stop.stopId}, direction: "TODO_CONFIRM_DIRECTION" /* direction_id ${pattern.directionId}, no live trip to confirm the name -- check SEPTA's site or re-run later */, label: "${routeId}" },`
-      );
-    }
+function printMergedDirectionFull(routeId, label, merged, directionEntry, directionId) {
+  console.log(`\nRoute ${routeId} — ${label} — ${formatHeadsignList(merged.headsigns)}`);
+  let prevType = null;
+  for (const row of merged.rows) {
+    if (prevType !== null && row.type !== prevType) console.log("");
+    console.log(`  ${row.stopName || ""}`);
+    console.log(
+      `  { routeId: "${routeId}", stopId: ${row.stopId}, direction: ${directionConfigFragment(directionEntry, directionId)}, label: "${routeId}" },`
+    );
+    prevType = row.type;
   }
 }
 
@@ -126,33 +179,39 @@ async function main() {
     process.exit(1);
   }
 
-  // Live data is best-effort here -- only used to label directions and flag
-  // which patterns are currently running, so a failure shouldn't block the
-  // (more complete) schedule-based listing.
+  const representative = pickRepresentativePatterns(patterns);
+
+  const byDirection = new Map();
+  for (const pattern of representative) {
+    if (!byDirection.has(pattern.directionId)) byDirection.set(pattern.directionId, []);
+    byDirection.get(pattern.directionId).push(pattern);
+  }
+  const directionIds = [...byDirection.keys()].sort();
+
+  // Live data is best-effort and used for exactly one thing (direction
+  // names) -- a failure shouldn't block the (more complete) schedule-based
+  // listing.
   let liveTrips = [];
   try {
     liveTrips = await fetchTrips(routeId);
   } catch (err) {
     console.error(`Warning: couldn't fetch live trips (${err.message}) -- direction names will be unconfirmed.`);
   }
-  // "Currently running" is checked by headsign, not by the exact
-  // representative trip_id above -- that trip_id is just whichever static
-  // schedule instance happened to have the most stops, essentially never the
-  // literal trip that's live right now even when its headsign is.
-  const liveHeadsigns = new Set((liveTrips || []).map((trip) => trip && trip.trip_headsign).filter(Boolean));
-  const directionNames = buildDirectionNameMap(liveTrips, patterns);
+  // Matched against the full per-trip patterns list, not just the reduced
+  // one-per-headsign `representative` set -- a live trip's specific trip_id
+  // would almost never happen to be the one instance picked as
+  // representative for its headsign, out of potentially dozens sharing it.
+  let directionNames = buildDirectionNameMap(liveTrips, patterns);
+  directionNames = inferOppositeDirectionNames(directionNames, directionIds);
 
-  const representative = pickRepresentativePatterns(patterns).sort((a, b) => {
-    if (a.directionId !== b.directionId) return String(a.directionId).localeCompare(String(b.directionId));
-    return String(a.headsign).localeCompare(String(b.headsign));
-  });
-
-  for (const pattern of representative) {
-    const isLive = liveHeadsigns.has(pattern.headsign);
+  for (const directionId of directionIds) {
+    const merged = mergeDirectionPatterns(byDirection.get(directionId));
+    const entry = directionNames.get(directionId) || null;
+    const label = directionHeaderLabel(entry, directionId);
     if (full) {
-      printStopEntriesFull(routeId, pattern, directionNames, isLive);
+      printMergedDirectionFull(routeId, label, merged, entry, directionId);
     } else {
-      printStopTable(routeId, pattern, directionNames, isLive);
+      printMergedDirection(routeId, label, merged);
     }
   }
 

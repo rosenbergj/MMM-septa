@@ -17,6 +17,7 @@ const {
   isServiceActiveOn,
   buildScheduleCache,
   buildRouteStopPatterns,
+  mergeDirectionPatterns,
   getScheduledArrivals,
   getAllHeadsignsForStop,
   getHeadsignsSkippingStop,
@@ -478,6 +479,116 @@ test("buildRouteStopPatterns", async (t) => {
     const patterns = buildRouteStopPatterns(missingStopName, "17");
     const full = patterns.find((p) => p.tripId === "9001");
     assert.equal(full.stops[1].stopName, null);
+  });
+});
+
+test("mergeDirectionPatterns", async (t) => {
+  // Small helper: a pattern with the given headsign and a stop list built
+  // from bare stop_ids (name/sequence follow the id, matching the fixtures'
+  // style elsewhere in this file -- these tests only care about ordering).
+  function pattern(headsign, stopIds) {
+    return {
+      headsign,
+      stops: stopIds.map((stopId, index) => ({ stopId, stopSequence: index + 1, stopName: `Stop ${stopId}` })),
+    };
+  }
+  function rowIds(merged) {
+    return merged.rows.map((r) => (r.type === "alt" ? `alt:${r.stopId}` : `${r.stopId}`));
+  }
+
+  await t.test("empty input -> empty headsigns and rows", () => {
+    assert.deepEqual(mergeDirectionPatterns([]), { headsigns: [], rows: [] });
+  });
+
+  await t.test("single pattern -> its own stops, no alt rows, its headsign listed", () => {
+    const merged = mergeDirectionPatterns([pattern("Front-Market", [1, 2, 3])]);
+    assert.deepEqual(merged.headsigns, ["Front-Market"]);
+    assert.deepEqual(rowIds(merged), ["1", "2", "3"]);
+    assert.ok(merged.rows.every((r) => r.type === "stop"));
+  });
+
+  await t.test("a pattern fully contained in the longest one is discarded (no alt rows) but still listed", () => {
+    const longest = pattern("Broad-Pattison", [1, 2, 3, 4, 5]);
+    const shortTurn = pattern("20th-Johnston", [1, 2, 3]); // a prefix -- no stops of its own
+    const merged = mergeDirectionPatterns([longest, shortTurn]);
+    assert.deepEqual(merged.headsigns, ["20th-Johnston", "Broad-Pattison"]);
+    assert.deepEqual(rowIds(merged), ["1", "2", "3", "4", "5"]);
+  });
+
+  await t.test("prefix divergence: extra stops before the first shared stop, as alt rows up front", () => {
+    // "longest" needs its own unique tail stops (50, 51) so it genuinely
+    // has the most total stops despite divergent's unique prefix -- the
+    // reference is picked purely by total stop count, not by which one
+    // "should" conceptually be the base route.
+    const longest = pattern("Broad-Pattison", [1, 2, 3, 4, 50, 51]);
+    const divergent = pattern("Other-Start", [97, 98, 1, 2, 3, 4]);
+    const merged = mergeDirectionPatterns([longest, divergent]);
+    assert.deepEqual(rowIds(merged), ["alt:97", "alt:98", "1", "2", "3", "4", "50", "51"]);
+  });
+
+  await t.test("suffix divergence: extra stops after the last shared stop, as alt rows at the end", () => {
+    // Same reasoning as above, mirrored: "longest" needs unique *leading*
+    // stops (50, 51) to still win on total count despite divergent's
+    // unique suffix.
+    const longest = pattern("Broad-Pattison", [50, 51, 1, 2, 3, 4]);
+    const divergent = pattern("Navy-Yard", [1, 2, 3, 4, 97, 98]);
+    const merged = mergeDirectionPatterns([longest, divergent]);
+    assert.deepEqual(rowIds(merged), ["50", "51", "1", "2", "3", "4", "alt:97", "alt:98"]);
+  });
+
+  await t.test("interior divergence: extra stops between two shared stops, grouped as one alt run in place", () => {
+    // Reference: A,B,C,G,H,I,J,K,L (using ids 1,2,3,7,8,9,10,11,12).
+    // Other: A,B,C,D,E,F,J,K,L (ids 1,2,3,4,5,6,10,11,12) -- diverges only
+    // between C and J.
+    const longest = pattern("Express", [1, 2, 3, 7, 8, 9, 10, 11, 12]);
+    const local = pattern("Local", [1, 2, 3, 4, 5, 6, 10, 11, 12]);
+    const merged = mergeDirectionPatterns([longest, local]);
+    assert.deepEqual(rowIds(merged), [
+      "1",
+      "2",
+      "3",
+      "alt:4",
+      "alt:5",
+      "alt:6",
+      "7",
+      "8",
+      "9",
+      "10",
+      "11",
+      "12",
+    ]);
+  });
+
+  await t.test("a stop_id repeated within a pattern (loop) doesn't produce a false alt", () => {
+    // Reference passes stop 1 twice (a loop) -- only its first occurrence
+    // is indexed, so a divergent pattern's second visit to stop 1 can't
+    // match monotonically (index 0 isn't > the last match). It's still a
+    // known reference stop_id though, so it's silently skipped rather than
+    // misclassified as a genuine extra stop.
+    const longest = pattern("Loop", [1, 2, 3, 1, 4]);
+    const divergent = pattern("Loop-Variant", [1, 2, 3, 1, 4]);
+    const merged = mergeDirectionPatterns([longest, divergent]);
+    assert.deepEqual(
+      merged.rows.filter((r) => r.type === "alt"),
+      []
+    );
+  });
+
+  await t.test("multiple divergent patterns: a shared extra stop is only ever printed once, credited to the alphabetically-first headsign", () => {
+    const longest = pattern("Zzz-Longest", [1, 2, 3, 4, 5]); // must genuinely be longest overall
+    const patternA = pattern("Aaa-First", [97, 1, 2, 3]);
+    const patternB = pattern("Bbb-Second", [97, 1, 2, 3]); // claims the same stop 97
+    const merged = mergeDirectionPatterns([longest, patternA, patternB]);
+    assert.deepEqual(rowIds(merged), ["alt:97", "1", "2", "3", "4", "5"]);
+    assert.deepEqual(merged.headsigns, ["Aaa-First", "Bbb-Second", "Zzz-Longest"]);
+  });
+
+  await t.test("headsigns list includes every distinct headsign, sorted, regardless of containment", () => {
+    const longest = pattern("B-Longest", [1, 2, 3, 4]);
+    const contained = pattern("A-Contained", [1, 2, 3]);
+    const divergent = pattern("C-Divergent", [1, 2, 3, 4, 5]);
+    const merged = mergeDirectionPatterns([longest, contained, divergent]);
+    assert.deepEqual(merged.headsigns, ["A-Contained", "B-Longest", "C-Divergent"]);
   });
 });
 
