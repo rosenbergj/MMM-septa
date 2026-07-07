@@ -209,32 +209,37 @@ don't copy that into your real `config.js`.
   a small header line with the stop name (e.g. "20th St & Oregon Av"),
   discovered automatically from SEPTA's live data (no config needed) and
   cached once known, so it doesn't disappear during a cycle with no
-  active trips. Each arrival carries its own trip's destination, shown
-  as a full-width line below the route (not squeezed into the label
-  column, which would stretch it for every route once a longer note is
-  involved — see "Secondary stop" below) when every currently-shown
-  arrival agrees on it (e.g. "→ Front-Market"). When they don't, each
-  distinct destination among the shown arrivals gets a footnote marker
-  (*, †, ‡, ...) appended to its times (e.g. "14m* 22m†"), with every
-  destination listed on its own line below (e.g. "→ 20th-Johnston(*)"
-  / "→ Broad-Pattison(†)") instead of a vague "Mixed destinations".
-  Marker assignment is stable across polls -- node_helper derives it
-  from every headsign the route/stop is ever scheduled to see (not
-  just whichever trip happens to be next), so a given destination
-  keeps the same marker even as different trips rotate through. The
-  nearest arrival is shown larger/brighter than the rest. With
-  `useScheduleSupplement` on
-  (the default), arrivals SEPTA hasn't started GPS-tracking yet — still
-  at their first stop, no vehicle assigned, or otherwise not "real-time"
-  — are shown too, styled as "~Nm" (italic, muted) instead of being
-  dropped entirely. The one exception: a trip with no vehicle assigned
-  at all ("NO GPS") has no real delay data behind its ETA (confirmed
-  live that these can sit unchanged for the better part of an hour, or
-  vanish entirely, without ever getting a vehicle) — so if a later,
-  fully-confirmed arrival already exists, the "NO GPS" one is dropped
-  rather than shown ahead of it. A trip still at its first stop but
-  with a real assigned vehicle is unaffected by this — its GPS/delay
-  data is genuinely trustworthy, just not yet "in progress".
+  active trips. If two routes configured back-to-back share the same
+  `stopId` (e.g. two different routes that both stop at the same physical
+  corner), the header only prints once rather than repeating identically —
+  configuring a third route with a different stop in between resets this,
+  so the header intentionally reprints rather than grouping non-adjacent
+  routes out of the order you configured them in. Each arrival carries
+  its own trip's destination, shown as a full-width line below the route
+  (not squeezed into the label column, which would stretch it for every
+  route once a longer note is involved — see "Secondary stop" below)
+  when every currently-shown arrival agrees on it (e.g. "→ Front-Market").
+  When they don't, each distinct destination among the shown arrivals
+  gets a footnote marker (*, †, ‡, ...) appended to its times (e.g.
+  "14m* 22m†"), with every destination listed on its own line below
+  (e.g. "→ 20th-Johnston(*)" / "→ Broad-Pattison(†)") instead of a vague
+  "Mixed destinations". Marker assignment is stable across polls --
+  node_helper derives it from every headsign the route/stop is ever
+  scheduled to see (not just whichever trip happens to be next), so a
+  given destination keeps the same marker even as different trips
+  rotate through. The nearest arrival is shown larger/brighter than the
+  rest. With `useScheduleSupplement` on (the default), arrivals SEPTA
+  hasn't started GPS-tracking yet — still at their first stop, no
+  vehicle assigned, or otherwise not "real-time" — are shown too,
+  styled as "~Nm" (italic, muted) instead of being dropped entirely.
+  The one exception: a trip with no vehicle assigned at all ("NO GPS")
+  has no real delay data behind its ETA (confirmed live that these can
+  sit unchanged for the better part of an hour, or vanish entirely,
+  without ever getting a vehicle) — so if a later, fully-confirmed
+  arrival already exists, the "NO GPS" one is dropped rather than shown
+  ahead of it. A trip still at its first stop but with a real assigned
+  vehicle is unaffected by this — its GPS/delay data is genuinely
+  trustworthy, just not yet "in progress".
 - `gtfs-schedule.js` — fills in arrivals up to 60 minutes out that live
   tracking doesn't cover yet, using SEPTA's static GTFS schedule as a
   fallback (also shown "~Nm"). No sqlite, no GTFS-realtime protobuf, no

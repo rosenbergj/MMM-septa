@@ -150,12 +150,20 @@ Module.register("MMM-septa", {
     }
 
     const now = Date.now();
+    // Tracks the stopId of the header row most recently actually printed,
+    // so two routes configured with the same stopId back-to-back (e.g. two
+    // different routes/directions that happen to share a physical stop)
+    // don't repeat an identical header between them. Only adjacent repeats
+    // are deduped -- a different stopId in between resets this, so the
+    // header intentionally reprints rather than silently grouping
+    // non-adjacent routes out of the order they were configured in.
+    let lastHeaderStopId = null;
 
     for (const route of this.config.routes) {
       const state = this.routeStates[septaRouteKey(route)];
 
       const stopName = state && state.stopName;
-      if (stopName) {
+      if (stopName && route.stopId !== lastHeaderStopId) {
         const headerRow = document.createElement("tr");
         const headerCell = document.createElement("td");
         headerCell.className = "septa-stop-header";
@@ -163,6 +171,7 @@ Module.register("MMM-septa", {
         headerCell.innerHTML = septaEscapeHtml(stopName);
         headerRow.appendChild(headerCell);
         wrapper.appendChild(headerRow);
+        lastHeaderStopId = route.stopId;
       }
 
       const row = document.createElement("tr");
