@@ -67,10 +67,44 @@ module.exports = NodeHelper.create({
       this.scheduleCache = await fetchScheduleCache([...routeIds], [...stopIds]);
       saveCacheToDisk(this.scheduleCache);
       console.log(`MMM-septa: refreshed GTFS schedule cache (${this.scheduleCache.entries.length} entries)`);
+      this.validateSecondaryStopIds();
       this.scheduleTimer = setTimeout(() => this.refreshScheduleCache(), SCHEDULE_REFRESH_MS);
     } catch (err) {
       console.error(`MMM-septa: GTFS schedule refresh failed: ${err.message}; retrying in ${SCHEDULE_RETRY_MS / 1000}s`);
       this.scheduleTimer = setTimeout(() => this.refreshScheduleCache(), SCHEDULE_RETRY_MS);
+    }
+  },
+
+  // A secondaryStopId that never appears anywhere on its own route (wrong
+  // route entirely, a typo, or a nonexistent stop_id) would otherwise make
+  // getHeadsignsSkippingStop flag every headsign as skipping it, so every
+  // arrival would show up permanently colored orange with no visible sign
+  // it's a config mistake rather than a real signal. Checked
+  // direction-agnostically (either direction counts) -- direction_id may not
+  // even be resolved yet this early, and a stop simply being real on the
+  // route at all is enough to rule out this failure mode. Skips routes that
+  // opted out of the schedule supplement, since their data was never pulled
+  // into the cache in the first place (see refreshScheduleCache).
+  //
+  // Sets state.secondaryStopIdValid (re-evaluated fresh on every refresh,
+  // not latched -- so a config edited between restarts is picked up rather
+  // than being stuck on a stale verdict) so runCycle can treat an invalid
+  // secondaryStopId as if none were configured at all, rather than leaving
+  // every arrival flagged; also logs a warning each time it's found invalid
+  // so the misconfiguration is discoverable.
+  validateSecondaryStopIds() {
+    for (const state of this.routes.values()) {
+      if (state.useScheduleSupplement === false) continue;
+      if (!state.config.secondaryStopId) continue;
+      const headsigns = getAllHeadsignsForStop(this.scheduleCache, state.config.routeId, state.config.secondaryStopId);
+      state.secondaryStopIdValid = headsigns.length > 0;
+      if (!state.secondaryStopIdValid) {
+        console.warn(
+          `MMM-septa: secondaryStopId ${state.config.secondaryStopId} for route ${state.routeKey} ` +
+            `doesn't appear anywhere on route ${state.config.routeId}'s schedule -- check for a typo or ` +
+            `wrong route/stop id; treating it as unconfigured until fixed.`
+        );
+      }
     }
   },
 
@@ -102,6 +136,10 @@ module.exports = NodeHelper.create({
         detourReason: null,
         stopName: null,
         directionId: null,
+        // null until validateSecondaryStopIds runs (once the schedule cache
+        // is available); treated as valid/unconfirmed until then so the
+        // feature works as before during that window -- see runCycle.
+        secondaryStopIdValid: null,
         secondaryStopDetour: false,
         secondaryStopName: null,
         direction: route.direction,
@@ -123,7 +161,19 @@ module.exports = NodeHelper.create({
     if (!state) return; // route was deregistered (e.g. stop() ran)
 
     try {
-      const result = await pollRoute(state.config, { useScheduleSupplement: state.useScheduleSupplement });
+      // Treat an already-confirmed-invalid secondaryStopId (see
+      // validateSecondaryStopIds) exactly as if none were configured at all
+      // -- rather than passing it through and having every arrival flagged
+      // as permanently skipping a stop that isn't even really part of this
+      // route. Left as state.config.secondaryStopId (rather than undefined)
+      // whenever validity is still unknown (secondaryStopIdValid === null,
+      // i.e. before the schedule cache has loaded even once), so the
+      // feature works as it always has during that brief startup window.
+      const secondaryStopId = state.secondaryStopIdValid === false ? undefined : state.config.secondaryStopId;
+      const result = await pollRoute(
+        { ...state.config, secondaryStopId },
+        { useScheduleSupplement: state.useScheduleSupplement }
+      );
       state.detour = result.detour;
       state.detourReason = result.detourReason;
       // stopName is effectively static (a stop's name doesn't change); don't
@@ -156,8 +206,8 @@ module.exports = NodeHelper.create({
         const scheduleName = this.scheduleCache.stopNames[String(state.config.stopId)];
         if (scheduleName) state.stopName = scheduleName;
       }
-      if (!state.secondaryStopName && state.config.secondaryStopId && this.scheduleCache && this.scheduleCache.stopNames) {
-        const scheduleName = this.scheduleCache.stopNames[String(state.config.secondaryStopId)];
+      if (!state.secondaryStopName && secondaryStopId && this.scheduleCache && this.scheduleCache.stopNames) {
+        const scheduleName = this.scheduleCache.stopNames[String(secondaryStopId)];
         if (scheduleName) state.secondaryStopName = scheduleName;
       }
 
@@ -192,12 +242,12 @@ module.exports = NodeHelper.create({
       // See septa-client.js's pollRoute for the separate, live detour-based
       // check (state.secondaryStopDetour above).
       const secondaryStopSkippedHeadsigns =
-        state.config.secondaryStopId && this.scheduleCache
+        secondaryStopId && this.scheduleCache
           ? getHeadsignsSkippingStop(
               this.scheduleCache,
               state.config.routeId,
               state.config.stopId,
-              state.config.secondaryStopId,
+              secondaryStopId,
               state.directionId
             )
           : [];

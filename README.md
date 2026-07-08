@@ -148,14 +148,22 @@ exactly (case-sensitive) — use `find-stop.js` to confirm it.
 
 ### Secondary stop (optional)
 
-If you only care about arrivals that actually continue past your stop to
-some further destination — e.g. a short-turn trip that ends before reaching
-where you're headed, or a stop you're worried a detour might skip — set
-`secondaryStopId` on that route to that further stop's `stop_id`. It doesn't
-change which arrivals are shown: if a trip or an entire headsign doesn't
-reach the secondary stop (whether structurally or because of an active
-detour), that's flagged in text (e.g. "no stop at Broad St & Kitty Hawk Av")
-and colored orange instead of the usual red/green/gray.
+Set `secondaryStopId` on a route to flag arrivals whose trip doesn't stop at
+some other `stop_id` on that same route — e.g. a short-turn trip that ends
+before reaching where you're headed, a stop you're worried a detour might
+skip, or (just as validly) an earlier stop if you want to tell full-length
+trips apart from ones that start further along the route. It works in
+either direction relative to your primary stop; it doesn't change which
+arrivals are shown, it just flags them. If a trip or an entire headsign
+doesn't stop at the secondary stop (whether structurally or because of an
+active detour), that's noted in text (e.g. "no stop at Broad St & Kitty
+Hawk Av") and colored orange instead of the usual red/green/gray.
+
+If `secondaryStopId` doesn't actually appear anywhere on the configured
+route at all (wrong route, a typo, or a nonexistent `stop_id`), it's treated
+as if it weren't set — nothing is flagged or colored orange — and a warning
+is logged to the console on each schedule refresh so the mistake is
+discoverable.
 
 The secondary stop's name is resolved automatically (no config needed) —
 first from live trip data the same way the primary stop's is, falling back

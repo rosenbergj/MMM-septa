@@ -480,8 +480,10 @@ function getAllHeadsignsForStop(cache, routeId, stopId, directionId) {
 
 // Headsigns scheduled at (routeId, primaryStopId) that are never scheduled at
 // (routeId, secondaryStopId) -- i.e. destinations whose pattern structurally
-// never reaches the secondary stop (a short-turn trip, etc), independent of
-// any detour. Used to flag "this bus won't take you to your secondary stop"
+// never stops at the secondary stop (a short-turn trip, a trip that starts
+// further along the route than an earlier secondary stop, etc), independent
+// of any detour or of which side of the primary stop the secondary one is
+// on. Used to flag "this headsign doesn't stop at the secondary stop"
 // regardless of which specific trip happens to be next. directionId is
 // applied to both lookups -- see getScheduledArrivals's doc comment.
 function getHeadsignsSkippingStop(cache, routeId, primaryStopId, secondaryStopId, directionId) {
