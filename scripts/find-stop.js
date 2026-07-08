@@ -79,7 +79,17 @@ function buildDirectionNameMap(liveTrips, patterns) {
   const directionIdByTripId = new Map(patterns.map((p) => [p.tripId, p.directionId]));
   const names = new Map();
   for (const trip of liveTrips || []) {
-    if (!trip || !trip.direction_name) continue;
+    // SEPTA's own /trips/ response uses the literal string "N/A" as
+    // direction_name for a trip that's scheduled but not currently
+    // GPS-tracked/running (confirmed live, e.g. route L1's untracked
+    // trips) -- not a real, usable direction name, so treat it the same as
+    // missing rather than accepting it as "confirmed". Without this, a
+    // route with nothing currently running showed the literal string "N/A"
+    // as if it were a real, live-confirmed direction name -- worse than a
+    // display glitch in --full mode, where it would get copied straight
+    // into config.js as `direction: "N/A"`, which would then never match
+    // any real trip's direction_name and silently never show arrivals.
+    if (!trip || !trip.direction_name || trip.direction_name === "N/A") continue;
     const directionId = directionIdByTripId.get(trip.trip_id);
     if (directionId != null && !names.has(directionId)) names.set(directionId, { name: trip.direction_name, confirmed: true });
   }
@@ -104,7 +114,7 @@ function inferOppositeDirectionNames(directionNames, allDirectionIds) {
 }
 
 function directionHeaderLabel(entry, directionId) {
-  if (!entry) return `direction_id ${directionId} (name unconfirmed -- no live trip running this direction right now)`;
+  if (!entry) return `Unknown Direction (direction_id ${directionId} -- no live trip currently running to confirm its name)`;
   if (entry.confirmed) return entry.name;
   return `${entry.name} (inferred as the opposite of ${entry.inferredFrom} -- not live-confirmed, double-check)`;
 }
@@ -246,9 +256,11 @@ async function main() {
   let directionNames = buildDirectionNameMap(liveTrips, patterns);
   directionNames = inferOppositeDirectionNames(directionNames, directionIds);
 
+  let anyUnknownDirection = false;
   for (const directionId of directionIds) {
     const merged = mergeDirectionPatterns(byDirection.get(directionId));
     const entry = directionNames.get(directionId) || null;
+    if (!entry) anyUnknownDirection = true;
     const label = directionHeaderLabel(entry, directionId);
     if (full) {
       printMergedDirectionFull(routeId, label, merged, entry, directionId);
@@ -263,6 +275,13 @@ async function main() {
         "(adjust label if you'd like something other than the route number). Entries marked " +
         "TODO_CONFIRM_DIRECTION need the direction name filled in by hand -- re-run this command " +
         "while a trip in that direction is running, or check SEPTA's site."
+    );
+  } else if (anyUnknownDirection) {
+    console.log(
+      "\nAt least one direction above shows \"Unknown Direction\" because no trip in that direction " +
+        "is currently running for SEPTA to confirm its name. The stop_id is still correct as shown -- " +
+        "but re-run this command while a trip in that direction is running (or check SEPTA's site) to " +
+        "get the real direction name before copying the entry into your config.js."
     );
   } else {
     console.log(
