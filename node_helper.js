@@ -21,6 +21,10 @@ const SCHEDULE_INITIAL_DELAY_MS = 60 * 1000; // wait until well after MagicMirro
 const SCHEDULE_REFRESH_MS = 24 * 60 * 60 * 1000; // once daily thereafter
 const SCHEDULE_RETRY_MS = 60 * 60 * 1000; // retry sooner than a full day if a refresh fails
 const ROUTE_COLORS_CACHE_PATH = path.join(__dirname, "route-colors-cache.json");
+// Consecutive cycles a route's trip-update fetches must fail before the
+// display's "!" indicator lights up -- avoids flickering it on for an
+// isolated one-cycle blip (e.g. during a flaky-but-recovering SEPTA outage).
+const TRIP_ERROR_DISPLAY_THRESHOLD = 3;
 
 function routeKey(route) {
   return `${route.routeId}:${route.stopId}:${route.direction}`;
@@ -213,6 +217,11 @@ module.exports = NodeHelper.create({
         secondaryStopName: null,
         direction: route.direction,
         hasTripError: false,
+        // Raw per-cycle failure count, reset to 0 on any success -- hasTripError
+        // (sent to the display) only flips on once this hits the threshold below,
+        // so an isolated one-cycle blip during a flaky API doesn't flicker the
+        // indicator on and off every refresh.
+        consecutiveTripErrorCycles: 0,
         lastFetchTime: null,
         timer: null,
       };
@@ -259,7 +268,8 @@ module.exports = NodeHelper.create({
       // needs no separate caching here.
       if (result.stopName) state.stopName = result.stopName;
       state.direction = result.direction;
-      state.hasTripError = result.hasTripError;
+      state.consecutiveTripErrorCycles = result.hasTripError ? state.consecutiveTripErrorCycles + 1 : 0;
+      state.hasTripError = state.consecutiveTripErrorCycles >= TRIP_ERROR_DISPLAY_THRESHOLD;
       state.lastFetchTime = result.fetchedAt;
       state.secondaryStopDetour = Boolean(result.secondaryStopDetour);
       // Same "never blank out a known value" caching as stopName above.
