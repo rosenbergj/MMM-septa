@@ -146,6 +146,12 @@ MagicMirror module option, outside `config`) to override it.
 Each route's `direction` must match SEPTA's `direction_name` for that route
 exactly (case-sensitive) — use `find-stop.js` to confirm it.
 
+A `routeId` that doesn't match any real SEPTA route (a typo, a
+discontinued route, etc) fails silently — it just never has any arrivals,
+indistinguishable from a real route that legitimately has nothing running
+right now. A warning is logged to the console (once at startup, and again
+on each daily refresh if it's still wrong) if this happens.
+
 ### Secondary stop (optional)
 
 Set `secondaryStopId` on a route to flag arrivals whose trip doesn't stop at

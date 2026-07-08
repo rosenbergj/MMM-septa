@@ -61,11 +61,33 @@ module.exports = NodeHelper.create({
     try {
       const routes = await fetchRoutes();
       this.routeColors = Object.fromEntries(routes.map((r) => [String(r.route_id), resolveRouteLabelColor(r)]));
+      this.validRouteIds = new Set(routes.map((r) => String(r.route_id)));
       console.log(`MMM-septa: refreshed route color metadata (${routes.length} routes)`);
+      this.validateRouteIds();
       this.routeColorTimer = setTimeout(() => this.refreshRouteColors(), SCHEDULE_REFRESH_MS);
     } catch (err) {
       console.error(`MMM-septa: route color metadata refresh failed: ${err.message}; retrying in ${SCHEDULE_RETRY_MS / 1000}s`);
       this.routeColorTimer = setTimeout(() => this.refreshRouteColors(), SCHEDULE_RETRY_MS);
+    }
+  },
+
+  // A configured routeId that doesn't exist (typo, discontinued route, etc)
+  // currently fails silently: fetchDetours/fetchTrips just return empty
+  // arrays for an unrecognized route_id, so the route shows "--" forever,
+  // indistinguishable from a real route that simply has nothing running
+  // right now (late night, etc). Unlike an invalid secondaryStopId, there's
+  // no misleading display to suppress here -- an unrecognized routeId
+  // already degrades to exactly what it would show anyway -- so this only
+  // warns, once per refresh (same daily cadence as validateSecondaryStopIds),
+  // rather than changing any display behavior.
+  validateRouteIds() {
+    for (const state of this.routes.values()) {
+      if (this.validRouteIds.has(String(state.config.routeId))) continue;
+      console.warn(
+        `MMM-septa: routeId ${state.config.routeId} for route ${state.routeKey} doesn't match any route in ` +
+          `SEPTA's /routes/ list -- check for a typo; it will otherwise just show no arrivals, indistinguishable ` +
+          `from a real route with nothing currently running.`
+      );
     }
   },
 
@@ -178,6 +200,13 @@ module.exports = NodeHelper.create({
       this.routes.set(fullKey, state);
       this.runCycle(fullKey); // kick off the first fetch immediately
     }
+    // Unlike the GTFS schedule cache (scoped to just the currently
+    // configured routes/stops, so validating secondaryStopId against it
+    // before a route is registered could false-positive on a legitimately
+    // new one), SEPTA's full /routes/ list doesn't depend on what's
+    // configured -- so it's safe to validate as soon as it's available,
+    // rather than waiting for the next daily refresh.
+    if (this.validRouteIds) this.validateRouteIds();
   },
 
   // Self-rescheduling setTimeout chain (not setInterval) so a slow cycle
