@@ -11,7 +11,8 @@
   font-size: 0.7em;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  opacity: 0.6;
+  color: #fff;
+  opacity: 0.8;
 }
 
 .septa-table tr:first-child .septa-stop-header {
@@ -74,6 +75,7 @@
 .septa-table .septa-full-width {
   font-size: 0.7em;
   padding-top: 2px;
+  color: #fff;
   opacity: 0.6;
 }
 
@@ -92,6 +94,17 @@
 
 .septa-table .septa-arrivals .septa-untracked {
   font-style: italic;
+  opacity: 0.6;
+}
+
+/* Untracked arrivals are always tagged .septa-later too (never .septa-first
+   -- see MMM-septa.js), so without this, an untracked-and-normal arrival's
+   opacity would depend on which of the two equal-specificity rules above
+   happens to come later in this file, rather than being a deliberate
+   choice. Pins it explicitly at the same 0.6 the coincidence already
+   produced (no visual change), scoped to just the non-urgent case so
+   urgent/secondary-skip untracked arrivals are unaffected. */
+.septa-table .septa-arrivals .septa-normal.septa-untracked {
   opacity: 0.6;
 }
 
