@@ -504,6 +504,27 @@ function getAllHeadsignsForStop(cache, routeId, stopId, directionId) {
   return [...headsigns].sort();
 }
 
+// Every distinct direction_id structurally scheduled to stop at
+// (routeId, stopId) -- independent of any live data, so it's available even
+// for a route whose live /trips/ feed never gives a usable direction_name
+// (confirmed live: route 63). Most stops are exclusive to one direction (a
+// street's two curbs get two different stop_ids), so this usually comes
+// back with exactly one entry -- which is enough, on its own, to know which
+// direction_id a configured stop means, with no direction_name needed at
+// all. It can come back with more than one (some stops really are served by
+// both directions of the same route, e.g. route 2 stop 40) or zero (nothing
+// in the schedule cache matches).
+function getDirectionIdsForStop(cache, routeId, stopId) {
+  const targetRouteId = String(routeId);
+  const targetStopId = Number(stopId);
+  const directionIds = new Set();
+  for (const entry of cache.entries) {
+    if (entry.routeId !== targetRouteId || entry.stopId !== targetStopId) continue;
+    directionIds.add(entry.directionId);
+  }
+  return [...directionIds].sort();
+}
+
 // Headsigns scheduled at (routeId, primaryStopId) that are never scheduled at
 // (routeId, secondaryStopId) -- i.e. destinations whose pattern structurally
 // never stops at the secondary stop (a short-turn trip, a trip that starts
@@ -605,6 +626,7 @@ module.exports = {
   isServiceActiveOn,
   buildScheduleCache,
   buildRouteStopPatterns,
+  getDirectionIdsForStop,
   mergeDirectionPatterns,
   getScheduledArrivals,
   getAllHeadsignsForStop,

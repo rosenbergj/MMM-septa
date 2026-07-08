@@ -21,6 +21,7 @@ const {
   getScheduledArrivals,
   getAllHeadsignsForStop,
   getHeadsignsSkippingStop,
+  getDirectionIdsForStop,
   loadCacheFromDisk,
   saveCacheToDisk,
   fetchScheduleCache,
@@ -440,6 +441,54 @@ test("getAllHeadsignsForStop", async (t) => {
     assert.deepEqual(getAllHeadsignsForStop(mixedCache, "17", 21289, "0"), ["Front-Market"]);
     assert.deepEqual(getAllHeadsignsForStop(mixedCache, "17", 21289, "1"), ["Broad-Pattison"]);
     assert.deepEqual(getAllHeadsignsForStop(mixedCache, "17", 21289), ["Broad-Pattison", "Front-Market"]);
+  });
+});
+
+test("getDirectionIdsForStop", async (t) => {
+  const fileTexts = {
+    "trips.txt":
+      "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed\n" +
+      "17,weekday,9001,Front-Market,,0,1,1,1,1\n" +
+      "17,weekday,9002,Broad-Pattison,,0,2,2,1,1\n" +
+      "17,weekday,9005,20th-Johnston,,1,5,5,1,1\n" +
+      "64,weekday,9004,Other-Route-Headsign,,0,4,4,1,1\n",
+    "stop_times.txt":
+      "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n" +
+      "9001,06:00:00,06:00:00,21289,2,,0,0,,1\n" + // direction_id 0, stop 21289 (Northbound-only curb)
+      "9002,14:00:00,14:00:00,21289,2,,0,0,,1\n" + // direction_id 0, stop 21289
+      "9005,15:00:00,15:00:00,96,2,,0,0,,1\n" + // direction_id 1, a different stop_id entirely (96)
+      "9004,08:00:00,08:00:00,21289,2,,0,0,,1\n",
+    "calendar.txt":
+      "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\n" +
+      "weekday,1,1,1,1,1,0,0,20260101,20261231\n",
+    "calendar_dates.txt": "service_id,date,exception_type\n",
+  };
+  const cache = buildScheduleCache(fileTexts, ["17", "64"], [21289, 96]);
+
+  await t.test("stop_id exclusive to one direction -> that single direction_id", () => {
+    assert.deepEqual(getDirectionIdsForStop(cache, "17", 21289), ["0"]);
+  });
+
+  await t.test("a different stop_id, exclusive to the other direction -> that direction_id", () => {
+    assert.deepEqual(getDirectionIdsForStop(cache, "17", 96), ["1"]);
+  });
+
+  await t.test("no matching route/stop -> empty array", () => {
+    assert.deepEqual(getDirectionIdsForStop(cache, "17", 99999), []);
+  });
+
+  await t.test("doesn't mix in a different route's direction_ids at the same stop", () => {
+    assert.deepEqual(getDirectionIdsForStop(cache, "64", 21289), ["0"]);
+  });
+
+  await t.test("stop served by both directions -> both direction_ids, sorted", () => {
+    const bothDirectionsTexts = {
+      ...fileTexts,
+      "trips.txt": fileTexts["trips.txt"].replace("17,weekday,9005,20th-Johnston,,1,5,5,1,1\n", "17,weekday,9005,20th-Johnston,,1,5,5,1,1\n"),
+      "stop_times.txt": fileTexts["stop_times.txt"].replace("9005,15:00:00,15:00:00,96,2,,0,0,,1\n", "9005,15:00:00,15:00:00,21289,2,,0,0,,1\n"),
+    };
+    const bothCache = buildScheduleCache(bothDirectionsTexts, ["17", "64"], [21289]);
+    assert.deepEqual(getDirectionIdsForStop(bothCache, "17", 21289), ["0", "1"]);
   });
 });
 

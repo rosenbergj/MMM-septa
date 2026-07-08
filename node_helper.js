@@ -8,6 +8,7 @@ const {
   getScheduledArrivals,
   getAllHeadsignsForStop,
   getHeadsignsSkippingStop,
+  getDirectionIdsForStop,
   // Both fully generic (path-parameterized, no GTFS-specific structure
   // assumed) despite living in gtfs-schedule.js -- reused as-is for the
   // route-colors cache below instead of duplicating the same trivial
@@ -255,9 +256,20 @@ module.exports = NodeHelper.create({
       // i.e. before the schedule cache has loaded even once), so the
       // feature works as it always has during that brief startup window.
       const secondaryStopId = state.secondaryStopIdValid === false ? undefined : state.config.secondaryStopId;
+      // Most stops are exclusive to one direction_id (a street's two curbs
+      // get two different stop_ids) -- when that's true here, it tells
+      // pollRoute which direction_id the user's configured stop actually
+      // means, with no live direction_name needed at all. Recomputed every
+      // cycle rather than cached on state: cheap (a small filter over the
+      // schedule cache's already-tiny, pre-filtered entries), and it stays
+      // correct across a daily schedule cache refresh for free.
+      const stopDirectionIds = this.scheduleCache
+        ? getDirectionIdsForStop(this.scheduleCache, state.config.routeId, state.config.stopId)
+        : [];
+      const structuralDirectionId = stopDirectionIds.length === 1 ? stopDirectionIds[0] : null;
       const result = await pollRoute(
         { ...state.config, secondaryStopId },
-        { useScheduleSupplement: state.useScheduleSupplement }
+        { useScheduleSupplement: state.useScheduleSupplement, structuralDirectionId }
       );
       state.detour = result.detour;
       state.detourReason = result.detourReason;

@@ -153,6 +153,30 @@ test("filterGoodTrips", async (t) => {
     const withMissing = [{ direction_name: "Northbound", status: "ON-TIME", trip_id: "x" }];
     assert.deepEqual(filterGoodTrips(withMissing, "Northbound", false), []);
   });
+
+  await t.test("structuralDirectionId matches by direction_id, ignoring direction_name entirely", () => {
+    // Same direction_id-0 trips filterGoodTrips(trips, "Northbound") finds by
+    // name -- but reached here via structuralDirectionId, with a configured
+    // direction string ("Eastbound") that wouldn't match any of them by name.
+    const good = filterGoodTrips(trips, "Eastbound", true, "0");
+    assert.deepEqual(good.map((trip) => trip.trip_id), ["787404", "900002"]);
+  });
+
+  await t.test("structuralDirectionId still excludes CANCELED trips", () => {
+    const good = filterGoodTrips(trips, "Northbound", true, "0");
+    assert.ok(!good.some((trip) => trip.trip_id === "900001"));
+  });
+
+  await t.test("structuralDirectionId matches even when direction_name is N/A on every trip", () => {
+    const allNA = trips.map((trip) => ({ ...trip, direction_name: "N/A" }));
+    const good = filterGoodTrips(allNA, "Northbound", true, "0");
+    assert.deepEqual(good.map((trip) => trip.trip_id), ["787404", "900002"]);
+  });
+
+  await t.test("structuralDirectionId null falls back to matching direction_name (unchanged behavior)", () => {
+    const good = filterGoodTrips(trips, "Northbound", true, null);
+    assert.deepEqual(good.map((trip) => trip.trip_id), ["787404", "900002"]);
+  });
 });
 
 test("isTripTracked", async (t) => {
@@ -934,5 +958,45 @@ test("pollRoute", async (t) => {
     ]);
     const result = await pollRoute({ routeId: "17", stopId: 21289, direction: "Northbound" }, { fetchImpl, now: fixedNow });
     assert.equal(result.directionId, null);
+  });
+
+  await t.test("structuralDirectionId resolves arrivals even when every trip's direction_name is N/A", async () => {
+    // Route 63's real-world behavior: direction_name is "N/A" on every
+    // live-tracked trip, so name-based matching alone would find nothing.
+    const allNA = trips.map((trip) => ({ ...trip, direction_name: "N/A" }));
+    const fetchImpl = stubFetch([
+      ["detours/?route=17", detoursEmpty],
+      ["trips/?route_id=17", allNA],
+      ["trip-update/?trip_id=787404", tripUpdate787404],
+      ["trip-update/?trip_id=900002", tripUpdate900002],
+    ]);
+    const result = await pollRoute(
+      { routeId: "17", stopId: 21289, direction: "Northbound" },
+      { fetchImpl, now: fixedNow, structuralDirectionId: "0" }
+    );
+    assert.equal(result.directionId, "0");
+    assert.ok(result.etas.length > 0);
+  });
+
+  await t.test("structuralDirectionId still shows arrivals when a live name conflicts with the configured direction", async () => {
+    // Simulates a route-135-style reversal (or a stale config): a live trip
+    // confirms direction_id 0 is actually called "Southbound", not the
+    // configured "Northbound". The configured stop_id wins; a warning is
+    // logged (not asserted here), arrivals are still shown.
+    const reversed = trips.map((trip) =>
+      trip.direction_id === 0 ? { ...trip, direction_name: "Southbound" } : trip
+    );
+    const fetchImpl = stubFetch([
+      ["detours/?route=17", detoursEmpty],
+      ["trips/?route_id=17", reversed],
+      ["trip-update/?trip_id=787404", tripUpdate787404],
+      ["trip-update/?trip_id=900002", tripUpdate900002],
+    ]);
+    const result = await pollRoute(
+      { routeId: "17", stopId: 21289, direction: "Northbound" },
+      { fetchImpl, now: fixedNow, structuralDirectionId: "0" }
+    );
+    assert.equal(result.directionId, "0");
+    assert.ok(result.etas.length > 0);
   });
 });

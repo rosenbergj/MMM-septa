@@ -143,8 +143,12 @@ MagicMirror module option, outside `config`) to override it.
 | `countdownTickSeconds`    | `15`    | How often the displayed "Nm" countdown re-renders client-side            |
 | `useScheduleSupplement`   | `true`  | Include arrivals SEPTA hasn't fully GPS-confirmed yet, plus static-schedule arrivals up to 60 minutes out that live tracking doesn't cover yet (both shown as "~Nm", italic/muted). Set `false` to show only GPS-confirmed arrivals. |
 
-Each route's `direction` must match SEPTA's `direction_name` for that route
-exactly (case-sensitive) — use `find-stop.js` to confirm it.
+Each route's `direction` should match SEPTA's `direction_name` for that route
+exactly (case-sensitive) — use `find-stop.js` to confirm it. If your
+`stop_id` is itself exclusive to one direction (true for most stops — the
+two directions usually get two different stop_ids), arrivals still show up
+even when SEPTA's live feed can't confirm a name at all, and a mismatched
+`direction` just logs a warning instead of hiding arrivals.
 
 A `routeId` that doesn't match any real SEPTA route (a typo, a
 discontinued route, etc) fails silently — it just never has any arrivals,

@@ -168,11 +168,25 @@ function findSkippedStopName(skippedStops, targetStopId) {
 // isTripTracked() rather than dropped. With it disabled, only trips past
 // their first stop count as "good", matching the module's original
 // tracked-only behavior.
-function filterGoodTrips(trips, direction, useScheduleSupplement = true) {
+//
+// Direction is decided by structuralDirectionId when it's given -- the
+// configured stop_id is itself exclusive to one direction_id, straight from
+// the schedule (see gtfs-schedule.js's getDirectionIdsForStop) -- rather
+// than by matching direction_name, since that's confirmed live to sometimes
+// be unusable (always "N/A" for every trip on a route, e.g. route 63) or
+// actively wrong (swapped between directions, e.g. route 135). Falls back
+// to the direction_name match (the original rule) when structuralDirectionId
+// is null -- the configured stop is itself ambiguous, or the schedule cache
+// isn't available yet.
+function filterGoodTrips(trips, direction, useScheduleSupplement = true, structuralDirectionId = null) {
   if (!Array.isArray(trips)) return [];
   return trips.filter((trip) => {
     if (!trip) return false;
-    if (trip.direction_name !== direction) return false;
+    if (structuralDirectionId != null) {
+      if (String(trip.direction_id) !== structuralDirectionId) return false;
+    } else if (trip.direction_name !== direction) {
+      return false;
+    }
     if (trip.status === "CANCELED") return false;
     if (useScheduleSupplement) return true;
     return Number(trip.next_stop_sequence || 0) > 1;
@@ -279,6 +293,11 @@ async function pollRoute(routeConfig, options = {}) {
   const fetchImpl = options.fetchImpl || fetch;
   const nowFn = options.now || (() => new Date());
   const useScheduleSupplement = options.useScheduleSupplement !== false;
+  // Resolved by node_helper.js from the GTFS schedule cache (see
+  // gtfs-schedule.js's getDirectionIdsForStop) -- null if the configured
+  // stop is itself served by more than one direction, or the cache isn't
+  // available yet.
+  const structuralDirectionId = options.structuralDirectionId != null ? String(options.structuralDirectionId) : null;
   const { routeId, stopId, direction } = routeConfig;
 
   const nowDate = nowFn();
@@ -316,18 +335,49 @@ async function pollRoute(routeConfig, options = {}) {
 
   const trips = await fetchTrips(routeId, fetchImpl);
 
-  // Resolved from *any* trip matching the configured direction (regardless
-  // of canceled/tracked status -- this is purely about learning the
-  // direction_id<->direction_name pairing, not about which trips to show).
-  // Used by node_helper.js to filter the GTFS schedule cache to just this
-  // direction: some stop_ids are, rarely but really, served by both
-  // directions of the same route (confirmed live: route 2 stop 40), and
-  // the static schedule alone has no direction_name, only a bare
-  // direction_id, so this is the only way to connect the two.
-  const directionMatch = trips.find((trip) => trip && trip.direction_name === direction);
-  const directionId = directionMatch ? String(directionMatch.direction_id) : null;
+  // Direction resolution: prefer structuralDirectionId over a live
+  // direction_name match, for the same reason filterGoodTrips does -- the
+  // stop_id the user actually configured is more trustworthy than a
+  // direction_name that can be unusable or wrong. Falls back to resolving
+  // from *any* trip matching the configured direction (regardless of
+  // canceled/tracked status -- this is purely about learning the
+  // direction_id<->direction_name pairing) when the stop is itself
+  // ambiguous or the schedule cache isn't available -- some stop_ids are,
+  // rarely but really, served by both directions of the same route
+  // (confirmed live: route 2 stop 40), and the static schedule alone has no
+  // direction_name, only a bare direction_id, so a live match is the only
+  // way to connect the two in that case.
+  //
+  // Even when structuralDirectionId is used, still check for a live trip
+  // that names this same direction_id something other than the configured
+  // direction -- not to override anything (the configured stop_id remains
+  // the more trustworthy signal), just to warn: it's either a stale/typo'd
+  // config, or a SEPTA-side reversal like route 135's.
+  let directionId;
+  if (structuralDirectionId != null) {
+    directionId = structuralDirectionId;
+    const conflictingMatch = trips.find(
+      (trip) =>
+        trip &&
+        trip.direction_name &&
+        trip.direction_name !== "N/A" &&
+        String(trip.direction_id) === structuralDirectionId &&
+        trip.direction_name !== direction
+    );
+    if (conflictingMatch) {
+      console.error(
+        `Warning: route ${routeId}'s configured direction "${direction}" doesn't match SEPTA's live ` +
+          `direction_name ("${conflictingMatch.direction_name}") for this stop's own direction_id ` +
+          `${structuralDirectionId} -- showing arrivals for the configured stop_id anyway, but double-check ` +
+          "your config against SEPTA's site."
+      );
+    }
+  } else {
+    const directionMatch = trips.find((trip) => trip && trip.direction_name === direction);
+    directionId = directionMatch ? String(directionMatch.direction_id) : null;
+  }
 
-  const goodTrips = filterGoodTrips(trips, direction, useScheduleSupplement);
+  const goodTrips = filterGoodTrips(trips, direction, useScheduleSupplement, structuralDirectionId);
 
   const nowSeconds = nowDate.getTime() / 1000;
   const results = await Promise.allSettled(
