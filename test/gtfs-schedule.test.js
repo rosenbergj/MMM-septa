@@ -754,6 +754,29 @@ test("fetchRouteStopPatterns", async (t) => {
 
     fs.unlinkSync(cachePath);
   });
+
+  await t.test("preloadedCache is used as-is, without reading cachePath from disk at all", async () => {
+    const fetchImpl = async () => {
+      throw new Error("fetchImpl should not be called -- preloadedCache is fresh");
+    };
+    const preloadedCache = {
+      downloadedAt: Date.now(),
+      fileTexts: {
+        "trips.txt":
+          "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed\n17,weekday,9001,Front-Market,,0,1,1,1,1\n",
+        "stop_times.txt":
+          "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n9001,08:15:00,08:15:00,21289,1,,0,0,,1\n",
+        "stops.txt": "stop_id,stop_name\n21289,20th St & Oregon Av\n",
+      },
+    };
+    // Deliberately a path with nothing on disk -- proves the result came
+    // from preloadedCache, not a fallback disk read.
+    const nonexistentPath = path.join(os.tmpdir(), `mmm-septa-feed-cache-test-${process.pid}-does-not-exist.json`);
+
+    const patterns = await fetchRouteStopPatterns("17", fetchImpl, nonexistentPath, preloadedCache);
+    assert.equal(patterns.length, 1);
+    assert.equal(patterns[0].stops[0].stopName, "20th St & Oregon Av");
+  });
 });
 
 test("fetchScheduleCache", async (t) => {

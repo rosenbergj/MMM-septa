@@ -534,10 +534,19 @@ const ROUTE_STOP_PATTERN_FILES = ["trips.txt", "stop_times.txt", "stops.txt"];
 // (unfiltered by routeId, so a later run for a *different* route within the
 // cache window benefits too, not just a repeat of the same one) for
 // FEED_CACHE_MAX_AGE_MS -- only the actual network download/decompress is
-// skipped on a cache hit; buildRouteStopPatterns' per-route filtering is
-// cheap enough (~1s for the whole feed) to just always re-run.
-async function fetchRouteStopPatterns(routeId, fetchImpl = fetch, cachePath = FEED_CACHE_PATH) {
-  const cached = loadCacheFromDisk(cachePath);
+// skipped on a cache hit. buildRouteStopPatterns' per-route filtering still
+// runs every time regardless of cache status, and isn't free -- measured
+// ~800ms against a real feed (stop_times.txt alone is over 100MB) -- so
+// callers that want to show a "this may take a moment" message should print
+// it before calling this, not after.
+//
+// preloadedCache lets a caller that already called loadCacheFromDisk itself
+// (e.g. find-stop.js, to decide what status message to print before this
+// runs) pass that result straight through, instead of this function reading
+// and JSON-parsing the same (potentially 100MB+) cache file from disk all
+// over again -- measured ~200ms on its own, pure waste when paid twice.
+async function fetchRouteStopPatterns(routeId, fetchImpl = fetch, cachePath = FEED_CACHE_PATH, preloadedCache) {
+  const cached = preloadedCache !== undefined ? preloadedCache : loadCacheFromDisk(cachePath);
   const cacheFresh = Boolean(cached && Date.now() - cached.downloadedAt < FEED_CACHE_MAX_AGE_MS);
   const fileTexts = cacheFresh ? cached.fileTexts : await downloadGtfsFiles(ROUTE_STOP_PATTERN_FILES, fetchImpl);
   if (!cacheFresh) saveCacheToDisk({ downloadedAt: Date.now(), fileTexts }, cachePath);

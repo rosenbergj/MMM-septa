@@ -202,13 +202,10 @@ async function main() {
     process.exit(1);
   }
 
-  // Purely informational -- fetchRouteStopPatterns makes the same freshness
-  // check itself and is the actual source of truth for whether it downloads
-  // or reuses the cache. Checked separately here only so the right message
-  // prints *before* a possible download starts (the whole point is warning
-  // about the wait in advance); an extremely unlikely race where the cache
-  // expires between this check and that one just means a stale message, not
-  // stale data.
+  // Decides which message to print below *and* is passed straight through
+  // to fetchRouteStopPatterns as preloadedCache, so that function doesn't
+  // have to re-read and re-parse the same (potentially 100MB+) cache file
+  // from disk a second time just to reach the same freshness verdict.
   const cachedFeed = loadCacheFromDisk(FEED_CACHE_PATH);
   const cacheFresh = Boolean(cachedFeed && Date.now() - cachedFeed.downloadedAt < FEED_CACHE_MAX_AGE_MS);
   if (cacheFresh) {
@@ -218,9 +215,15 @@ async function main() {
       "Downloading SEPTA's static schedule feed (~20MB, takes about 5-15 seconds) -- cached afterward for 24h..."
     );
   }
+  // Whether or not the feed itself needed downloading, filtering it down to
+  // this one route is real, measurable work (~800ms against a full feed,
+  // more for a route with a lot of distinct patterns) that happens entirely
+  // inside fetchRouteStopPatterns below -- print this before calling it, not
+  // after, so the wait is actually accounted for instead of looking stalled.
+  console.error("Processing data...");
   let patterns;
   try {
-    patterns = await fetchRouteStopPatterns(routeId);
+    patterns = await fetchRouteStopPatterns(routeId, fetch, FEED_CACHE_PATH, cachedFeed);
   } catch (err) {
     console.error(`Failed to fetch/parse the schedule feed for route ${routeId}: ${err.message}`);
     process.exit(1);
