@@ -16,6 +16,7 @@ const {
   computeIsFresh,
   pollRoute,
   mergeScheduledArrivals,
+  resolveRouteLabelColor,
 } = require("../septa-client.js");
 
 function fixture(name) {
@@ -319,6 +320,52 @@ test("computeIsFresh", async (t) => {
   await t.test("age just over 3x refresh interval -> false", () => {
     const now = 1_000_000;
     assert.equal(computeIsFresh(now - (120_000 * 3 + 1), 120, now), false);
+  });
+});
+
+test("resolveRouteLabelColor", async (t) => {
+  await t.test("route_type 1 (subway/metro) with a real route_color -> that color, lowercased, hash-prefixed", () => {
+    assert.equal(
+      resolveRouteLabelColor({ route_type: 1, route_color: "0097D6", is_frequent_bus: false }),
+      "#0097d6"
+    );
+  });
+
+  await t.test("route_type 0 (trolley) with a real route_color -> that color", () => {
+    assert.equal(
+      resolveRouteLabelColor({ route_type: 0, route_color: "5A960A", is_frequent_bus: false }),
+      "#5a960a"
+    );
+  });
+
+  await t.test("route_type 3 (bus), is_frequent_bus true -> the frequent-bus red, not route_color", () => {
+    assert.equal(
+      resolveRouteLabelColor({ route_type: 3, route_color: "000000", is_frequent_bus: true }),
+      "#e63946"
+    );
+  });
+
+  await t.test("route_type 3 (bus), is_frequent_bus false -> null (use default label color)", () => {
+    assert.equal(resolveRouteLabelColor({ route_type: 3, route_color: "FFFFFF", is_frequent_bus: false }), null);
+  });
+
+  await t.test("rail/trolley route_type takes priority over is_frequent_bus", () => {
+    assert.equal(
+      resolveRouteLabelColor({ route_type: 1, route_color: "0097D6", is_frequent_bus: true }),
+      "#0097d6"
+    );
+  });
+
+  await t.test("rail/trolley route_type but malformed route_color -> falls through to is_frequent_bus check", () => {
+    assert.equal(
+      resolveRouteLabelColor({ route_type: 1, route_color: "not-a-color", is_frequent_bus: true }),
+      "#e63946"
+    );
+  });
+
+  await t.test("no routeMeta at all (route missing from /routes/ response) -> null", () => {
+    assert.equal(resolveRouteLabelColor(null), null);
+    assert.equal(resolveRouteLabelColor(undefined), null);
   });
 });
 

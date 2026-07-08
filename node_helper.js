@@ -1,7 +1,7 @@
 "use strict";
 
 const NodeHelper = require("node_helper");
-const { pollRoute, mergeScheduledArrivals } = require("./septa-client.js");
+const { pollRoute, mergeScheduledArrivals, fetchRoutes, resolveRouteLabelColor } = require("./septa-client.js");
 const {
   fetchScheduleCache,
   getScheduledArrivals,
@@ -31,6 +31,14 @@ module.exports = NodeHelper.create({
     // first 60+ seconds while a fresh download is pending.
     this.scheduleCache = loadCacheFromDisk();
     this.scheduleTimer = setTimeout(() => this.refreshScheduleCache(), SCHEDULE_INITIAL_DELAY_MS);
+    // routeId -> hex color string, or null for "no override". Empty until
+    // the first refresh completes -- unlike the GTFS schedule cache, this is
+    // a single small JSON request (every route in one response, no
+    // per-route or per-stop filtering to do), so it's not worth persisting
+    // to disk or delaying behind SCHEDULE_INITIAL_DELAY_MS the way the
+    // multi-MB GTFS zip download is.
+    this.routeColors = {};
+    this.refreshRouteColors();
   },
 
   stop() {
@@ -39,6 +47,26 @@ module.exports = NodeHelper.create({
     }
     this.routes.clear();
     if (this.scheduleTimer) clearTimeout(this.scheduleTimer);
+    if (this.routeColorTimer) clearTimeout(this.routeColorTimer);
+  },
+
+  // Fetches SEPTA's /routes/ endpoint (every route's metadata in one
+  // response -- rail/trolley brand colors and each bus route's
+  // is_frequent_bus flag, see septa-client.js's resolveRouteLabelColor) and
+  // indexes it by routeId for runCycle to look up. Runs once at startup,
+  // then once every 24h like the GTFS schedule refresh -- this metadata
+  // essentially never changes, so a retry-on-failure/once-daily cadence is
+  // plenty.
+  async refreshRouteColors() {
+    try {
+      const routes = await fetchRoutes();
+      this.routeColors = Object.fromEntries(routes.map((r) => [String(r.route_id), resolveRouteLabelColor(r)]));
+      console.log(`MMM-septa: refreshed route color metadata (${routes.length} routes)`);
+      this.routeColorTimer = setTimeout(() => this.refreshRouteColors(), SCHEDULE_REFRESH_MS);
+    } catch (err) {
+      console.error(`MMM-septa: route color metadata refresh failed: ${err.message}; retrying in ${SCHEDULE_RETRY_MS / 1000}s`);
+      this.routeColorTimer = setTimeout(() => this.refreshRouteColors(), SCHEDULE_RETRY_MS);
+    }
   },
 
   // Downloads and parses SEPTA's static GTFS feed, filtered down to just the
@@ -267,6 +295,7 @@ module.exports = NodeHelper.create({
         secondaryStopDetour: state.secondaryStopDetour,
         secondaryStopName: state.secondaryStopName,
         secondaryStopSkippedHeadsigns,
+        routeColor: this.routeColors[state.config.routeId] || null,
       });
 
       state.timer = setTimeout(() => this.runCycle(fullKey), state.refreshIntervalSeconds * 1000);

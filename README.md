@@ -230,7 +230,13 @@ don't copy that into your real `config.js`.
   fresh backend fetch. When a detour affects the configured stop, shows
   "DETOUR" (with SEPTA's stated reason, e.g. "DETOUR: Sinkhole", if one
   was provided) instead of arrival times. The route label is followed by
-  a small direction abbreviation (e.g. "17 NB"), and each route also gets
+  a small direction abbreviation (e.g. "17 NB"). The route number itself is
+  colored using SEPTA's own `/routes/` endpoint: Metro/trolley routes get
+  their real brand color (e.g. Market-Frankford Line blue, Broad St Line
+  orange), a bus route SEPTA flags as frequent-service (`is_frequent_bus`)
+  is colored red, and everything else keeps the default label color. This
+  metadata is fetched once at startup and refreshed daily, same cadence as
+  the GTFS schedule cache. Each route also gets
   a small header line with the stop name (e.g. "20th St & Oregon Av"),
   discovered automatically from SEPTA's live data (no config needed) and
   cached once known, so it doesn't disappear during a cycle with no

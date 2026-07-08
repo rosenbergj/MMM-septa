@@ -199,7 +199,17 @@ Module.register("MMM-septa", {
       const labelMain = document.createElement("div");
       labelMain.className = "septa-label-main";
       const abbrev = septaAbbreviateDirection(route.direction);
-      labelMain.innerHTML = `${route.label || route.routeId} <span class="septa-direction-abbrev">${abbrev}</span>`;
+      // routeColor (node_helper.js, from SEPTA's /routes/ endpoint): a real
+      // brand color for Metro/trolley routes, red for a bus route SEPTA
+      // flags as frequent-service, or null (default label color) for an
+      // ordinary bus route -- see septa-client.js's resolveRouteLabelColor.
+      // Scoped to just the route number span, not the direction abbreviation
+      // next to it, which keeps its own muted styling regardless.
+      const routeColor = state && state.routeColor;
+      const routeNumberStyle = routeColor ? ` style="color:${septaEscapeHtml(routeColor)}"` : "";
+      labelMain.innerHTML =
+        `<span class="septa-route-number"${routeNumberStyle}>${route.label || route.routeId}</span> ` +
+        `<span class="septa-direction-abbrev">${abbrev}</span>`;
       labelCell.appendChild(labelMain);
       // Every destination line -- whether there's one or several, flagged
       // or not -- always renders as a full-width colspan=2 row below the

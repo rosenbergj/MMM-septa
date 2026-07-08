@@ -33,6 +33,46 @@ async function fetchTripUpdate(tripId, fetchImpl = fetch) {
   return fetchJson(`${BASE_URL}/trip-update/?trip_id=${encodeURIComponent(tripId)}`, fetchImpl);
 }
 
+// Unlike the other fetch* functions, this one isn't filtered by route --
+// SEPTA's /routes/ always returns every route's metadata in one response,
+// so callers fetch it once and index it themselves (see node_helper.js).
+async function fetchRoutes(fetchImpl = fetch) {
+  return fetchJson(`${BASE_URL}/routes/`, fetchImpl);
+}
+
+// GTFS route_type: 0 = trolley/streetcar/light rail, 1 = subway/metro. Rail
+// and trolley route_color values are SEPTA's real brand colors (confirmed:
+// Market-Frankford Line blue, Broad St Line orange, etc) -- worth showing.
+// Ordinary bus route_color is not: every bus route gets one of only two
+// generic black/white pairs, unrelated to any real per-route branding.
+const RAIL_TROLLEY_ROUTE_TYPES = new Set([0, 1]);
+
+const HEX_COLOR_RE = /^[0-9a-fA-F]{6}$/;
+
+// Chosen to sit at roughly the same perceived brightness (0.299R + 0.587G +
+// 0.114B) as SEPTA's real rail/trolley brand colors -- those cluster around
+// ~105-130 on that scale (e.g. Market-Frankford blue 0097D6 is ~113, Broad
+// St orange F26100 is ~129), and this red lands at ~110 -- so a
+// frequent-bus route doesn't read as dimmer or brighter than a real branded
+// line, just a different hue.
+const FREQUENT_BUS_COLOR = "#e63946";
+
+// Resolves the color a route's label should be drawn in from one entry of
+// fetchRoutes()'s response, or null for "no override, use the default
+// label color" (an ordinary, non-frequent bus route, or a route SEPTA's
+// /routes/ doesn't know about at all). Rail/trolley routes take priority
+// over the frequent-bus flag (moot in practice -- SEPTA doesn't mark any
+// rail/trolley route as is_frequent_bus today -- but a real distinct brand
+// color is a stronger signal than a boolean if that ever changed).
+function resolveRouteLabelColor(routeMeta) {
+  if (!routeMeta) return null;
+  if (RAIL_TROLLEY_ROUTE_TYPES.has(routeMeta.route_type) && HEX_COLOR_RE.test(routeMeta.route_color)) {
+    return `#${routeMeta.route_color.toLowerCase()}`;
+  }
+  if (routeMeta.is_frequent_bus) return FREQUENT_BUS_COLOR;
+  return null;
+}
+
 // SEPTA formats detour start/end as "%m/%d/%Y, %H:%M:%S" (e.g.
 // "7/6/2026, 14:30:00"). JS Date parsing of that exact format isn't
 // reliable across locales/engines, so parse it by hand.
@@ -380,6 +420,8 @@ module.exports = {
   fetchDetours,
   fetchTrips,
   fetchTripUpdate,
+  fetchRoutes,
+  resolveRouteLabelColor,
   parseSeptaDateTime,
   isDetourActive,
   findActiveDetour,
