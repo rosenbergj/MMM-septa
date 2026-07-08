@@ -40,6 +40,29 @@ const {
   FEED_CACHE_MAX_AGE_MS,
 } = require("../gtfs-schedule.js");
 
+// Which cardinal axis each direction name belongs to -- used by the
+// geography sanity check below to tell an axis disagreement (e.g. reported
+// Eastbound, schedule geometry says north-south) apart from a same-axis
+// reversal (reported Northbound, schedule geometry clearly runs south).
+const AXIS_OF_DIRECTION = {
+  Northbound: "NS",
+  Southbound: "NS",
+  Eastbound: "EW",
+  Westbound: "EW",
+};
+
+// Miles per degree of latitude/longitude, adjusted for Philadelphia's
+// latitude (~40degN, where SEPTA's entire service area sits) so lat and lon
+// displacements are directly comparable in miles.
+const MILES_PER_DEGREE_LAT = 69.0;
+const MILES_PER_DEGREE_LON = 69.0 * Math.cos((40 * Math.PI) / 180);
+
+// Below this net displacement along whichever axis dominates, a pattern's
+// endpoints are too close together to tell a real cardinal trend from noise
+// (e.g. a short shuttle loop) -- computeDirectionTrend backs off rather than
+// guess.
+const MIN_TREND_DISPLACEMENT_MILES = 0.5;
+
 // "95 minutes" below 2h (fine-grained enough to be useful for a
 // same-session re-run), "3 hours" above it (the cache lasts a full
 // FEED_CACHE_MAX_AGE_MS day, so precision past whole hours isn't useful).
@@ -96,6 +119,76 @@ function buildDirectionNameMap(liveTrips, patterns) {
   return names;
 }
 
+// Net lat/lon displacement (in miles) from the first to the last stop of the
+// SHORTEST pattern in a direction -- deliberately the shortest, not the
+// longest. The longest pattern is the one most likely to include a
+// short-turn/express spur at one end that runs off in some other direction
+// (real example: route 63's longest pattern in one direction detours far
+// enough west that its first-to-last-stop trend reads as east-west, even
+// though every one of that direction's patterns -- and the schedule's own
+// street-crossing order -- agrees it's actually a north-south route). The
+// shortest pattern is the one least likely to include such a spur, so it's
+// the better stand-in for the route's core direction.
+//
+// Returns null (not enough signal to say anything) if lat/lon is missing for
+// either endpoint stop, or if the net displacement along the dominant axis
+// is below MIN_TREND_DISPLACEMENT_MILES.
+function computeDirectionTrend(directionPatterns) {
+  let shortest = null;
+  for (const pattern of directionPatterns) {
+    if (!shortest || pattern.stops.length < shortest.stops.length) shortest = pattern;
+  }
+  const stops = shortest.stops;
+  const first = stops[0];
+  const last = stops[stops.length - 1];
+  if (first.stopLat == null || first.stopLon == null || last.stopLat == null || last.stopLon == null) return null;
+
+  const dLatMiles = (last.stopLat - first.stopLat) * MILES_PER_DEGREE_LAT;
+  const dLonMiles = (last.stopLon - first.stopLon) * MILES_PER_DEGREE_LON;
+  const dominantAxis = Math.abs(dLatMiles) >= Math.abs(dLonMiles) ? "NS" : "EW";
+  const dominantMiles = dominantAxis === "NS" ? dLatMiles : dLonMiles;
+  if (Math.abs(dominantMiles) < MIN_TREND_DISPLACEMENT_MILES) return null;
+
+  const name =
+    dominantAxis === "NS" ? (dLatMiles >= 0 ? "Northbound" : "Southbound") : dLonMiles >= 0 ? "Eastbound" : "Westbound";
+  return { dominantAxis, name };
+}
+
+// Demotes a live-confirmed direction_name to unconfirmed when it contradicts
+// its own schedule pattern's geography in a way that has no legitimate
+// explanation: the reported name's axis (N/S vs E/W) matches the schedule's
+// dominant axis, but the sign is backwards (data says Northbound, the
+// pattern's own stops clearly run south). This never asserts a direction
+// from geography alone -- it only ever takes a confirmed name away -- and it
+// never acts on an axis-level disagreement (reported Eastbound, geography
+// says N/S): naming conventions can legitimately put a route on an axis that
+// doesn't match its literal compass heading (I-76 keeps its E/W designation
+// through Philadelphia even where the road itself runs mostly north-south),
+// so that kind of disagreement isn't treated as evidence of a data error. A
+// same-axis reversal has no such excuse, so it's demoted rather than
+// trusted -- confirmed live on route 135, where both directions' live
+// direction_name is the literal opposite of what every stop in their own
+// pattern says.
+function applyGeographySanityCheck(directionNames, byDirection) {
+  const result = new Map(directionNames);
+  for (const [directionId, entry] of directionNames) {
+    if (!entry.confirmed) continue;
+    const directionPatterns = byDirection.get(directionId);
+    if (!directionPatterns) continue;
+    const trend = computeDirectionTrend(directionPatterns);
+    if (!trend) continue;
+    if (AXIS_OF_DIRECTION[entry.name] !== trend.dominantAxis) continue;
+    if (trend.name === entry.name) continue;
+    console.error(
+      `Warning: SEPTA's live feed reports "${entry.name}" for direction_id ${directionId}, but every stop in that ` +
+        `direction's own schedule pattern runs the opposite way along the same axis (net trend: ${trend.name}). ` +
+        "Treating the live-reported name as unconfirmed rather than trusting a reversed report."
+    );
+    result.set(directionId, { rejectedGeography: true, rejectedName: entry.name });
+  }
+  return result;
+}
+
 // If there are exactly two directions total and exactly one is confirmed
 // live, infer the other as its cardinal opposite (Northbound<->Southbound,
 // Eastbound<->Westbound) -- but tag it as inferred, not confirmed, so
@@ -115,6 +208,9 @@ function inferOppositeDirectionNames(directionNames, allDirectionIds) {
 
 function directionHeaderLabel(entry, directionId) {
   if (!entry) return `Unknown Direction (direction_id ${directionId} -- no live trip currently running to confirm its name)`;
+  if (entry.rejectedGeography) {
+    return `Unknown Direction (direction_id ${directionId} -- SEPTA provided ambiguous data on what this direction is called)`;
+  }
   if (entry.confirmed) return entry.name;
   return `${entry.name} (inferred as the opposite of ${entry.inferredFrom} -- not live-confirmed, double-check)`;
 }
@@ -129,6 +225,12 @@ function directionConfigFragment(entry, directionId) {
     return {
       value: `"TODO_CONFIRM_DIRECTION"`,
       comment: `direction_id ${directionId}, no live trip to confirm the name -- check SEPTA's site or re-run later`,
+    };
+  }
+  if (entry.rejectedGeography) {
+    return {
+      value: `"TODO_CONFIRM_DIRECTION"`,
+      comment: `direction_id ${directionId}, SEPTA's live feed reported "${entry.rejectedName}" but that contradicts this direction's own schedule geography -- check SEPTA's site or re-run later`,
     };
   }
   if (entry.confirmed) return { value: `"${entry.name}"`, comment: null };
@@ -257,13 +359,14 @@ async function main() {
   // would almost never happen to be the one instance picked as
   // representative for its headsign, out of potentially dozens sharing it.
   let directionNames = buildDirectionNameMap(liveTrips, patterns);
+  directionNames = applyGeographySanityCheck(directionNames, byDirection);
   directionNames = inferOppositeDirectionNames(directionNames, directionIds);
 
   let anyUnknownDirection = false;
   for (const directionId of directionIds) {
     const merged = mergeDirectionPatterns(byDirection.get(directionId));
     const entry = directionNames.get(directionId) || null;
-    if (!entry) anyUnknownDirection = true;
+    if (!entry || entry.rejectedGeography) anyUnknownDirection = true;
     const label = directionHeaderLabel(entry, directionId);
     if (full) {
       printMergedDirectionFull(routeId, label, merged, entry, directionId);
@@ -281,10 +384,11 @@ async function main() {
     );
   } else if (anyUnknownDirection) {
     console.log(
-      "\nAt least one direction above shows \"Unknown Direction\" because no trip in that direction " +
-        "is currently running for SEPTA to confirm its name. The stop_id is still correct as shown -- " +
-        "but re-run this command while a trip in that direction is running (or check SEPTA's site) to " +
-        "get the real direction name before copying the entry into your config.js."
+      "\nAt least one direction above shows \"Unknown Direction\" because either no trip in that direction " +
+        "is currently running for SEPTA to confirm its name, or SEPTA's live data for it didn't hold up " +
+        "(see any warnings above). The stop_id is still correct as shown -- but re-run this command while a " +
+        "trip in that direction is running (or check SEPTA's site) to get the real direction name before " +
+        "copying the entry into your config.js."
     );
   } else {
     console.log(
@@ -294,4 +398,14 @@ async function main() {
   }
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = {
+  pickRepresentativePatterns,
+  buildDirectionNameMap,
+  computeDirectionTrend,
+  applyGeographySanityCheck,
+  inferOppositeDirectionNames,
+  directionHeaderLabel,
+  directionConfigFragment,
+};

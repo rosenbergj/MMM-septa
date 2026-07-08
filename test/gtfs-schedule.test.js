@@ -519,8 +519,8 @@ test("buildRouteStopPatterns", async (t) => {
       headsign: "Front-Market",
       directionId: "0",
       stops: [
-        { stopId: 21289, stopSequence: 1, stopName: "20th St & Oregon Av" },
-        { stopId: 99000, stopSequence: 2, stopName: "Broad St & Pattison Av" },
+        { stopId: 21289, stopSequence: 1, stopName: "20th St & Oregon Av", stopLat: null, stopLon: null },
+        { stopId: 99000, stopSequence: 2, stopName: "Broad St & Pattison Av", stopLat: null, stopLon: null },
       ],
     });
   });

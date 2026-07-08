@@ -170,6 +170,23 @@ function parseStops(text, stopIds) {
   return stops;
 }
 
+// stops.txt -> Map<stop_id, {lat, lon}>, dropping any row with a missing or
+// non-numeric coordinate. Kept separate from parseStops (whose Map<id, name>
+// shape is relied on directly by buildScheduleCache/node_helper.js and their
+// tests) since this is only needed by scripts/find-stop.js's geography sanity
+// check.
+function parseStopLatLon(text) {
+  const stops = new Map();
+  for (const row of parseCsv(text, splitCsvLineQuoted)) {
+    if (!row.stop_id || !row.stop_lat || !row.stop_lon) continue;
+    const lat = Number(row.stop_lat);
+    const lon = Number(row.stop_lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    stops.set(row.stop_id, { lat, lon });
+  }
+  return stops;
+}
+
 function timeToSeconds(value) {
   const match = /^(\d{1,3}):(\d{2}):(\d{2})$/.exec(String(value).trim());
   if (!match) return null;
@@ -312,6 +329,7 @@ function buildScheduleCache(fileTexts, routeIds, stopIds) {
 function buildRouteStopPatterns(fileTexts, routeId) {
   const trips = parseTripsForRoutes(fileTexts["trips.txt"], [routeId]);
   const stopNames = parseStops(fileTexts["stops.txt"]);
+  const stopLatLon = parseStopLatLon(fileTexts["stops.txt"]);
   const allStopTimes = parseStopTimesForTrips(fileTexts["stop_times.txt"], trips);
 
   const stopTimesByTrip = new Map();
@@ -330,6 +348,8 @@ function buildRouteStopPatterns(fileTexts, routeId) {
         stopId: s.stopId,
         stopSequence: s.stopSequence,
         stopName: stopNames.get(String(s.stopId)) || null,
+        stopLat: stopLatLon.get(String(s.stopId))?.lat ?? null,
+        stopLon: stopLatLon.get(String(s.stopId))?.lon ?? null,
       }));
     patterns.push({ tripId, headsign: trip.headsign, directionId: trip.directionId, stops });
   }
@@ -578,6 +598,7 @@ module.exports = {
   readZipEntries,
   parseTripsForRoutes,
   parseStops,
+  parseStopLatLon,
   parseStopTimesForTrips,
   parseCalendar,
   parseCalendarDates,
