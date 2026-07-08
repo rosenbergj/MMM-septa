@@ -220,7 +220,7 @@ don't copy that into your real `config.js`.
   route once a longer note is involved — see "Secondary stop" below)
   when every currently-shown arrival agrees on it (e.g. "→ Front-Market").
   When they don't, each distinct destination among the shown arrivals
-  gets a footnote marker (*, †, ‡, ...) appended to its times (e.g.
+  gets a footnote marker (\*, †, ‡, ...) appended to its times (e.g.
   "14m* 22m†"), with every destination listed on its own line below
   (e.g. "→ 20th-Johnston(*)" / "→ Broad-Pattison(†)") instead of a vague
   "Mixed destinations". Marker assignment is stable across polls --
@@ -256,5 +256,3 @@ don't copy that into your real `config.js`.
   everything else here) as a fallback for when live data hasn't/can't.
 - `scripts/find-stop.js` / `scripts/dry-run.js` — standalone CLI helpers,
   runnable with plain `node`, no MagicMirror needed.
-
-Adapted from the SEPTA-polling design in the `lightpi` project.
