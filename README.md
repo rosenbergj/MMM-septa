@@ -185,7 +185,24 @@ don't copy that into your real `config.js`.
 
 ## Known limitations (MVP scope)
 
-- Bus routes only — SEPTA rail isn't covered.
+- Regional Rail isn't covered — that's a separate GTFS feed/API SEPTA
+  publishes and this module doesn't touch it.
+- SEPTA Metro (the subway/el) and trolleys are reachable with the same
+  `route_id`s used by SEPTA's static GTFS feed and live v2 API — no
+  separate feed or endpoint needed:
+  - `L1` — Market-Frankford Line
+  - `B1` — Broad Street Line Local
+  - `B2` — Broad Street Line Express
+  - `B3` — Broad-Ridge Spur
+  - `M1` — Norristown High-Speed Line
+  - Trolleys: `T1`–`T5`, `G1`, `D1`, `D2`
+
+  Caveat: SEPTA has no live GPS tracking for the Broad Street Line or
+  Market-Frankford Line (`B1`/`B2`/`B3`/`L1`) — every trip on those two
+  lines reports `"NO GPS"`, so their arrivals are always schedule-based
+  estimates, never truly live-tracked. Every other route above (the
+  trolleys and `M1`) does get live GPS/position data, behaving the same
+  as a bus route.
 - No time-of-day-dependent stop/direction switching (e.g. commuting one
   direction in the morning, the other in the evening) — each route entry is
   static. Can be added later if useful.
