@@ -663,6 +663,34 @@ test("mergeDirectionPatterns", async (t) => {
 });
 
 test("fetchRouteStopPatterns", async (t) => {
+  // A dedicated, never-pre-existing cache path per sub-test -- fetchRouteStopPatterns
+  // now caches its download to disk (see FEED_CACHE_MAX_AGE_MS), so without
+  // this every sub-test after the first would silently reuse whatever the
+  // previous one cached instead of actually exercising its own fetchImpl
+  // stub (confirmed live: without this, "throws on a failed download" below
+  // never even calls its fetchImpl, because the previous sub-test's cache
+  // is still "fresh").
+  const cachePaths = [];
+  function freshCachePath(name) {
+    const p = path.join(os.tmpdir(), `mmm-septa-feed-cache-test-${process.pid}-${name}.json`);
+    cachePaths.push(p);
+    try {
+      fs.unlinkSync(p);
+    } catch (err) {
+      // didn't exist yet -- fine
+    }
+    return p;
+  }
+  t.after(() => {
+    for (const p of cachePaths) {
+      try {
+        fs.unlinkSync(p);
+      } catch (err) {
+        // already gone / never created -- fine either way
+      }
+    }
+  });
+
   await t.test("downloads, unzips, and parses the feed end-to-end", async () => {
     const zip = buildTestZip([
       {
@@ -686,14 +714,45 @@ test("fetchRouteStopPatterns", async (t) => {
       arrayBuffer: async () => zip.buffer.slice(zip.byteOffset, zip.byteOffset + zip.byteLength),
     });
 
-    const patterns = await fetchRouteStopPatterns("17", fetchImpl);
+    const patterns = await fetchRouteStopPatterns("17", fetchImpl, freshCachePath("basic"));
     assert.equal(patterns.length, 1);
     assert.equal(patterns[0].stops[0].stopName, "20th St & Oregon Av");
   });
 
   await t.test("throws on a failed download", async () => {
     const fetchImpl = async () => ({ ok: false, status: 500, statusText: "Internal Server Error" });
-    await assert.rejects(() => fetchRouteStopPatterns("17", fetchImpl), /500/);
+    await assert.rejects(() => fetchRouteStopPatterns("17", fetchImpl, freshCachePath("failure")), /500/);
+  });
+
+  await t.test("a fresh cache is reused instead of calling fetchImpl again", async () => {
+    const zip = buildTestZip([
+      { name: "trips.txt", content: "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed\n17,weekday,9001,Front-Market,,0,1,1,1,1\n" },
+      { name: "stop_times.txt", content: "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n9001,08:15:00,08:15:00,21289,1,,0,0,,1\n" },
+      { name: "stops.txt", content: "stop_id,stop_name\n21289,20th St & Oregon Av\n" },
+    ]);
+    let fetchCount = 0;
+    const fetchImpl = async () => {
+      fetchCount += 1;
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        arrayBuffer: async () => zip.buffer.slice(zip.byteOffset, zip.byteOffset + zip.byteLength),
+      };
+    };
+    const cachePath = freshCachePath("reuse");
+
+    await fetchRouteStopPatterns("17", fetchImpl, cachePath);
+    assert.equal(fetchCount, 1);
+
+    // Second call, same (now-populated) cache path: should reuse the cached
+    // download rather than calling fetchImpl again, even for a different
+    // routeId -- the cache isn't filtered by route, see fetchRouteStopPatterns.
+    const patterns = await fetchRouteStopPatterns("17", fetchImpl, cachePath);
+    assert.equal(fetchCount, 1);
+    assert.equal(patterns.length, 1);
+
+    fs.unlinkSync(cachePath);
   });
 });
 

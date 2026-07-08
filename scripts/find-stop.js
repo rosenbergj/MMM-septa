@@ -32,7 +32,23 @@
 // Example: node scripts/find-stop.js 17 --full
 
 const { fetchTrips } = require("../septa-client.js");
-const { fetchRouteStopPatterns, mergeDirectionPatterns } = require("../gtfs-schedule.js");
+const {
+  fetchRouteStopPatterns,
+  mergeDirectionPatterns,
+  loadCacheFromDisk,
+  FEED_CACHE_PATH,
+  FEED_CACHE_MAX_AGE_MS,
+} = require("../gtfs-schedule.js");
+
+// "95 minutes" below 2h (fine-grained enough to be useful for a
+// same-session re-run), "3 hours" above it (the cache lasts a full
+// FEED_CACHE_MAX_AGE_MS day, so precision past whole hours isn't useful).
+function formatCacheAge(ms) {
+  const minutes = Math.round(ms / 60000);
+  if (minutes < 120) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const hours = Math.round(ms / 3600000);
+  return `${hours} hour${hours === 1 ? "" : "s"}`;
+}
 
 const OPPOSITE_DIRECTION = {
   Northbound: "Southbound",
@@ -176,7 +192,22 @@ async function main() {
     process.exit(1);
   }
 
-  console.error(`Downloading SEPTA's static schedule feed (one-time per run, ~20MB)...`);
+  // Purely informational -- fetchRouteStopPatterns makes the same freshness
+  // check itself and is the actual source of truth for whether it downloads
+  // or reuses the cache. Checked separately here only so the right message
+  // prints *before* a possible download starts (the whole point is warning
+  // about the wait in advance); an extremely unlikely race where the cache
+  // expires between this check and that one just means a stale message, not
+  // stale data.
+  const cachedFeed = loadCacheFromDisk(FEED_CACHE_PATH);
+  const cacheFresh = Boolean(cachedFeed && Date.now() - cachedFeed.downloadedAt < FEED_CACHE_MAX_AGE_MS);
+  if (cacheFresh) {
+    console.error(`Using SEPTA's static schedule feed cached ${formatCacheAge(Date.now() - cachedFeed.downloadedAt)} ago...`);
+  } else {
+    console.error(
+      "Downloading SEPTA's static schedule feed (~20MB, takes about 5-15 seconds) -- cached afterward for 24h..."
+    );
+  }
   let patterns;
   try {
     patterns = await fetchRouteStopPatterns(routeId);

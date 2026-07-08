@@ -2,3 +2,4 @@ node_modules/
 *.log
 gtfs-cache.json
 route-colors-cache.json
+find-stop-feed-cache.json

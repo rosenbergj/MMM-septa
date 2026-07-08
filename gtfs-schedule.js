@@ -21,6 +21,12 @@ const path = require("path");
 
 const GTFS_URL = "https://www3.septa.org/developer/google_bus.zip";
 const DEFAULT_CACHE_PATH = path.join(__dirname, "gtfs-cache.json");
+const FEED_CACHE_PATH = path.join(__dirname, "find-stop-feed-cache.json");
+// How long a cached download of the raw feed (see fetchRouteStopPatterns)
+// stays valid before a re-run re-downloads instead of reusing it -- 24h to
+// match the runtime schedule cache's own refresh cadence (SEPTA republishes
+// this feed at most about that often anyway).
+const FEED_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const NEEDED_FILES = ["trips.txt", "stop_times.txt", "calendar.txt", "calendar_dates.txt", "stops.txt"];
 const DOW_KEYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]; // index by Date#getDay()
 
@@ -524,9 +530,17 @@ const ROUTE_STOP_PATTERN_FILES = ["trips.txt", "stop_times.txt", "stops.txt"];
 
 // Downloads just enough of the feed to list every scheduled stop pattern for
 // one route (see buildRouteStopPatterns) -- used only by
-// scripts/find-stop.js.
-async function fetchRouteStopPatterns(routeId, fetchImpl = fetch) {
-  const fileTexts = await downloadGtfsFiles(ROUTE_STOP_PATTERN_FILES, fetchImpl);
+// scripts/find-stop.js. The raw downloaded files are cached to disk
+// (unfiltered by routeId, so a later run for a *different* route within the
+// cache window benefits too, not just a repeat of the same one) for
+// FEED_CACHE_MAX_AGE_MS -- only the actual network download/decompress is
+// skipped on a cache hit; buildRouteStopPatterns' per-route filtering is
+// cheap enough (~1s for the whole feed) to just always re-run.
+async function fetchRouteStopPatterns(routeId, fetchImpl = fetch, cachePath = FEED_CACHE_PATH) {
+  const cached = loadCacheFromDisk(cachePath);
+  const cacheFresh = Boolean(cached && Date.now() - cached.downloadedAt < FEED_CACHE_MAX_AGE_MS);
+  const fileTexts = cacheFresh ? cached.fileTexts : await downloadGtfsFiles(ROUTE_STOP_PATTERN_FILES, fetchImpl);
+  if (!cacheFresh) saveCacheToDisk({ downloadedAt: Date.now(), fileTexts }, cachePath);
   return buildRouteStopPatterns(fileTexts, routeId);
 }
 
@@ -569,4 +583,6 @@ module.exports = {
   fetchRouteStopPatterns,
   loadCacheFromDisk,
   saveCacheToDisk,
+  FEED_CACHE_PATH,
+  FEED_CACHE_MAX_AGE_MS,
 };
