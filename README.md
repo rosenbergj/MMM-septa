@@ -242,7 +242,10 @@ don't copy that into your real `config.js`.
   orange), a bus route SEPTA flags as frequent-service (`is_frequent_bus`)
   is colored red, and everything else keeps the default label color. This
   metadata is fetched once at startup and refreshed daily, same cadence as
-  the GTFS schedule cache. Each route also gets
+  the GTFS schedule cache, and cached to disk so a restart shows the last
+  known-good colors immediately rather than defaulting to plain white until
+  a fresh fetch succeeds (SEPTA's `/routes/` endpoint measured ~55% failure
+  in testing, so this matters in practice, not just in theory). Each route also gets
   a small header line with the stop name (e.g. "20th St & Oregon Av"),
   discovered automatically from SEPTA's live data (no config needed) and
   cached once known, so it doesn't disappear during a cycle with no

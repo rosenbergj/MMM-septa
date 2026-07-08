@@ -1,3 +1,4 @@
 node_modules/
 *.log
 gtfs-cache.json
+route-colors-cache.json
