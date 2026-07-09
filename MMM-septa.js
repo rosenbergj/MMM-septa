@@ -88,7 +88,7 @@ function septaFormatClockTime(etaSeconds) {
 
 Module.register("MMM-septa", {
   defaults: {
-    routes: [], // [{ routeId, stopId, direction, label, warnMinutes }] -- warnMinutes is optional, overrides the global value below
+    routes: [], // [{ routeId, stopId, direction, label, warnMinutes, showHeadsigns }] -- warnMinutes and showHeadsigns are optional, overriding the global values below
     maxArrivals: 3,
     refreshIntervalSeconds: 120, // how often node_helper actually polls SEPTA
     retryIntervalSeconds: 30, // backoff after a failed poll
@@ -100,6 +100,13 @@ Module.register("MMM-septa", {
     // GPS-tracking yet (and, later, static-schedule arrivals) instead of
     // showing only fully GPS-confirmed buses.
     useScheduleSupplement: true,
+    // Set false to hide the destination line(s) below each route and the
+    // footnote markers on mixed-destination arrivals. When a route also has
+    // a secondaryStopId, trips that skip it structurally (by headsign) are
+    // hidden entirely instead of just flagged, replaced by a single muted
+    // note -- trips skipping it due to an active detour still show, in
+    // orange, unchanged. See README's "Secondary stop" section.
+    showHeadsigns: true,
   },
 
   start() {
@@ -177,8 +184,6 @@ Module.register("MMM-septa", {
       const row = document.createElement("tr");
       row.className = "septa-row";
 
-      const shownArrivals = state && Array.isArray(state.etas) ? state.etas.slice(0, this.config.maxArrivals) : [];
-      const destinationInfo = septaGroupByDestination(shownArrivals, state && state.headsignOrder);
       // secondaryStopId (route config): headsigns that structurally never
       // reach it come from the static schedule (secondaryStopSkippedHeadsigns);
       // an active detour skipping it applies route-wide regardless of
@@ -188,11 +193,40 @@ Module.register("MMM-septa", {
       const secondaryStopDetour = Boolean(state && state.secondaryStopDetour);
       const secondaryStopDisplayName =
         (state && state.secondaryStopName) || (route.secondaryStopId != null ? String(route.secondaryStopId) : "");
-      // Per-route warnMinutes overrides the global config value, which in
-      // turn overrides the module default -- MagicMirror already merges
-      // the global-vs-default step via this.config, so only the route-level
-      // override needs handling here.
+      // Per-route warnMinutes/showHeadsigns override the global config value,
+      // which in turn overrides the module default -- MagicMirror already
+      // merges the global-vs-default step via this.config, so only the
+      // route-level override needs handling here.
       const warnMinutes = typeof route.warnMinutes === "number" ? route.warnMinutes : this.config.warnMinutes;
+      const showHeadsigns =
+        typeof route.showHeadsigns === "boolean" ? route.showHeadsigns : this.config.showHeadsigns;
+
+      const allEtas = state && Array.isArray(state.etas) ? state.etas : [];
+      // With showHeadsigns off, a secondary-stop-configured route hides
+      // trips that structurally skip it (by headsign/pattern) instead of
+      // just flagging them -- filtered out of the full known list, before
+      // it's cut down to maxArrivals, so the display still fills up with
+      // maxArrivals genuine trips rather than just showing fewer. A trip
+      // skipped by an active detour is a different, real-time situation and
+      // is never filtered here (secondaryStopDetour applies route-wide, so
+      // this can't fire while a detour is in effect anyway).
+      let omittedSecondaryStopTrips = false;
+      const etasForDisplay =
+        !showHeadsigns && route.secondaryStopId != null
+          ? allEtas.filter((arrival) => {
+              const skipsByHeadsign =
+                !secondaryStopDetour &&
+                (arrival.reachesSecondaryStop === false ||
+                  (arrival.reachesSecondaryStop == null &&
+                    secondaryStopSkippedHeadsigns.includes(arrival.headsign)));
+              if (skipsByHeadsign) omittedSecondaryStopTrips = true;
+              return !skipsByHeadsign;
+            })
+          : allEtas;
+      const shownArrivals = etasForDisplay.slice(0, this.config.maxArrivals);
+      const destinationInfo = showHeadsigns
+        ? septaGroupByDestination(shownArrivals, state && state.headsignOrder)
+        : { mixed: false, headsign: null };
 
       const labelCell = document.createElement("td");
       labelCell.className = "septa-label";
@@ -238,6 +272,12 @@ Module.register("MMM-septa", {
         fullWidthRows.push({
           flagged,
           html: flagged ? `${line} (no stop at ${septaEscapeHtml(secondaryStopDisplayName)})` : line,
+        });
+      }
+      if (omittedSecondaryStopTrips) {
+        fullWidthRows.push({
+          flagged: false,
+          html: `(Note: Some trips omitted that don't stop at ${septaEscapeHtml(secondaryStopDisplayName)})`,
         });
       }
       if (secondaryStopDetour && shownArrivals.length > 0) {

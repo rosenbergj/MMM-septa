@@ -128,13 +128,14 @@ MagicMirror module option, outside `config`) to override it.
     warnMinutes: 5,
     countdownWithinMinutes: 30,
     useScheduleSupplement: true,
+    showHeadsigns: true,
   },
 }
 ```
 
 | Option                    | Default | Description                                                              |
 | ------------------------- | ------- | -------------------------------------------------------------------------- |
-| `routes`                  | `[]`    | Array of `{ routeId, stopId, direction, label, warnMinutes, secondaryStopId }` -- `label` is optional and defaults to `routeId` if omitted; `warnMinutes` is optional per-route and overrides the global value below; `secondaryStopId` is optional, see below |
+| `routes`                  | `[]`    | Array of `{ routeId, stopId, direction, label, warnMinutes, secondaryStopId, showHeadsigns }` -- `label` is optional and defaults to `routeId` if omitted; `warnMinutes` and `showHeadsigns` are optional per-route and override the global values below; `secondaryStopId` is optional, see below |
 | `maxArrivals`             | `3`     | Number of upcoming arrivals shown per route                              |
 | `refreshIntervalSeconds`  | `120`   | How often the backend actually polls SEPTA                               |
 | `retryIntervalSeconds`    | `30`    | Backoff before retrying after a failed poll                              |
@@ -142,6 +143,7 @@ MagicMirror module option, outside `config`) to override it.
 | `countdownWithinMinutes`  | `30`    | Arrivals at or under this many minutes show as "Nm"; farther out shows a clock time (e.g. "5:47 PM"), honoring the mirror's global `timeFormat` (12/24h) |
 | `countdownTickSeconds`    | `15`    | How often the displayed "Nm" countdown re-renders client-side            |
 | `useScheduleSupplement`   | `true`  | Include arrivals SEPTA hasn't fully GPS-confirmed yet, plus static-schedule arrivals up to 60 minutes out that live tracking doesn't cover yet (both shown as "~Nm", italic/muted). Set `false` to show only GPS-confirmed arrivals. |
+| `showHeadsigns`           | `true`  | Show each trip's headsign (see below) below the route, and footnote markers when several are mixed together. Global default, overridable per route. Set `false` to hide both and compact the display -- see "Secondary stop" below for how this interacts with `secondaryStopId`. |
 
 Each route's `direction` should match SEPTA's `direction_name` for that route
 exactly (case-sensitive) — use `find-stop.js` to confirm it. If your
@@ -156,6 +158,17 @@ indistinguishable from a real route that legitimately has nothing running
 right now. A warning is logged to the console (once at startup, and again
 on each daily refresh if it's still wrong) if this happens.
 
+### What's a "headsign"?
+
+The destination text shown on the front of the bus (or train) — SEPTA's
+term for it, borrowed here since it's what the API itself calls the field.
+It can differ between trips on the same route and direction: a short-turn
+that ends partway along the route, a branch, a weekend-only extension, and
+so on. Riders already familiar with a route usually recognize what a given
+headsign means for their trip; this module just displays whatever SEPTA
+reports, plus (via `secondaryStopId` below) an optional way to tell apart
+headsigns that do vs. don't reach a stop you care about.
+
 ### Secondary stop (optional)
 
 Set `secondaryStopId` on a route to flag arrivals whose trip doesn't stop at
@@ -163,17 +176,28 @@ some other `stop_id` on that same route — e.g. a short-turn trip that ends
 before reaching where you're headed, a stop you're worried a detour might
 skip, or (just as validly) an earlier stop if you want to tell full-length
 trips apart from ones that start further along the route. It works in
-either direction relative to your primary stop; it doesn't change which
-arrivals are shown, it just flags them. If a trip or an entire headsign
-doesn't stop at the secondary stop (whether structurally or because of an
-active detour), that's noted in text (e.g. "no stop at Broad St & Kitty
-Hawk Av") and colored orange instead of the usual red/green/gray.
+either direction relative to your primary stop. By default (`showHeadsigns:
+true`) it doesn't change which arrivals are shown, it just flags them: if a
+trip or an entire headsign doesn't stop at the secondary stop (whether
+structurally or because of an active detour), that's noted in text (e.g.
+"no stop at Broad St & Kitty Hawk Av") and colored orange instead of the
+usual red/green/gray.
+
+With `showHeadsigns: false`, that changes for the *structural* case only:
+trips whose headsign/pattern never reaches the secondary stop are hidden
+entirely instead of flagged, replaced by a single muted note ("Note: Some
+trips omitted that don't stop at Broad St & Kitty Hawk Av") in the same
+style as a headsign line — not orange. This is meant to cut down on orange
+you don't actually care about when a route just has multiple branches, only
+some of which go where you're headed. A trip skipped by an active *detour*
+is unaffected by this and still shows in orange as above, since that's a
+real-time situation rather than an expected branch of the route.
 
 If `secondaryStopId` doesn't actually appear anywhere on the configured
 route at all (wrong route, a typo, or a nonexistent `stop_id`), it's treated
-as if it weren't set — nothing is flagged or colored orange — and a warning
-is logged to the console on each schedule refresh so the mistake is
-discoverable.
+as if it weren't set — nothing is flagged, hidden, or colored orange — and
+a warning is logged to the console on each schedule refresh so the mistake
+is discoverable.
 
 The secondary stop's name is resolved automatically (no config needed) —
 first from live trip data the same way the primary stop's is, falling back
@@ -271,7 +295,10 @@ don't copy that into your real `config.js`.
   node_helper derives it from every headsign the route/stop is ever
   scheduled to see (not just whichever trip happens to be next), so a
   given destination keeps the same marker even as different trips
-  rotate through. The nearest arrival is shown larger/brighter than the
+  rotate through. Set `showHeadsigns: false` to hide both the destination
+  line(s) and the footnote markers for a more compact display — see
+  "Secondary stop" above for how it also changes secondary-stop handling.
+  The nearest arrival is shown larger/brighter than the
   rest. With `useScheduleSupplement` on (the default), arrivals SEPTA
   hasn't started GPS-tracking yet — still at their first stop, no
   vehicle assigned, or otherwise not "real-time" — are shown too,
