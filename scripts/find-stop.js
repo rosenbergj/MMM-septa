@@ -414,12 +414,10 @@ async function main() {
     );
   } else if (anyUnknownDirection) {
     console.log(
-      "\nAt least one direction above shows \"Unknown Direction\" because either no trip in that direction is " +
-        "currently running for SEPTA to confirm its name, a trip is running but SEPTA's live feed never gives " +
-        "this route's trips a usable direction name (true for every trip on some routes, e.g. the trolleys and " +
-        "route 63 -- re-running later won't help those), or SEPTA's live data for it didn't hold up (see any " +
-        "warnings above). The stop_id is still correct as shown -- check SEPTA's site for the real direction " +
-        "name before copying the entry into your config.js."
+      "\nAt least one direction above shows \"Unknown Direction\" because either no trip in that " +
+        "direction is currently running for SEPTA to confirm its name, or a trip is running but " +
+        "SEPTA's live feed is lacking in some way. The stop_id is still correct as shown -- check " +
+        "SEPTA's site for the real direction name before copying the entry into your config.js."
     );
   } else {
     console.log(
