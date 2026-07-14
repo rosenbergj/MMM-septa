@@ -538,7 +538,7 @@ Module.register("MMM-septa", {
       subRoutes.map((s) => septaAbbreviateDirection(s.direction))
     );
     labelMain.innerHTML =
-      `<span class="septa-route-number">${septaMergedRouteTypeLabel(subRouteIds)}</span> ` +
+      `<span class="septa-route-number">${route.label || septaMergedRouteTypeLabel(subRouteIds)}</span> ` +
       `<span class="septa-direction-abbrev">${combinedAbbrev}</span>`;
     labelCell.appendChild(labelMain);
     row.appendChild(labelCell);

@@ -227,9 +227,10 @@ route) — merging only changes how the results are displayed:
 
 - The route label becomes `BUS` or `METRO` (SEPTA Metro is every route_id
   shaped like a letter — L/G/B/T/D/M — followed by a digit; anything else is
-  a plain numbered bus route). The direction abbreviation next to it
-  combines each sub-route's own direction in N/S/E/W order (`NEB` if one
-  sub-route is Eastbound and another is Northbound).
+  a plain numbered bus route) — or your own `label`, if you set one, same
+  override precedence as an unmerged route. The direction abbreviation next
+  to it combines each sub-route's own direction in N/S/E/W order (`NEB` if
+  one sub-route is Eastbound and another is Northbound).
 - Arrival times from every sub-route are merged into one sorted list, same
   `maxArrivals`/`countdownWithinMinutes` limits as usual. Merged arrivals
   always carry a footnote marker (even when only one destination happens to
