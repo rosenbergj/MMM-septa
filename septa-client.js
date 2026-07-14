@@ -221,6 +221,29 @@ function isNoGpsSource(tripsEntry) {
   return tripsEntry.status === "NO GPS" || tripsEntry.vehicle_id === "None";
 }
 
+// SEPTA mis-dates the last trip(s) of the service day for a few minutes
+// after midnight: a stop time expressed with the GTFS past-midnight
+// convention ("24:xx", meaning "still the previous service day") gets its
+// transit_date read as the calendar day that just rolled over instead of
+// the service day the trip actually started on, landing eta a full 24h in
+// the future even though the bus is really due any minute. Confirmed live
+// (2026-07-14 ~00:08 EDT, route 17 stop 21303): a bus 7 stops out, on time,
+// got an eta stamped for the following night instead of ~3 minutes away --
+// and because MMM.js's clock-time display drops the date, it *looked*
+// correct (same HH:MM, wrong day) while actually sitting past
+// countdownWithinMinutes and showing green instead of a red "3m".
+//
+// Every stop_time here belongs to a trip already in progress (goodTrips
+// excludes next_stop_sequence <= 1 unless schedule-supplementing), so no
+// genuine eta should be more than a couple hours out -- correct rather than
+// trust SEPTA's eta as-is.
+const MIDNIGHT_ETA_BUG_THRESHOLD_SECONDS = 3 * 3600;
+const ONE_DAY_SECONDS = 86400;
+
+function correctMidnightEta(eta, now) {
+  return eta - now > MIDNIGHT_ETA_BUG_THRESHOLD_SECONDS ? eta - ONE_DAY_SECONDS : eta;
+}
+
 // A stop_time counts as an upcoming arrival if it's for the configured
 // stop, hasn't already departed, is still in the future, and doesn't carry
 // SEPTA's "bad data" delay sentinel (>= 999).
@@ -231,15 +254,16 @@ function isNoGpsSource(tripsEntry) {
 function filterStopTimes(stopTimes, stopId, now = Date.now() / 1000) {
   if (!Array.isArray(stopTimes)) return [];
   const targetStopId = Number(stopId);
-  return stopTimes.filter((stopTime) => {
-    if (!stopTime) return false;
-    return (
-      Number(stopTime.stop_id) === targetStopId &&
-      !stopTime.departed &&
-      Number(stopTime.eta) > now &&
-      Number(stopTime.delay) < 999
-    );
-  });
+  const results = [];
+  for (const stopTime of stopTimes) {
+    if (!stopTime) continue;
+    if (Number(stopTime.stop_id) !== targetStopId) continue;
+    if (stopTime.departed) continue;
+    if (Number(stopTime.delay) >= 999) continue;
+    const eta = correctMidnightEta(Number(stopTime.eta), now);
+    if (eta > now) results.push({ ...stopTime, eta });
+  }
+  return results;
 }
 
 // Every stop_time entry in a trip-update carries stop_name for every stop

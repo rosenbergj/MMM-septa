@@ -262,6 +262,27 @@ test("filterStopTimes", async (t) => {
     const result = filterStopTimes(badDelayStopTimes, 10312, 1783312100);
     assert.deepEqual(result, []);
   });
+
+  // Real payload captured live 2026-07-14 ~00:08 EDT: SEPTA stamped the
+  // last northbound trip of the night with etas a full 24h in the future
+  // (transit_date already rolled over to the new calendar day, added to a
+  // GTFS "24:xx" past-midnight arrival time meant for the *previous*
+  // service day) even though the bus was really a few stops out. Confirmed
+  // against the live vehicle position at capture time: it was two stops
+  // before 21303, on schedule, so the true arrival was ~00:11:12 -- not
+  // 2026-07-15.
+  await t.test("corrects a midnight day-rollover eta back to the true arrival time", () => {
+    const stopTimes = fixture("trip-update-787319-midnight-bug.json").stop_times;
+    const now = 1784002120; // 2026-07-14 00:08:40 EDT, the real capture time
+    const result = filterStopTimes(stopTimes, 21303, now);
+    assert.deepEqual(result.map((s) => s.eta), [1784002272]); // 2026-07-14 00:11:12 EDT
+  });
+
+  await t.test("leaves a genuinely near eta untouched", () => {
+    const stopTimes = fixture("trip-update-900002.json").stop_times;
+    const result = filterStopTimes(stopTimes, 21289, now);
+    assert.deepEqual(result[0].eta, 1783312200);
+  });
 });
 
 test("findSkippedStopName", async (t) => {
@@ -461,6 +482,33 @@ test("pollRoute", async (t) => {
     assert.equal(result.detour, false);
     assert.equal(result.hasTripError, false);
     assert.equal(result.stopName, "20th St & Oregon Av");
+  });
+
+  // End-to-end replay of the real live payloads captured 2026-07-14 ~00:08
+  // EDT (route 17, stop 21303, Wharton St). Before the midnight-eta fix,
+  // this trip's eta came back tagged 24h in the future ("2026-07-15"), so
+  // MMM.js fell past countdownWithinMinutes and rendered a plain clock time
+  // instead of a "3m" countdown -- a bus that was really a few minutes away
+  // displayed as an untroubled, far-off arrival. See filterStopTimes's
+  // "corrects a midnight day-rollover eta" test for the underlying fixture.
+  await t.test("corrects a midnight day-rollover eta to a real near-term arrival", async () => {
+    const midnightTrips = fixture("trips-route17-midnight-bug.json");
+    const midnightTripUpdate = fixture("trip-update-787319-midnight-bug.json");
+    const fetchImpl = stubFetch([
+      ["detours/?route=17", detoursEmpty],
+      ["trips/?route_id=17", midnightTrips],
+      ["trip-update/?trip_id=787319", midnightTripUpdate],
+    ]);
+    const midnightNow = () => new Date(1784002120 * 1000); // 2026-07-14 00:08:40 EDT
+    const result = await pollRoute(
+      { routeId: "17", stopId: 21303, direction: "Northbound" },
+      { fetchImpl, now: midnightNow, useScheduleSupplement: false }
+    );
+    assert.deepEqual(result.etas, [
+      { eta: 1784002272, headsign: "Front-Market", tracked: true, tripId: "787319" },
+    ]);
+    const minutesAway = (result.etas[0].eta - 1784002120) / 60;
+    assert.ok(minutesAway > 2 && minutesAway < 3, `expected ~2.5 min, got ${minutesAway}`); // not ~1442
   });
 
   await t.test("useScheduleSupplement=false excludes the untracked seq=1 trip entirely", async () => {

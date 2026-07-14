@@ -1,0 +1,30 @@
+[
+  {
+    "route_id": "17",
+    "trip_id": "787429",
+    "direction_id": 1,
+    "trip_headsign": "20th-Johnston",
+    "block_id": 7319,
+    "vehicle_id": "7469",
+    "delay": 4.8,
+    "next_stop_id": "10257",
+    "next_stop_sequence": 8,
+    "transit_date": "2026-07-14",
+    "direction_name": "Southbound",
+    "status": "ON-TIME"
+  },
+  {
+    "route_id": "17",
+    "trip_id": "787319",
+    "direction_id": 0,
+    "trip_headsign": "Front-Market",
+    "block_id": 7320,
+    "vehicle_id": "7474",
+    "delay": 0.2,
+    "next_stop_id": "21294",
+    "next_stop_sequence": 7,
+    "transit_date": "2026-07-14",
+    "direction_name": "Northbound",
+    "status": "ON-TIME"
+  }
+]

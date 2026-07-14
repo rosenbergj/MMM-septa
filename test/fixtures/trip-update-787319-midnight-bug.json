@@ -1,0 +1,60 @@
+{
+  "trip": {
+    "transit_date": "2026-07-14",
+    "route_id": "17",
+    "trip_id": "787319",
+    "direction_id": 0,
+    "trip_headsign": "Front-Market",
+    "next_stop_id": 21294,
+    "next_stop_sequence": 7,
+    "delay": 0.2,
+    "status": "ON-TIME",
+    "real-time": true
+  },
+  "stop_times": [
+    {
+      "stop_id": 21294,
+      "stop_name": "20th St & Jackson St",
+      "stop_sequence": 7,
+      "arrival_time": "24:08:21",
+      "scheduled_time": "2026-07-15 12:08 AM",
+      "eta": 1784088492,
+      "delay": 0.2,
+      "departed": false,
+      "is_skipped": false
+    },
+    {
+      "stop_id": 21302,
+      "stop_name": "20th St & Reed St",
+      "stop_sequence": 15,
+      "arrival_time": "24:11:21",
+      "scheduled_time": "2026-07-15 12:11 AM",
+      "eta": 1784088672,
+      "delay": 0.2,
+      "departed": false,
+      "is_skipped": false
+    },
+    {
+      "stop_id": 21303,
+      "stop_name": "20th St & Wharton St",
+      "stop_sequence": 16,
+      "arrival_time": "24:11:43",
+      "scheduled_time": "2026-07-15 12:11 AM",
+      "eta": 1784088672,
+      "delay": 0.2,
+      "departed": false,
+      "is_skipped": false
+    },
+    {
+      "stop_id": 21316,
+      "stop_name": "20th St & Chestnut St",
+      "stop_sequence": 31,
+      "arrival_time": "24:17:35",
+      "scheduled_time": "2026-07-15 12:17 AM",
+      "eta": 1784089032,
+      "delay": 0.2,
+      "departed": false,
+      "is_skipped": false
+    }
+  ]
+}
