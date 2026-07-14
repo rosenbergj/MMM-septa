@@ -77,6 +77,101 @@ function septaAbbreviateDirection(direction) {
   return match ? `${match[1].toUpperCase()}B` : direction;
 }
 
+// route-config.js's parseRouteIds/resolveDirectionForRoute, reimplemented
+// here rather than shared: this file runs in the browser (MagicMirror loads
+// it as a plain <script>, no require()), while route-config.js is a
+// Node-only CommonJS module used by node_helper.js. Both copies are
+// intentionally tiny (a handful of lines) and kept in sync by hand.
+//
+// Splits a configured routeId into the list of route_ids it actually means
+// -- a comma-separated string ("T2,T3,T4,T5") is the primary, documented
+// merged-route syntax, a bare JSON array an undocumented equivalent. A
+// single, unmerged routeId ("17") still comes back as a one-element array.
+function septaParseRouteIds(routeId) {
+  if (Array.isArray(routeId)) return routeId.map(String);
+  return String(routeId)
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+}
+
+// Resolves the configured `direction` for one sub-routeId of a (possibly
+// merged) route entry -- a plain string applies to every sub-route
+// uniformly, a {routeId: directionString} map resolves per sub-route (see
+// README's "Merging routes" section for why a merge sometimes needs this).
+function septaResolveDirectionForRoute(direction, routeId) {
+  if (direction && typeof direction === "object" && !Array.isArray(direction)) {
+    return direction[routeId];
+  }
+  return direction;
+}
+
+// SEPTA Metro (its branding for every rail/subway-el/trolley line -- the
+// Broad Street Line, Market-Frankford Line, Norristown High-Speed Line, and
+// every trolley) always uses a route_id of one letter (L/G/B/T/D/M) followed
+// by a digit; an ordinary bus route_id is bare digits with no letter at
+// all. A merged row shows "METRO" if any of its sub-routes matches that
+// shape, "BUS" otherwise. Pattern-based rather than an enumerated list of
+// known IDs -- SEPTA already adds new IDs within a lettered line (e.g. a
+// future T6) without any code change needed here; a hardcoded list would
+// silently miss those. Not derived from a route's color: an ordinary
+// trolley also gets a real brand color from SEPTA's /routes/ metadata, so
+// color alone can't tell a Metro line apart from a bus that happens to be
+// flagged frequent-service (see septa-client.js's resolveRouteLabelColor).
+const METRO_ROUTE_ID_PATTERN = /^[LGBTDM]\d+$/i;
+function septaMergedRouteTypeLabel(subRouteIds) {
+  return subRouteIds.some((id) => METRO_ROUTE_ID_PATTERN.test(id)) ? "METRO" : "BUS";
+}
+
+const CARDINAL_ORDER = ["N", "S", "E", "W"];
+
+// Combines each sub-route's own direction abbreviation into one compact
+// code for a merged row's header, e.g. ["NB", "NB"] -> "NB" (the common
+// case -- every sub-route shares one cardinal direction), ["NB", "EB"] ->
+// "NEB", in fixed N/S/E/W order regardless of input order. Falls back to
+// joining the raw abbreviations with "/" if any of them doesn't fit the
+// single-letter-cardinal shape (e.g. septaAbbreviateDirection's fallback
+// for a direction string that isn't "___bound") -- safer than guessing at a
+// combined code from something that isn't one.
+function septaCombineDirectionAbbreviations(abbreviations) {
+  const distinct = [...new Set(abbreviations.filter(Boolean))];
+  if (distinct.length <= 1) return distinct[0] || "";
+  const letters = new Set();
+  for (const abbrev of distinct) {
+    const match = /^([NSEW])B$/.exec(abbrev);
+    if (!match) return distinct.join("/");
+    letters.add(match[1]);
+  }
+  const ordered = CARDINAL_ORDER.filter((letter) => letters.has(letter));
+  return `${ordered.join("")}B`;
+}
+
+// Like septaGroupByDestination, but for a merged route's combined arrivals:
+// unconditionally assigns every shown headsign a footnote marker, even when
+// only one distinct destination currently shows. A merged row's headsign
+// mix can shift from one poll to the next as different sub-routes' arrivals
+// rotate through, so "how many distinct destinations happen to be showing
+// right now" isn't a stable enough signal to gate markers on the way the
+// single-route case (septaGroupByDestination) does -- markers are always on
+// for a merged row instead. headsignOrder (the combined per-sub-route
+// orders, concatenated and deduped by the caller) fixes marker assignment
+// the same way septaGroupByDestination's does, for the same reason.
+function septaAssignMergedMarkers(arrivals, headsignOrder) {
+  const shown = new Set();
+  for (const arrival of arrivals) shown.add(arrival.headsign);
+
+  const order = [];
+  if (Array.isArray(headsignOrder)) {
+    for (const headsign of headsignOrder) {
+      if (shown.has(headsign)) order.push(headsign);
+    }
+  }
+  for (const arrival of arrivals) {
+    if (arrival.headsign && !order.includes(arrival.headsign)) order.push(arrival.headsign);
+  }
+  return new Map(order.map((headsign, index) => [headsign, septaFootnoteMarker(index)]));
+}
+
 // Beyond countdownWithinMinutes, a clock time ("5:47 PM") is more useful than
 // a big minute count; respects the mirror's global 12h/24h config.timeFormat
 // if present (falls back to the browser's locale default otherwise).
@@ -167,6 +262,11 @@ Module.register("MMM-septa", {
     let lastHeaderStopId = null;
 
     for (const route of this.config.routes) {
+      const subRouteIds = septaParseRouteIds(route.routeId);
+      if (subRouteIds.length > 1) {
+        lastHeaderStopId = this.renderMergedRouteRow(wrapper, route, subRouteIds, now, lastHeaderStopId);
+        continue;
+      }
       const state = this.routeStates[septaRouteKey(route)];
 
       const stopName = state && state.stopName;
@@ -374,5 +474,253 @@ Module.register("MMM-septa", {
     }
 
     return wrapper;
+  },
+
+  // Renders one merged route entry (routeId parsed into 2+ sub-routeIds --
+  // e.g. "T2,T3,T4,T5") as a single combined row instead of one row per
+  // sub-route. Each sub-routeId polls fully independently on the backend
+  // (see node_helper.js's registerConfig) -- this only ever combines
+  // already-resolved routeStates at display time, same principle as the
+  // rest of getDom(). Returns the (possibly updated) lastHeaderStopId so
+  // getDom()'s loop can keep threading it through, the same way its own
+  // inline stop-header dedup logic does.
+  //
+  // See README's "Merging routes" section for the full behavior this
+  // implements.
+  renderMergedRouteRow(wrapper, route, subRouteIds, now, lastHeaderStopId) {
+    const warnMinutes = typeof route.warnMinutes === "number" ? route.warnMinutes : this.config.warnMinutes;
+    const showHeadsigns =
+      typeof route.showHeadsigns === "boolean" ? route.showHeadsigns : this.config.showHeadsigns;
+
+    // One entry per sub-route that has live state at all -- a sub-route
+    // MagicMirror hasn't heard from yet (still loading on first start)
+    // simply contributes nothing this cycle, same treatment as one that's
+    // mid-detour.
+    const subRoutes = subRouteIds.map((subRouteId) => {
+      const direction = septaResolveDirectionForRoute(route.direction, subRouteId);
+      const state = this.routeStates[septaRouteKey({ routeId: subRouteId, stopId: route.stopId, direction })];
+      return { subRouteId, direction, state };
+    });
+    const knownSubRoutes = subRoutes.filter((s) => s.state);
+
+    const stopName = knownSubRoutes.map((s) => s.state.stopName).find(Boolean);
+    if (stopName && route.stopId !== lastHeaderStopId) {
+      const headerRow = document.createElement("tr");
+      const headerCell = document.createElement("td");
+      headerCell.className = "septa-stop-header";
+      headerCell.colSpan = 2;
+      headerCell.innerHTML = septaEscapeHtml(stopName);
+      headerRow.appendChild(headerCell);
+      wrapper.appendChild(headerRow);
+      lastHeaderStopId = route.stopId;
+    }
+
+    const row = document.createElement("tr");
+    row.className = "septa-row";
+
+    const labelCell = document.createElement("td");
+    labelCell.className = "septa-label";
+    const labelMain = document.createElement("div");
+    labelMain.className = "septa-label-main";
+    const combinedAbbrev = septaCombineDirectionAbbreviations(
+      subRoutes.map((s) => septaAbbreviateDirection(s.direction))
+    );
+    labelMain.innerHTML =
+      `<span class="septa-route-number">${septaMergedRouteTypeLabel(subRouteIds)}</span> ` +
+      `<span class="septa-direction-abbrev">${combinedAbbrev}</span>`;
+    labelCell.appendChild(labelMain);
+    row.appendChild(labelCell);
+
+    const arrivalsCell = document.createElement("td");
+    arrivalsCell.className = "septa-arrivals";
+
+    if (knownSubRoutes.length === 0) {
+      arrivalsCell.innerHTML = "&hellip;";
+      row.appendChild(arrivalsCell);
+      wrapper.appendChild(row);
+      return lastHeaderStopId;
+    }
+
+    const fresh = knownSubRoutes.every((s) => septaIsFresh(s.state.lastFetchTime, s.state.refreshIntervalSeconds, now));
+    if (!fresh) row.className += " septa-stale";
+    const hasTripError = knownSubRoutes.some((s) => s.state.hasTripError);
+
+    // A merged row only shows a full DETOUR banner when literally every
+    // sub-route is detoured around the primary stop this cycle -- a detour
+    // on just one leg simply contributes zero arrivals from that sub-route
+    // (pollRoute's existing detour handling is all-or-nothing per route),
+    // no different in effect from that sub-route having nothing scheduled
+    // right now.
+    const allDetoured = knownSubRoutes.every((s) => s.state.detour);
+
+    // secondaryStopId is one shared config value for the whole merged
+    // group, not per sub-route -- each sub-route resolves its own skip
+    // status against it independently, exactly like the single-route case
+    // in getDom() above, and those per-arrival flags travel through the
+    // merge below.
+    const secondaryStopDisplayName =
+      knownSubRoutes.map((s) => s.state.secondaryStopName).find(Boolean) ||
+      (route.secondaryStopId != null ? String(route.secondaryStopId) : "");
+    const anySecondaryStopDetour = knownSubRoutes.some((s) => s.state.secondaryStopDetour);
+
+    let omittedSecondaryStopTrips = false;
+    const mergedArrivals = [];
+    for (const { subRouteId, state } of knownSubRoutes) {
+      if (state.detour) continue;
+      const secondaryStopSkippedHeadsigns = state.secondaryStopSkippedHeadsigns || [];
+      const secondaryStopDetour = Boolean(state.secondaryStopDetour);
+      const allEtas = Array.isArray(state.etas) ? state.etas : [];
+      const etasForDisplay =
+        !showHeadsigns && route.secondaryStopId != null
+          ? allEtas.filter((arrival) => {
+              const skipsByHeadsign =
+                !secondaryStopDetour &&
+                (arrival.reachesSecondaryStop === false ||
+                  (arrival.reachesSecondaryStop == null &&
+                    secondaryStopSkippedHeadsigns.includes(arrival.headsign)));
+              if (skipsByHeadsign) omittedSecondaryStopTrips = true;
+              return !skipsByHeadsign;
+            })
+          : allEtas;
+      for (const arrival of etasForDisplay) {
+        const skipsSecondaryStop =
+          secondaryStopDetour ||
+          arrival.reachesSecondaryStop === false ||
+          (arrival.reachesSecondaryStop == null && secondaryStopSkippedHeadsigns.includes(arrival.headsign));
+        mergedArrivals.push({ ...arrival, subRouteId, skipsSecondaryStop });
+      }
+    }
+    mergedArrivals.sort((a, b) => a.eta - b.eta);
+    const shownArrivals = mergedArrivals.slice(0, this.config.maxArrivals);
+
+    // Two different marker schemes depending on showHeadsigns, matching the
+    // two different jobs a marker does in each mode. With showHeadsigns
+    // false, headsigns are deliberately hidden -- a marker's only job is to
+    // trace a top-row time back to *which route* it came from, so it's one
+    // marker per sub-route, fixed by that sub-route's position in the
+    // configured routeId list (not by which sub-routes happen to have
+    // arrivals this cycle, for the same stability reason headsignOrder
+    // exists below -- so a route's marker never changes cycle to cycle).
+    // With showHeadsigns true, headsigns are shown, so a marker instead
+    // traces a time back to *which destination*, same as the single-route
+    // case -- one marker per distinct headsign, via septaAssignMergedMarkers.
+    const markerForSubRoute = new Map(subRouteIds.map((id, index) => [id, septaFootnoteMarker(index)]));
+    let markerFor; // Map<headsign, marker>, only populated/used when showHeadsigns is true
+    if (showHeadsigns) {
+      // Each sub-route's own headsignOrder (from node_helper.js, stable
+      // across polls -- see septaGroupByDestination's doc comment),
+      // concatenated in sub-route configuration order and deduped, so a
+      // given destination's marker doesn't change just because a different
+      // sub-route's trip happens to be next.
+      const combinedHeadsignOrder = [];
+      for (const { state } of knownSubRoutes) {
+        for (const headsign of state.headsignOrder || []) {
+          if (!combinedHeadsignOrder.includes(headsign)) combinedHeadsignOrder.push(headsign);
+        }
+      }
+      markerFor = septaAssignMergedMarkers(shownArrivals, combinedHeadsignOrder);
+    }
+    for (const arrival of shownArrivals) {
+      arrival.marker = showHeadsigns ? markerFor.get(arrival.headsign) || "" : markerForSubRoute.get(arrival.subRouteId);
+    }
+
+    if (allDetoured) {
+      arrivalsCell.classList.add("septa-detour");
+      const reason = knownSubRoutes.map((s) => s.state.detourReason).find(Boolean);
+      arrivalsCell.innerHTML = reason ? `DETOUR: ${septaEscapeHtml(reason)}` : "DETOUR";
+    } else if (shownArrivals.length === 0) {
+      arrivalsCell.innerHTML = "&ndash;&ndash;";
+    } else {
+      const separator = shownArrivals.length > 1 ? ", " : " ";
+      arrivalsCell.innerHTML = shownArrivals
+        .map((arrival, index) => {
+          const minutes = septaMinutesUntil(arrival.eta, now);
+          const urgencyClass = arrival.skipsSecondaryStop
+            ? "septa-secondary-skip"
+            : minutes <= warnMinutes
+              ? "septa-urgent"
+              : "septa-normal";
+          const tierClass = index === 0 && arrival.tracked !== false ? "septa-first" : "septa-later";
+          const untrackedClass = arrival.tracked === false ? " septa-untracked" : "";
+          const prefix = arrival.tracked === false ? "~" : "";
+          const text =
+            minutes <= this.config.countdownWithinMinutes ? `${minutes}m` : septaFormatClockTime(arrival.eta);
+          return `<span class="${urgencyClass} ${tierClass}${untrackedClass}">${prefix}${text}${arrival.marker}</span>`;
+        })
+        .join(separator);
+    }
+
+    if (hasTripError) {
+      const warn = document.createElement("span");
+      warn.className = "septa-partial";
+      warn.title = "Some trip data failed to load this cycle";
+      warn.innerHTML = " !";
+      arrivalsCell.appendChild(warn);
+    }
+
+    row.appendChild(arrivalsCell);
+    wrapper.appendChild(row);
+
+    // Second row(s): built from shownArrivals (what's actually in the top
+    // countdown, post-maxArrivals-cutoff), not the full merged pool -- a
+    // sub-route/headsign with nothing currently in that window doesn't get
+    // a row of its own, same "only what's actually shown" principle as the
+    // single-route case above.
+    const fullWidthRows = [];
+    if (!showHeadsigns) {
+      // One marker per contributing sub-route (markerForSubRoute is a
+      // fixed 1:1 mapping, so there's never more than one to resolve here)
+      // -- e.g. "T2(*), T4(†), T5(‡)".
+      const contributingSubRouteIds = new Set(shownArrivals.map((a) => a.subRouteId));
+      const parts = subRouteIds
+        .filter((id) => contributingSubRouteIds.has(id))
+        .map((id) => `${id}(${markerForSubRoute.get(id)})`);
+      if (parts.length > 0) fullWidthRows.push({ flagged: false, html: parts.join(", ") });
+    } else {
+      const headsignsBySubRoute = new Map();
+      for (const arrival of shownArrivals) {
+        if (!headsignsBySubRoute.has(arrival.subRouteId)) headsignsBySubRoute.set(arrival.subRouteId, []);
+        const headsigns = headsignsBySubRoute.get(arrival.subRouteId);
+        if (arrival.headsign && !headsigns.includes(arrival.headsign)) headsigns.push(arrival.headsign);
+      }
+      for (const { subRouteId, state } of knownSubRoutes) {
+        const headsigns = headsignsBySubRoute.get(subRouteId);
+        if (!headsigns || headsigns.length === 0) continue;
+        const skipped = state.secondaryStopSkippedHeadsigns || [];
+        const parts = headsigns.map((headsign) => {
+          const marker = markerFor.get(headsign);
+          const line = `${septaEscapeHtml(headsign)}(${marker})`;
+          return skipped.includes(headsign) ? `${line} (no stop at ${septaEscapeHtml(secondaryStopDisplayName)})` : line;
+        });
+        fullWidthRows.push({
+          flagged: headsigns.some((h) => skipped.includes(h)),
+          html: `${subRouteId} &rarr; ${parts.join(", ")}`,
+        });
+      }
+    }
+    if (omittedSecondaryStopTrips) {
+      fullWidthRows.push({
+        flagged: false,
+        html: `(Note: Some trips omitted that don't stop at ${septaEscapeHtml(secondaryStopDisplayName)})`,
+      });
+    }
+    if (anySecondaryStopDetour && shownArrivals.length > 0) {
+      fullWidthRows.push({
+        flagged: true,
+        html: `Detour skips stop at ${septaEscapeHtml(secondaryStopDisplayName)}`,
+      });
+    }
+
+    for (const entry of fullWidthRows) {
+      const entryRow = document.createElement("tr");
+      const entryCell = document.createElement("td");
+      entryCell.className = entry.flagged ? "septa-full-width septa-secondary-skip" : "septa-full-width";
+      entryCell.colSpan = 2;
+      entryCell.innerHTML = entry.html;
+      entryRow.appendChild(entryCell);
+      wrapper.appendChild(entryRow);
+    }
+
+    return lastHeaderStopId;
   },
 });

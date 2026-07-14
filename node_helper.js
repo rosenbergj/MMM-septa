@@ -17,6 +17,7 @@ const {
   loadCacheFromDisk,
   saveCacheToDisk,
 } = require("./gtfs-schedule.js");
+const { parseRouteIds, resolveDirectionForRoute } = require("./route-config.js");
 
 const SCHEDULE_HORIZON_MINUTES = 60;
 const SCHEDULE_INITIAL_DELAY_MS = 60 * 1000; // wait until well after MagicMirror's own startup
@@ -143,6 +144,7 @@ module.exports = NodeHelper.create({
       saveCacheToDisk(this.scheduleCache);
       console.log(`MMM-septa: refreshed GTFS schedule cache (${this.scheduleCache.entries.length} entries)`);
       this.validateSecondaryStopIds();
+      this.validateMergedRouteStops();
       this.scheduleTimer = setTimeout(() => this.refreshScheduleCache(), SCHEDULE_REFRESH_MS);
     } catch (err) {
       console.error(`MMM-septa: GTFS schedule refresh failed: ${err.message}; retrying in ${SCHEDULE_RETRY_MS / 1000}s`);
@@ -183,6 +185,32 @@ module.exports = NodeHelper.create({
     }
   },
 
+  // A merged route entry ("T2,T3,T4,T5") requires every one of its
+  // sub-routeIds to actually stop at the configured stopId -- otherwise
+  // whichever one doesn't just silently shows no arrivals forever,
+  // indistinguishable from a real route with nothing currently running
+  // (same failure mode validateRouteIds already warns about for an
+  // unrecognized routeId). Checked direction-agnostically, same reasoning
+  // as validateSecondaryStopIds -- a stop simply being real on the route at
+  // all is enough to rule out this failure mode. Only applies to routes
+  // that actually came from a merged entry (registerConfig's `merged`
+  // flag) -- an ordinary single-routeId entry has no "other routes in the
+  // group" to be mismatched against.
+  validateMergedRouteStops() {
+    for (const state of this.routes.values()) {
+      if (!state.merged) continue;
+      if (state.useScheduleSupplement === false) continue;
+      const headsigns = getAllHeadsignsForStop(this.scheduleCache, state.config.routeId, state.config.stopId);
+      if (headsigns.length > 0) continue;
+      console.warn(
+        `MMM-septa: merged route ${state.routeKey} -- routeId ${state.config.routeId} doesn't appear to stop at ` +
+          `stopId ${state.config.stopId} anywhere in its schedule -- check your merged routeId list for a typo or ` +
+          `a route that doesn't actually share this stop; it will otherwise just show no arrivals, ` +
+          `indistinguishable from a real route with nothing currently running.`
+      );
+    }
+  },
+
   socketNotificationReceived(notification, payload) {
     if (notification !== "SEPTA_CONFIG") return;
     this.registerConfig(payload);
@@ -191,44 +219,65 @@ module.exports = NodeHelper.create({
   registerConfig(payload) {
     const { instanceId, routes, refreshIntervalSeconds, retryIntervalSeconds, useScheduleSupplement } = payload;
     for (const route of routes || []) {
-      const fullKey = `${instanceId}::${routeKey(route)}`;
-      if (this.routes.has(fullKey)) continue; // already polling this route
+      // A merged route entry ("T2,T3,T4,T5") fans out here into N fully
+      // independent single-route registrations -- same polling, same
+      // detour/secondary-stop handling, same everything as an ordinary
+      // route, just repeated per sub-routeId. Merging only ever happens at
+      // display time (see MMM-septa.js), so nothing below this point needs
+      // to know a route came from a merged entry at all except the two
+      // small exceptions marked `merged` (used only by
+      // validateMergedRouteStops).
+      const subRouteIds = parseRouteIds(route.routeId);
+      const merged = subRouteIds.length > 1;
+      for (const subRouteId of subRouteIds) {
+        // A plain string direction applies to every sub-route uniformly; a
+        // {routeId: direction} map resolves per sub-route -- see
+        // route-config.js's resolveDirectionForRoute for why a merge needs
+        // this (a stop_id ambiguous between both directions of a route
+        // can't safely fall back to a shared direction_name match unless
+        // every sub-route's own direction is known).
+        const direction = resolveDirectionForRoute(route.direction, subRouteId);
+        const subRoute = { routeId: subRouteId, stopId: route.stopId, direction };
+        const fullKey = `${instanceId}::${routeKey(subRoute)}`;
+        if (this.routes.has(fullKey)) continue; // already polling this route
 
-      const state = {
-        config: {
-          routeId: route.routeId,
-          stopId: route.stopId,
-          direction: route.direction,
-          secondaryStopId: route.secondaryStopId,
-        },
-        useScheduleSupplement: useScheduleSupplement !== false,
-        instanceId,
-        routeKey: routeKey(route),
-        refreshIntervalSeconds: refreshIntervalSeconds || 120,
-        retryIntervalSeconds: retryIntervalSeconds || 30,
-        etas: [],
-        detour: false,
-        detourReason: null,
-        stopName: null,
-        directionId: null,
-        // null until validateSecondaryStopIds runs (once the schedule cache
-        // is available); treated as valid/unconfirmed until then so the
-        // feature works as before during that window -- see runCycle.
-        secondaryStopIdValid: null,
-        secondaryStopDetour: false,
-        secondaryStopName: null,
-        direction: route.direction,
-        hasTripError: false,
-        // Raw per-cycle failure count, reset to 0 on any success -- hasTripError
-        // (sent to the display) only flips on once this hits the threshold below,
-        // so an isolated one-cycle blip during a flaky API doesn't flicker the
-        // indicator on and off every refresh.
-        consecutiveTripErrorCycles: 0,
-        lastFetchTime: null,
-        timer: null,
-      };
-      this.routes.set(fullKey, state);
-      this.runCycle(fullKey); // kick off the first fetch immediately
+        const state = {
+          config: {
+            routeId: subRouteId,
+            stopId: route.stopId,
+            direction,
+            secondaryStopId: route.secondaryStopId,
+          },
+          merged,
+          useScheduleSupplement: useScheduleSupplement !== false,
+          instanceId,
+          routeKey: routeKey(subRoute),
+          refreshIntervalSeconds: refreshIntervalSeconds || 120,
+          retryIntervalSeconds: retryIntervalSeconds || 30,
+          etas: [],
+          detour: false,
+          detourReason: null,
+          stopName: null,
+          directionId: null,
+          // null until validateSecondaryStopIds runs (once the schedule cache
+          // is available); treated as valid/unconfirmed until then so the
+          // feature works as before during that window -- see runCycle.
+          secondaryStopIdValid: null,
+          secondaryStopDetour: false,
+          secondaryStopName: null,
+          direction,
+          hasTripError: false,
+          // Raw per-cycle failure count, reset to 0 on any success -- hasTripError
+          // (sent to the display) only flips on once this hits the threshold below,
+          // so an isolated one-cycle blip during a flaky API doesn't flicker the
+          // indicator on and off every refresh.
+          consecutiveTripErrorCycles: 0,
+          lastFetchTime: null,
+          timer: null,
+        };
+        this.routes.set(fullKey, state);
+        this.runCycle(fullKey); // kick off the first fetch immediately
+      }
     }
     // Unlike the GTFS schedule cache (scoped to just the currently
     // configured routes/stops, so validating secondaryStopId against it

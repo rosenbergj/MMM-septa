@@ -135,7 +135,7 @@ MagicMirror module option, outside `config`) to override it.
 
 | Option                    | Default | Description                                                              |
 | ------------------------- | ------- | -------------------------------------------------------------------------- |
-| `routes`                  | `[]`    | Array of `{ routeId, stopId, direction, label, warnMinutes, secondaryStopId, showHeadsigns }` -- `label` is optional and defaults to `routeId` if omitted; `warnMinutes` and `showHeadsigns` are optional per-route and override the global values below; `secondaryStopId` is optional, see below |
+| `routes`                  | `[]`    | Array of `{ routeId, stopId, direction, label, warnMinutes, secondaryStopId, showHeadsigns }` -- `label` is optional and defaults to `routeId` if omitted; `warnMinutes` and `showHeadsigns` are optional per-route and override the global values below; `secondaryStopId` is optional, see below. `routeId` (and, for a merge, `direction`) can also merge several routes into one row -- see "Merging routes" below |
 | `maxArrivals`             | `3`     | Number of upcoming arrivals shown per route                              |
 | `refreshIntervalSeconds`  | `120`   | How often the backend actually polls SEPTA                               |
 | `retryIntervalSeconds`    | `30`    | Backoff before retrying after a failed poll                              |
@@ -204,6 +204,66 @@ first from live trip data the same way the primary stop's is, falling back
 to the daily static-schedule refresh if no live trip happens to pass through
 it (which a structurally-skipping headsign might never do) — and cached
 once known either way.
+
+### Merging routes (optional)
+
+Some routes share a stop and effectively behave like one route with several
+headsigns — SEPTA's T1-T5 trolleys funneling through the same tunnel
+corridor toward West Philly, or a bus route that happens to run alongside
+another one for a few blocks. Set `routeId` to a comma-separated string
+(`"T2,T3,T4,T5"`) instead of a single route_id to combine them into one row:
+
+```js
+{ routeId: "T2,T3,T4,T5", stopId: 20661, direction: "Westbound", label: "17" },
+```
+
+A bare JSON array (`routeId: ["T2", "T3", "T4", "T5"]`) works identically —
+undocumented mainly because the comma-string form is easier to type, not
+because it's discouraged.
+
+Every sub-route still polls SEPTA fully independently (same detour
+handling, same `secondaryStopId` support, same everything as an unmerged
+route) — merging only changes how the results are displayed:
+
+- The route label becomes `BUS` or `METRO` (SEPTA Metro is every route_id
+  shaped like a letter — L/G/B/T/D/M — followed by a digit; anything else is
+  a plain numbered bus route). The direction abbreviation next to it
+  combines each sub-route's own direction in N/S/E/W order (`NEB` if one
+  sub-route is Eastbound and another is Northbound).
+- Arrival times from every sub-route are merged into one sorted list, same
+  `maxArrivals`/`countdownWithinMinutes` limits as usual. Merged arrivals
+  always carry a footnote marker (even when only one destination happens to
+  be showing right now) since the mix of destinations can shift from one
+  sub-route's trip to another's between polls.
+- Below that: with `showHeadsigns: false`, one line resolving each
+  contributing sub-route's marker(s), e.g. `T2(*), T4(*,†), T5(‡)`. With
+  `showHeadsigns: true`, one line *per sub-route* instead of per headsign,
+  e.g. `2 → Pulaski-Hunting Park(*)` and `17 → Front-Market(†), 2nd-Market(‡)`.
+- `secondaryStopId` flags/omits exactly as it does for a single route,
+  independently per sub-route.
+- If one sub-route is detoured around the primary stop this cycle, it just
+  contributes no arrivals — the rest of the group displays normally, no
+  banner. A `DETOUR` banner only replaces the whole row when *every*
+  sub-route is detoured at once.
+- Every sub-route in the list must actually stop at the configured
+  `stopId` — a mismatch (wrong route, a typo) is a warn-only config error,
+  logged on each schedule refresh, same treatment as an unrecognized
+  `routeId` elsewhere in this module.
+
+**Direction**: a single `direction` string applies to every sub-route,
+which covers most merges (they usually share one cardinal direction). If
+they don't — e.g. two routes that happen to run Northbound and Eastbound
+through the same stop — `direction` can instead be a `{ routeId:
+directionString }` map:
+
+```js
+{ routeId: "2,17", stopId: 40, direction: { "2": "Northbound", "17": "Eastbound" } },
+```
+
+This isn't just cosmetic. A stop occasionally really is served by both
+directions of the same route (rare, but real — see "Known limitations"
+above), and disambiguating that safely depends on knowing each sub-route's
+own direction, not one borrowed from a different route in the group.
 
 ## Testing
 
