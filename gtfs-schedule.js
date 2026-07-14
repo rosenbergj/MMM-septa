@@ -483,12 +483,20 @@ function getScheduledArrivals(cache, routeId, stopId, now, horizonMinutes, direc
   return results;
 }
 
-// Every distinct headsign scheduled to serve this route/stop at any point
-// in the day (not just the next horizonMinutes), sorted alphabetically for
-// a stable order. Used to assign footnote markers to destinations
-// consistently, rather than by whichever trip happens to be next right now
-// -- that would make the same destination's marker change from one poll to
-// the next as different trips rotate through.
+// Every distinct headsign scheduled to serve this route/stop at any point in
+// the day (not just the next horizonMinutes), most-frequently-scheduled
+// first (ties broken alphabetically, for a fully deterministic order) --
+// used to assign footnote markers to destinations consistently, rather than
+// by whichever trip happens to be next right now (that would make the same
+// destination's marker change from one poll to the next as different trips
+// rotate through) or by name (that would hand the friendliest, most
+// recognizable marker to whichever headsign's name happens to sort first,
+// even if it's a rarely-run pattern that a rider would see mismatched to it
+// most of the time). Frequency here just means "how many scheduled
+// stop_times entries this headsign has at this stop" -- unweighted by which
+// calendar days are active, same as the rest of this function already
+// ignores day-of-week -- which is a fine proxy for "how often a rider
+// actually sees this one".
 //
 // directionId filtering: see getScheduledArrivals's doc comment -- same
 // reasoning, same rare-but-real cross-direction leak this guards against.
@@ -496,13 +504,14 @@ function getAllHeadsignsForStop(cache, routeId, stopId, directionId) {
   const targetRouteId = String(routeId);
   const targetStopId = Number(stopId);
   const targetDirectionId = directionId == null ? null : String(directionId);
-  const headsigns = new Set();
+  const counts = new Map();
   for (const entry of cache.entries) {
     if (entry.routeId !== targetRouteId || entry.stopId !== targetStopId) continue;
     if (targetDirectionId != null && entry.directionId !== targetDirectionId) continue;
-    if (entry.headsign) headsigns.add(entry.headsign);
+    if (!entry.headsign) continue;
+    counts.set(entry.headsign, (counts.get(entry.headsign) || 0) + 1);
   }
-  return [...headsigns].sort();
+  return [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a) || a.localeCompare(b));
 }
 
 // Every distinct direction_id structurally scheduled to stop at

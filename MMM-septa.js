@@ -30,7 +30,7 @@ function septaEscapeHtml(text) {
 
 // Classic footnote marker sequence; falls back to "[N]" past the sixth
 // distinct destination (never expected given maxArrivals defaults to 3).
-const FOOTNOTE_MARKERS = ["*", "†", "‡", "§", "‖", "¶"];
+const FOOTNOTE_MARKERS = ["*", "†", "‡", "§", "¶", "‖"];
 function septaFootnoteMarker(index) {
   return FOOTNOTE_MARKERS[index] || `[${index + 1}]`;
 }
@@ -43,29 +43,35 @@ function septaFootnoteMarker(index) {
 // label-sub line can list every destination alongside its marker instead of
 // a vague "Mixed destinations".
 //
-// headsignOrder (from node_helper, derived from the full day's schedule --
-// see gtfs-schedule.js's getAllHeadsignsForStop) fixes which marker goes
-// with which destination, so it doesn't change from one poll to the next
-// just because a different trip happens to be next. Any shown headsign not
-// in that list (schedule cache not loaded yet, or a genuine off-schedule
-// trip) is appended after it, in first-seen order, so nothing is dropped.
-function septaGroupByDestination(arrivals, headsignOrder) {
-  if (!Array.isArray(arrivals) || arrivals.length === 0) return { mixed: false, headsign: null };
+// headsignOrder (from node_helper, derived from the full day's schedule,
+// most-frequently-scheduled headsign first -- see gtfs-schedule.js's
+// getAllHeadsignsForStop) fixes which marker goes with which destination.
+// Markers are assigned from headsignOrder's full, fixed positions --
+// unfiltered by which headsigns happen to be shown this cycle -- so a given
+// destination's marker never shifts depending on which *other* headsigns
+// happen to be showing alongside it right now (a route with 3+ headsigns
+// and a small maxArrivals window routinely shows a different subset from
+// one poll to the next). `order` (the shown subset, in that same fixed
+// sequence) is what the caller should actually iterate to print destination
+// lines, so print order matches marker order too. allArrivals is the full
+// pre-maxArrivals-cutoff pool (not just what's shown), so an off-schedule
+// headsign missing from headsignOrder entirely -- schedule cache not loaded
+// yet, or a genuine off-schedule trip -- still gets a slot that doesn't
+// depend on the slice either, appended after the schedule-known ones in
+// first-seen order.
+function septaGroupByDestination(shownArrivals, allArrivals, headsignOrder) {
+  if (!Array.isArray(shownArrivals) || shownArrivals.length === 0) return { mixed: false, headsign: null };
   const shown = new Set();
-  for (const arrival of arrivals) shown.add(arrival.headsign);
-  if (shown.size <= 1) return { mixed: false, headsign: arrivals[0].headsign || null };
+  for (const arrival of shownArrivals) shown.add(arrival.headsign);
+  if (shown.size <= 1) return { mixed: false, headsign: shownArrivals[0].headsign || null };
 
-  const order = [];
-  if (Array.isArray(headsignOrder)) {
-    for (const headsign of headsignOrder) {
-      if (shown.has(headsign)) order.push(headsign);
-    }
-  }
-  for (const arrival of arrivals) {
-    if (arrival.headsign && !order.includes(arrival.headsign)) order.push(arrival.headsign);
+  const fullOrder = Array.isArray(headsignOrder) ? [...headsignOrder] : [];
+  for (const arrival of allArrivals) {
+    if (arrival.headsign && !fullOrder.includes(arrival.headsign)) fullOrder.push(arrival.headsign);
   }
 
-  const markerFor = new Map(order.map((headsign, index) => [headsign, septaFootnoteMarker(index)]));
+  const markerFor = new Map(fullOrder.map((headsign, index) => [headsign, septaFootnoteMarker(index)]));
+  const order = fullOrder.filter((headsign) => shown.has(headsign));
   return { mixed: true, markerFor, order };
 }
 
@@ -335,7 +341,7 @@ Module.register("MMM-septa", {
           : allEtas;
       const shownArrivals = etasForDisplay.slice(0, this.config.maxArrivals);
       const destinationInfo = showHeadsigns
-        ? septaGroupByDestination(shownArrivals, state && state.headsignOrder)
+        ? septaGroupByDestination(shownArrivals, etasForDisplay, state && state.headsignOrder)
         : { mixed: false, headsign: null };
 
       const labelCell = document.createElement("td");
@@ -688,15 +694,20 @@ Module.register("MMM-septa", {
         .map((id) => `${septaColoredRouteLabel(id, routeColorFor.get(id))}(${markerForSubRoute.get(id)})`);
       if (parts.length > 0) fullWidthRows.push({ flagged: false, html: parts.join(", ") });
     } else {
-      const headsignsBySubRoute = new Map();
+      // Which headsigns each sub-route is currently showing, per subRouteId
+      // -- a Set, not an array, since print order comes from markerFor's own
+      // stable key order below (see septaAssignMergedMarkers), not from
+      // whichever arrival happens to be chronologically first this cycle.
+      const shownHeadsignsBySubRoute = new Map();
       for (const arrival of shownArrivals) {
-        if (!headsignsBySubRoute.has(arrival.subRouteId)) headsignsBySubRoute.set(arrival.subRouteId, []);
-        const headsigns = headsignsBySubRoute.get(arrival.subRouteId);
-        if (arrival.headsign && !headsigns.includes(arrival.headsign)) headsigns.push(arrival.headsign);
+        if (!shownHeadsignsBySubRoute.has(arrival.subRouteId)) shownHeadsignsBySubRoute.set(arrival.subRouteId, new Set());
+        if (arrival.headsign) shownHeadsignsBySubRoute.get(arrival.subRouteId).add(arrival.headsign);
       }
+      const stableHeadsignOrder = [...markerFor.keys()];
       for (const { subRouteId, state } of knownSubRoutes) {
-        const headsigns = headsignsBySubRoute.get(subRouteId);
-        if (!headsigns || headsigns.length === 0) continue;
+        const shown = shownHeadsignsBySubRoute.get(subRouteId);
+        if (!shown || shown.size === 0) continue;
+        const headsigns = stableHeadsignOrder.filter((h) => shown.has(h));
         const skipped = state.secondaryStopSkippedHeadsigns || [];
         const parts = headsigns.map((headsign) => {
           const marker = markerFor.get(headsign);

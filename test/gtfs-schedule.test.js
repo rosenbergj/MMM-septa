@@ -422,8 +422,23 @@ test("getAllHeadsignsForStop", async (t) => {
   };
   const cache = buildScheduleCache(fileTexts, ["17", "64"], [21289]);
 
-  await t.test("returns every distinct headsign for the route/stop, sorted, regardless of time of day", () => {
-    assert.deepEqual(getAllHeadsignsForStop(cache, "17", 21289), ["Broad-Pattison", "Front-Market"]);
+  await t.test("returns every distinct headsign for the route/stop, most-frequent first, regardless of time of day", () => {
+    // Front-Market has 2 scheduled entries (9001, 9003), Broad-Pattison has
+    // 1 (9002) -- frequency order puts Front-Market first even though it
+    // doesn't sort first alphabetically.
+    assert.deepEqual(getAllHeadsignsForStop(cache, "17", 21289), ["Front-Market", "Broad-Pattison"]);
+  });
+
+  await t.test("ties broken alphabetically for a deterministic order", () => {
+    const tiedTexts = {
+      ...fileTexts,
+      "stop_times.txt": fileTexts["stop_times.txt"].replace(
+        "9003,22:00:00,22:00:00,21289,2,,0,0,,1\n",
+        "9003,22:00:00,22:00:00,99998,2,,0,0,,1\n" // move Front-Market's 2nd trip elsewhere, tying it 1-1 with Broad-Pattison
+      ),
+    };
+    const tiedCache = buildScheduleCache(tiedTexts, ["17", "64"], [21289, 99998]);
+    assert.deepEqual(getAllHeadsignsForStop(tiedCache, "17", 21289), ["Broad-Pattison", "Front-Market"]);
   });
 
   await t.test("doesn't mix in headsigns from a different route at the same stop", () => {
@@ -442,7 +457,7 @@ test("getAllHeadsignsForStop", async (t) => {
     const mixedCache = buildScheduleCache(mixedDirectionTexts, ["17", "64"], [21289]);
     assert.deepEqual(getAllHeadsignsForStop(mixedCache, "17", 21289, "0"), ["Front-Market"]);
     assert.deepEqual(getAllHeadsignsForStop(mixedCache, "17", 21289, "1"), ["Broad-Pattison"]);
-    assert.deepEqual(getAllHeadsignsForStop(mixedCache, "17", 21289), ["Broad-Pattison", "Front-Market"]);
+    assert.deepEqual(getAllHeadsignsForStop(mixedCache, "17", 21289), ["Front-Market", "Broad-Pattison"]);
   });
 });
 
@@ -671,7 +686,7 @@ test("getHeadsignsSkippingStop", async (t) => {
   });
 
   await t.test("no secondary-stop data at all -> every primary headsign flagged", () => {
-    assert.deepEqual(getHeadsignsSkippingStop(cache, "17", 21289, 88888), ["Broad-Pattison", "Front-Market"]);
+    assert.deepEqual(getHeadsignsSkippingStop(cache, "17", 21289, 88888), ["Front-Market", "Broad-Pattison"]);
   });
 
   await t.test("no matching route/stop -> empty array", () => {
