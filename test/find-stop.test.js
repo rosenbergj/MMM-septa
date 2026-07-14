@@ -4,11 +4,25 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  pickRepresentativePatterns,
   computeDirectionTrend,
   applyGeographySanityCheck,
   directionHeaderLabel,
   directionConfigFragment,
 } = require("../scripts/find-stop.js");
+
+// Builds a minimal pattern with just the fields pickRepresentativePatterns
+// reads: tripId, headsign, directionId, and a stop sequence (only stopId
+// matters for its dedup key -- stopSequence/stopName are included for shape
+// realism but not otherwise exercised here).
+function patternWithStops({ tripId, headsign, directionId = "0", stopIds }) {
+  return {
+    tripId,
+    headsign,
+    directionId,
+    stops: stopIds.map((stopId, index) => ({ stopId, stopSequence: index + 1, stopName: `stop ${stopId}` })),
+  };
+}
 
 // Builds a minimal pattern with just the fields computeDirectionTrend reads:
 // two stops (first/last), each with a lat/lon. stopSequence/stopName aren't
@@ -24,6 +38,56 @@ function pattern({ tripId, stopCount, firstLat, firstLon, lastLat, lastLon }) {
   stops.push({ stopId: 999, stopSequence: stopCount, stopName: "end", stopLat: lastLat, stopLon: lastLon });
   return { tripId, headsign: `headsign-${tripId}`, directionId: "0", stops };
 }
+
+test("pickRepresentativePatterns", async (t) => {
+  await t.test("same headsign, different stop sequences -> both survive (T3-westbound-Yeadon shape)", () => {
+    const fullLength = patternWithStops({ tripId: "long", headsign: "Yeadon", stopIds: [1, 2, 3, 4, 5] });
+    const shortTurn = patternWithStops({ tripId: "short", headsign: "Yeadon", stopIds: [101, 102, 103] });
+    const result = pickRepresentativePatterns([fullLength, shortTurn]);
+    assert.equal(result.length, 2);
+    assert.deepEqual(new Set(result.map((p) => p.tripId)), new Set(["long", "short"]));
+  });
+
+  await t.test("same headsign, identical stop sequence -> collapses to one (true duplicate trips)", () => {
+    const morning = patternWithStops({ tripId: "9001", headsign: "Front-Market", stopIds: [1, 2, 3] });
+    const evening = patternWithStops({ tripId: "9002", headsign: "Front-Market", stopIds: [1, 2, 3] });
+    const result = pickRepresentativePatterns([morning, evening]);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].tripId, "9001"); // first one seen
+  });
+
+  await t.test("different headsigns -> each kept independently, unaffected by the other's shape", () => {
+    const a = patternWithStops({ tripId: "a", headsign: "Front-Market", stopIds: [1, 2, 3] });
+    const b = patternWithStops({ tripId: "b", headsign: "Broad-Pattison", stopIds: [1, 2, 3, 4] });
+    const result = pickRepresentativePatterns([a, b]);
+    assert.equal(result.length, 2);
+  });
+
+  await t.test("same headsign and stop sequence but different directionId -> kept separate", () => {
+    const northbound = patternWithStops({ tripId: "n", headsign: "Loop", directionId: "0", stopIds: [1, 2, 3] });
+    const southbound = patternWithStops({ tripId: "s", headsign: "Loop", directionId: "1", stopIds: [1, 2, 3] });
+    const result = pickRepresentativePatterns([northbound, southbound]);
+    assert.equal(result.length, 2);
+  });
+
+  await t.test("a same-headsign subset pattern (no stops of its own) still survives pickRepresentativePatterns itself -- mergeDirectionPatterns is what absorbs it, not this function", () => {
+    const fullLength = patternWithStops({ tripId: "full", headsign: "Broad-Pattison", stopIds: [1, 2, 3, 4, 5] });
+    const subset = patternWithStops({ tripId: "partial", headsign: "Broad-Pattison", stopIds: [3, 4, 5] });
+    const result = pickRepresentativePatterns([fullLength, subset]);
+    assert.equal(result.length, 2);
+  });
+
+  await t.test("no headsign -> falls back to a per-trip key, never collapsed with another tripless pattern", () => {
+    const a = patternWithStops({ tripId: "a", headsign: null, stopIds: [1, 2, 3] });
+    const b = patternWithStops({ tripId: "b", headsign: null, stopIds: [1, 2, 3] });
+    const result = pickRepresentativePatterns([a, b]);
+    assert.equal(result.length, 2);
+  });
+
+  await t.test("empty input -> empty output", () => {
+    assert.deepEqual(pickRepresentativePatterns([]), []);
+  });
+});
 
 test("computeDirectionTrend", async (t) => {
   await t.test("clear north-south displacement -> NS axis, Northbound", () => {

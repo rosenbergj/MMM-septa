@@ -80,18 +80,25 @@ const OPPOSITE_DIRECTION = {
   Westbound: "Eastbound",
 };
 
-// One representative trip per distinct headsign -- trips sharing a headsign
-// should share a stop pattern, so picking the one with the most stops (the
-// least likely to be an anomalous/truncated instance) is a reasonable
-// stand-in for "the" pattern of that headsign.
+// One representative trip per distinct (direction, headsign, stop
+// sequence) -- collapses true duplicates (many trips running the exact
+// same route at different times of day) down to one, without assuming two
+// trips sharing a headsign necessarily share a stop pattern. That
+// assumption doesn't always hold, most often because two trips originating
+// from different places can share a headsign -- keying on headsign alone
+// would silently discard the shorter one. A genuine same-headsign subset
+// pattern still ends up contributing nothing extra visually, but that's
+// mergeDirectionPatterns' doing (it already treats "every stop already in
+// the reference" as a no-op), not a filter applied here.
 function pickRepresentativePatterns(patterns) {
-  const byHeadsign = new Map();
+  const byPattern = new Map();
   for (const pattern of patterns) {
-    const key = pattern.headsign || `(no headsign, trip ${pattern.tripId})`;
-    const existing = byHeadsign.get(key);
-    if (!existing || pattern.stops.length > existing.stops.length) byHeadsign.set(key, pattern);
+    const headsignPart = pattern.headsign || `(no headsign, trip ${pattern.tripId})`;
+    const shapePart = pattern.stops.map((s) => s.stopId).join(",");
+    const key = `${pattern.directionId} ${headsignPart} ${shapePart}`;
+    if (!byPattern.has(key)) byPattern.set(key, pattern);
   }
-  return [...byHeadsign.values()];
+  return [...byPattern.values()];
 }
 
 // Map<directionId, { name, confirmed: true } | { seenUnnamed: true }> from
