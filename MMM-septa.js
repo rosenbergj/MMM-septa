@@ -146,27 +146,26 @@ function septaCombineDirectionAbbreviations(abbreviations) {
   return `${ordered.join("")}B`;
 }
 
-// Like septaGroupByDestination, but for a merged route's combined arrivals:
-// unconditionally assigns every shown headsign a footnote marker, even when
-// only one distinct destination currently shows. A merged row's headsign
-// mix can shift from one poll to the next as different sub-routes' arrivals
-// rotate through, so "how many distinct destinations happen to be showing
-// right now" isn't a stable enough signal to gate markers on the way the
-// single-route case (septaGroupByDestination) does -- markers are always on
-// for a merged row instead. headsignOrder (the combined per-sub-route
-// orders, concatenated and deduped by the caller) fixes marker assignment
-// the same way septaGroupByDestination's does, for the same reason.
-function septaAssignMergedMarkers(arrivals, headsignOrder) {
-  const shown = new Set();
-  for (const arrival of arrivals) shown.add(arrival.headsign);
-
-  const order = [];
-  if (Array.isArray(headsignOrder)) {
-    for (const headsign of headsignOrder) {
-      if (shown.has(headsign)) order.push(headsign);
-    }
-  }
-  for (const arrival of arrivals) {
+// Like septaGroupByDestination, but for a merged route's combined arrivals,
+// and deliberately NOT like it in one important way: it never re-indexes
+// based on which headsigns happen to be shown this cycle. Every headsign
+// gets a fixed marker up front, from its position in headsignOrder (the
+// combined per-sub-route orders, concatenated and deduped by the caller),
+// whether or not it's currently contributing an arrival. Markers are always
+// on for a merged row (unlike septaGroupByDestination, which collapses to
+// unmarked below 2 distinct shown headsigns) for the same reason: with
+// several sub-routes and a maxArrivals cap, it's common for one sub-route
+// to simply not make the cut some cycle -- filtering the order down to only
+// "currently shown" first (as septaGroupByDestination does, harmlessly
+// there) would shift every later headsign's marker down to fill the gap,
+// so a route's marker would drift depending on which siblings happened to
+// contribute that cycle. allArrivals is the full merged pool, not the
+// maxArrivals-sliced shown list, so even an off-schedule headsign missing
+// from headsignOrder entirely gets a slot that doesn't depend on the slice
+// either.
+function septaAssignMergedMarkers(allArrivals, headsignOrder) {
+  const order = Array.isArray(headsignOrder) ? [...headsignOrder] : [];
+  for (const arrival of allArrivals) {
     if (arrival.headsign && !order.includes(arrival.headsign)) order.push(arrival.headsign);
   }
   return new Map(order.map((headsign, index) => [headsign, septaFootnoteMarker(index)]));
@@ -630,7 +629,7 @@ Module.register("MMM-septa", {
           if (!combinedHeadsignOrder.includes(headsign)) combinedHeadsignOrder.push(headsign);
         }
       }
-      markerFor = septaAssignMergedMarkers(shownArrivals, combinedHeadsignOrder);
+      markerFor = septaAssignMergedMarkers(mergedArrivals, combinedHeadsignOrder);
     }
     for (const arrival of shownArrivals) {
       arrival.marker = showHeadsigns ? markerFor.get(arrival.headsign) || "" : markerForSubRoute.get(arrival.subRouteId);
