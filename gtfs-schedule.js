@@ -317,7 +317,8 @@ function buildScheduleCache(fileTexts, routeIds, stopIds) {
   const calendar = parseCalendar(fileTexts["calendar.txt"]);
   const calendarExceptions = parseCalendarDates(fileTexts["calendar_dates.txt"]);
   const stopNames = fileTexts["stops.txt"] ? Object.fromEntries(parseStops(fileTexts["stops.txt"], stopIds)) : {};
-  return { builtAt: Date.now(), entries, calendar, calendarExceptions, stopNames };
+  const terminusExclusions = buildTerminusExclusions(fileTexts, entries, routeIds, stopIds);
+  return { builtAt: Date.now(), entries, calendar, calendarExceptions, stopNames, terminusExclusions };
 }
 
 // Every trip on a route, stop-by-stop with names, straight from the static
@@ -525,6 +526,100 @@ function getDirectionIdsForStop(cache, routeId, stopId) {
   return [...directionIds].sort();
 }
 
+// For a (routeId, stopId) that getDirectionIdsForStop found ambiguous (2
+// direction_ids -- e.g. a tunnel-portal terminus like T1-T5's 13th St, stop
+// 283, where one direction's patterns all end there and the other's all
+// start there), determines whether it's safe to resolve anyway without any
+// live direction_name -- which some routes (confirmed live: T1-T5, route 63,
+// B1/B2/B3/L1) never provide a usable one for, making the normal
+// direction_name fallback (see septa-client.js's filterGoodTrips) permanently
+// dead at a stop like this.
+//
+// A direction is "uniformly terminal" at this stop if every one of its
+// patterns that reaches stopId does so only as that pattern's own last stop
+// -- i.e. no rider could ever board here and continue somewhere on a trip
+// from that direction (patterns that don't reach the stop at all don't count
+// against it either way). When exactly one of the two directions is
+// uniformly terminal and the other isn't, the other is the one anyone
+// waiting at this stop actually wants -- returned here as a plain
+// direction_id, usable exactly like a normal single-direction stop's
+// structuralDirectionId (see node_helper.js's runCycle). The kept
+// direction doesn't need to itself be uniform in any way -- some of its
+// patterns can have the stop as their first stop, others as a plain
+// mid-route stop; either way every one of them is a real, boardable,
+// continuing trip.
+//
+// Returns null when the shape doesn't hold -- neither direction is uniformly
+// terminal, so both have at least one genuinely continuing pattern and there
+// is no direction safe to rule out. See README's "Known limitations" for why
+// that residual case (and its mirror -- wanting the terminal side on purpose)
+// is left unresolved rather than guessed at.
+//
+// fileTexts must include an unfiltered-by-stopId "stop_times.txt" -- the
+// cache's own `entries` are pre-filtered to just the stops actually
+// configured (see buildScheduleCache), so they can't answer "does this trip
+// continue past here". This re-parses stop_times.txt for just this one
+// route's trips (same approach as buildRouteStopPatterns/find-stop.js, just
+// scoped to a single ambiguous route/stop instead of a whole route's
+// listing) -- only worth its cost (a full pass over the already-downloaded
+// feed text) because it's called rarely, once per daily schedule refresh,
+// only for routeId/stopId pairs already known to be ambiguous.
+function resolveTerminusExclusion(fileTexts, routeId, stopId, directionIds) {
+  const trips = parseTripsForRoutes(fileTexts["trips.txt"], [routeId]);
+  const allStopTimes = parseStopTimesForTrips(fileTexts["stop_times.txt"], trips);
+
+  const stopTimesByTrip = new Map();
+  for (const entry of allStopTimes) {
+    if (!stopTimesByTrip.has(entry.tripId)) stopTimesByTrip.set(entry.tripId, []);
+    stopTimesByTrip.get(entry.tripId).push(entry);
+  }
+
+  const targetStopId = Number(stopId);
+  const uniformlyTerminal = new Map(directionIds.map((directionId) => [directionId, true]));
+
+  for (const [tripId, stopTimes] of stopTimesByTrip) {
+    const trip = trips.get(tripId);
+    if (!trip || !directionIds.includes(trip.directionId)) continue;
+    const sorted = [...stopTimes].sort((a, b) => a.stopSequence - b.stopSequence);
+    const matchIndex = sorted.findIndex((s) => s.stopId === targetStopId);
+    if (matchIndex === -1) continue; // this trip doesn't reach stopId at all
+    if (matchIndex !== sorted.length - 1) uniformlyTerminal.set(trip.directionId, false);
+  }
+
+  const nonTerminal = directionIds.filter((directionId) => !uniformlyTerminal.get(directionId));
+  return nonTerminal.length === 1 ? nonTerminal[0] : null;
+}
+
+// Precomputes resolveTerminusExclusion for every (routeId, stopId) pair
+// among the configured routeIds/stopIds that getDirectionIdsForStop finds
+// ambiguous -- cheap to check (entries is already small), expensive to
+// resolve (a full stop_times.txt pass per ambiguous route), so this only
+// pays that cost for pairs that actually need it. Returns a plain {
+// "routeId:stopId": keptDirectionId } map, persisted as part of the cache
+// (see buildScheduleCache) so it survives a disk-cache reload same as
+// everything else in it.
+function buildTerminusExclusions(fileTexts, entries, routeIds, stopIds) {
+  const exclusions = {};
+  for (const routeId of routeIds) {
+    for (const stopId of stopIds) {
+      const directionIds = getDirectionIdsForStop({ entries }, routeId, stopId);
+      if (directionIds.length !== 2) continue;
+      const kept = resolveTerminusExclusion(fileTexts, routeId, stopId, directionIds);
+      if (kept != null) exclusions[`${routeId}:${stopId}`] = kept;
+    }
+  }
+  return exclusions;
+}
+
+// Looks up a precomputed resolveTerminusExclusion result -- null (not just
+// "falls through to the direction_name fallback") when this routeId/stopId
+// pair either isn't ambiguous or didn't resolve, so callers can treat it
+// exactly like any other "no structural signal" case.
+function getTerminusExclusionDirectionId(cache, routeId, stopId) {
+  const key = `${routeId}:${stopId}`;
+  return (cache.terminusExclusions && cache.terminusExclusions[key]) ?? null;
+}
+
 // Headsigns scheduled at (routeId, primaryStopId) that are never scheduled at
 // (routeId, secondaryStopId) -- i.e. destinations whose pattern structurally
 // never stops at the secondary stop (a short-turn trip, a trip that starts
@@ -627,6 +722,8 @@ module.exports = {
   buildScheduleCache,
   buildRouteStopPatterns,
   getDirectionIdsForStop,
+  resolveTerminusExclusion,
+  getTerminusExclusionDirectionId,
   mergeDirectionPatterns,
   getScheduledArrivals,
   getAllHeadsignsForStop,

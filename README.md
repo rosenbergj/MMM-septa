@@ -251,6 +251,24 @@ don't copy that into your real `config.js`.
 - A single "urgent" color threshold (`warnMinutes`), not a multi-tier scheme.
 - Two identical route/stop/direction entries within the same module instance
   will collide (they share one internal state slot) — use distinct entries.
+- A stop genuinely served by both directions of a route (rare, but real —
+  e.g. route 2 stop 40, or T1-T5's shared 13th St tunnel terminus) normally
+  resolves via a live trip's `direction_name`. Routes whose live feed never
+  gives a usable one at all (confirmed: the trolleys, route 63, and
+  `B1`/`B2`/`B3`/`L1` always report `"N/A"`) get an automatic fallback
+  instead: if every one of one direction's patterns reaches the stop only as
+  that pattern's own last stop (a dead end — no rider could board there and
+  continue), that direction is excluded automatically and the other is used,
+  no config needed. Two shapes still aren't handled, and won't guess:
+  - Wanting the excluded (terminal/arriving) side on purpose instead of the
+    kept (departing) side — there's no way to ask for it.
+  - Neither direction is uniformly terminal (both have at least one pattern
+    where the stop is a real, continuing stop) — there's no direction safe
+    to rule out, and no name to pick between them with.
+
+  Both require the stop to be direction-ambiguous *and* the route to be one
+  of the "always N/A" ones, so in practice this has only actually come up
+  for T1-T5 at 13th St, which lands in the handled case.
 
 ## How it works
 

@@ -94,27 +94,35 @@ function pickRepresentativePatterns(patterns) {
   return [...byHeadsign.values()];
 }
 
-// Map<directionId, { name, confirmed: true }> from whichever live trips
-// happen to be running right now -- any live trip in a given direction
-// resolves the *whole* direction_id (not just its own headsign's pattern),
-// since direction_id is shared across headsigns.
+// Map<directionId, { name, confirmed: true } | { seenUnnamed: true }> from
+// whichever live trips happen to be running right now -- any live trip in a
+// given direction resolves the *whole* direction_id (not just its own
+// headsign's pattern), since direction_id is shared across headsigns.
+//
+// { seenUnnamed: true } means a live trip is confirmed running in this
+// direction right now, but SEPTA's own feed never gives it a usable name
+// (confirmed live, e.g. every currently-running trip on T1-T5, route 63, and
+// B1/B2/B3/L1 reports the literal string "N/A" for direction_name even
+// though direction_id itself is populated normally) -- kept distinct from
+// "nothing running at all" (no entry) so directionHeaderLabel/
+// directionConfigFragment don't tell a real, running trip's direction "no
+// live trip currently running", which is simply false for these routes.
 function buildDirectionNameMap(liveTrips, patterns) {
   const directionIdByTripId = new Map(patterns.map((p) => [p.tripId, p.directionId]));
   const names = new Map();
   for (const trip of liveTrips || []) {
-    // SEPTA's own /trips/ response uses the literal string "N/A" as
-    // direction_name for a trip that's scheduled but not currently
-    // GPS-tracked/running (confirmed live, e.g. route L1's untracked
-    // trips) -- not a real, usable direction name, so treat it the same as
-    // missing rather than accepting it as "confirmed". Without this, a
-    // route with nothing currently running showed the literal string "N/A"
-    // as if it were a real, live-confirmed direction name -- worse than a
-    // display glitch in --full mode, where it would get copied straight
-    // into config.js as `direction: "N/A"`, which would then never match
-    // any real trip's direction_name and silently never show arrivals.
-    if (!trip || !trip.direction_name || trip.direction_name === "N/A") continue;
+    if (!trip) continue;
     const directionId = directionIdByTripId.get(trip.trip_id);
-    if (directionId != null && !names.has(directionId)) names.set(directionId, { name: trip.direction_name, confirmed: true });
+    if (directionId == null) continue;
+    const existing = names.get(directionId);
+    if (existing && existing.confirmed) continue; // already have a real name, nothing to improve
+    // See buildDirectionNameMap's doc comment above -- "N/A" is SEPTA's own
+    // sentinel for "not a real name", not a genuine confirmation.
+    if (trip.direction_name && trip.direction_name !== "N/A") {
+      names.set(directionId, { name: trip.direction_name, confirmed: true });
+    } else if (!existing) {
+      names.set(directionId, { seenUnnamed: true });
+    }
   }
   return names;
 }
@@ -189,16 +197,22 @@ function applyGeographySanityCheck(directionNames, byDirection) {
   return result;
 }
 
-// If there are exactly two directions total and exactly one is confirmed
-// live, infer the other as its cardinal opposite (Northbound<->Southbound,
-// Eastbound<->Westbound) -- but tag it as inferred, not confirmed, so
-// callers can still flag it for double-checking. Leaves directionNames
-// alone in every other case (more than two directions, zero or both
-// already confirmed, or an unrecognized confirmed name).
+// If there are exactly two directions total and exactly one has a confirmed
+// live name, infer the other as its cardinal opposite
+// (Northbound<->Southbound, Eastbound<->Westbound) -- but tag it as
+// inferred, not confirmed, so callers can still flag it for double-checking.
+// Counts only *confirmed* entries toward "exactly one" -- a seenUnnamed
+// entry for the other direction (a live trip running with no usable name)
+// doesn't disqualify the inference, and the inferred guess overwrites it:
+// a labeled, caveated guess is more useful than "seen, but nothing to say
+// about it". Leaves directionNames alone in every other case (more than two
+// directions, zero or both already confirmed, or an unrecognized confirmed
+// name).
 function inferOppositeDirectionNames(directionNames, allDirectionIds) {
   const result = new Map(directionNames);
-  if (allDirectionIds.length !== 2 || result.size !== 1) return result;
-  const [[knownId, knownEntry]] = result.entries();
+  const confirmed = [...result.entries()].filter(([, entry]) => entry.confirmed);
+  if (allDirectionIds.length !== 2 || confirmed.length !== 1) return result;
+  const [[knownId, knownEntry]] = confirmed;
   const opposite = OPPOSITE_DIRECTION[knownEntry.name];
   if (!opposite) return result;
   const otherId = allDirectionIds.find((id) => id !== knownId);
@@ -208,6 +222,9 @@ function inferOppositeDirectionNames(directionNames, allDirectionIds) {
 
 function directionHeaderLabel(entry, directionId) {
   if (!entry) return `Unknown Direction (direction_id ${directionId} -- no live trip currently running to confirm its name)`;
+  if (entry.seenUnnamed) {
+    return `Unknown Direction (direction_id ${directionId} -- a live trip is running right now, but SEPTA's live feed doesn't give it a usable direction name)`;
+  }
   if (entry.rejectedGeography) {
     return `Unknown Direction (direction_id ${directionId} -- SEPTA provided ambiguous data on what this direction is called)`;
   }
@@ -225,6 +242,12 @@ function directionConfigFragment(entry, directionId) {
     return {
       value: `"TODO_CONFIRM_DIRECTION"`,
       comment: `direction_id ${directionId}, no live trip to confirm the name -- check SEPTA's site or re-run later`,
+    };
+  }
+  if (entry.seenUnnamed) {
+    return {
+      value: `"TODO_CONFIRM_DIRECTION"`,
+      comment: `direction_id ${directionId}, a live trip is running right now but SEPTA's live feed never gives this route's trips a usable direction name -- check SEPTA's site`,
     };
   }
   if (entry.rejectedGeography) {
@@ -366,7 +389,7 @@ async function main() {
   for (const directionId of directionIds) {
     const merged = mergeDirectionPatterns(byDirection.get(directionId));
     const entry = directionNames.get(directionId) || null;
-    if (!entry || entry.rejectedGeography) anyUnknownDirection = true;
+    if (!entry || entry.seenUnnamed || entry.rejectedGeography) anyUnknownDirection = true;
     const label = directionHeaderLabel(entry, directionId);
     if (full) {
       printMergedDirectionFull(routeId, label, merged, entry, directionId);
@@ -384,11 +407,12 @@ async function main() {
     );
   } else if (anyUnknownDirection) {
     console.log(
-      "\nAt least one direction above shows \"Unknown Direction\" because either no trip in that direction " +
-        "is currently running for SEPTA to confirm its name, or SEPTA's live data for it didn't hold up " +
-        "(see any warnings above). The stop_id is still correct as shown -- but re-run this command while a " +
-        "trip in that direction is running (or check SEPTA's site) to get the real direction name before " +
-        "copying the entry into your config.js."
+      "\nAt least one direction above shows \"Unknown Direction\" because either no trip in that direction is " +
+        "currently running for SEPTA to confirm its name, a trip is running but SEPTA's live feed never gives " +
+        "this route's trips a usable direction name (true for every trip on some routes, e.g. the trolleys and " +
+        "route 63 -- re-running later won't help those), or SEPTA's live data for it didn't hold up (see any " +
+        "warnings above). The stop_id is still correct as shown -- check SEPTA's site for the real direction " +
+        "name before copying the entry into your config.js."
     );
   } else {
     console.log(

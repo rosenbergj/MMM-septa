@@ -9,6 +9,7 @@ const {
   getAllHeadsignsForStop,
   getHeadsignsSkippingStop,
   getDirectionIdsForStop,
+  getTerminusExclusionDirectionId,
   // Both fully generic (path-parameterized, no GTFS-specific structure
   // assumed) despite living in gtfs-schedule.js -- reused as-is for the
   // route-colors cache below instead of duplicating the same trivial
@@ -266,7 +267,19 @@ module.exports = NodeHelper.create({
       const stopDirectionIds = this.scheduleCache
         ? getDirectionIdsForStop(this.scheduleCache, state.config.routeId, state.config.stopId)
         : [];
-      const structuralDirectionId = stopDirectionIds.length === 1 ? stopDirectionIds[0] : null;
+      // A stop genuinely served by both direction_ids (e.g. T1-T5's 13th St
+      // tunnel terminus) can still resolve structurally without any live
+      // direction_name -- see gtfs-schedule.js's resolveTerminusExclusion --
+      // when one direction is uniformly a dead end there (every trip ends,
+      // never continues) and the other isn't; falls back to null (the
+      // existing direction_name-based matching in septa-client.js) when it
+      // doesn't fit that shape, same as before this existed.
+      const structuralDirectionId =
+        stopDirectionIds.length === 1
+          ? stopDirectionIds[0]
+          : this.scheduleCache
+            ? getTerminusExclusionDirectionId(this.scheduleCache, state.config.routeId, state.config.stopId)
+            : null;
       const result = await pollRoute(
         { ...state.config, secondaryStopId },
         { useScheduleSupplement: state.useScheduleSupplement, structuralDirectionId }

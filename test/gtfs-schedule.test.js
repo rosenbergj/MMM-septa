@@ -22,6 +22,8 @@ const {
   getAllHeadsignsForStop,
   getHeadsignsSkippingStop,
   getDirectionIdsForStop,
+  resolveTerminusExclusion,
+  getTerminusExclusionDirectionId,
   loadCacheFromDisk,
   saveCacheToDisk,
   fetchScheduleCache,
@@ -489,6 +491,158 @@ test("getDirectionIdsForStop", async (t) => {
     };
     const bothCache = buildScheduleCache(bothDirectionsTexts, ["17", "64"], [21289]);
     assert.deepEqual(getDirectionIdsForStop(bothCache, "17", 21289), ["0", "1"]);
+  });
+});
+
+test("resolveTerminusExclusion", async (t) => {
+  await t.test("clean terminus (T1-T5-at-13th-St shape): one direction always last, other always first -> keeps the non-terminal one", () => {
+    const fileTexts = {
+      "trips.txt":
+        "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed\n" +
+        "T1,weekday,9001,13th St,,0,1,1,1,1\n" +
+        "T1,weekday,9002,63rd-Malvern,,1,2,2,1,1\n",
+      "stop_times.txt":
+        "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n" +
+        // direction 0: 283 is trip 9001's last stop.
+        "9001,08:00:00,08:00:00,20642,1,,0,0,,1\n" +
+        "9001,08:05:00,08:05:00,20643,2,,0,0,,1\n" +
+        "9001,08:10:00,08:10:00,283,3,,0,0,,1\n" +
+        // direction 1: 283 is trip 9002's first stop.
+        "9002,08:15:00,08:15:00,283,1,,0,0,,1\n" +
+        "9002,08:20:00,08:20:00,20659,2,,0,0,,1\n" +
+        "9002,08:25:00,08:25:00,20660,3,,0,0,,1\n",
+    };
+    assert.equal(resolveTerminusExclusion(fileTexts, "T1", 283, ["0", "1"]), "1");
+  });
+
+  await t.test("route-17-at-stop-40 hypothetical: excluded direction always last-or-absent, kept direction sometimes first, sometimes intermediate", () => {
+    const fileTexts = {
+      "trips.txt":
+        "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed\n" +
+        "17,weekday,9001,Southbound-A,,0,1,1,1,1\n" + // direction 0: reaches 40 as last stop
+        "17,weekday,9002,Southbound-B,,0,2,2,1,1\n" + // direction 0: never reaches 40 at all
+        "17,weekday,9003,Northbound-Origin,,1,3,3,1,1\n" + // direction 1: reaches 40 as first stop
+        "17,weekday,9004,Northbound-ThroughRun,,1,4,4,1,1\n", // direction 1: reaches 40 as an intermediate stop
+      "stop_times.txt":
+        "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n" +
+        "9001,08:00:00,08:00:00,21289,1,,0,0,,1\n" +
+        "9001,08:05:00,08:05:00,40,2,,0,0,,1\n" +
+        "9002,09:00:00,09:00:00,21289,1,,0,0,,1\n" +
+        "9002,09:05:00,09:05:00,96,2,,0,0,,1\n" +
+        "9003,10:00:00,10:00:00,40,1,,0,0,,1\n" +
+        "9003,10:05:00,10:05:00,21289,2,,0,0,,1\n" +
+        "9004,11:00:00,11:00:00,96,1,,0,0,,1\n" +
+        "9004,11:05:00,11:05:00,40,2,,0,0,,1\n" +
+        "9004,11:10:00,11:10:00,21289,3,,0,0,,1\n",
+    };
+    assert.equal(resolveTerminusExclusion(fileTexts, "17", 40, ["0", "1"]), "1");
+  });
+
+  await t.test("neither direction uniformly terminal -> unresolvable (null)", () => {
+    const fileTexts = {
+      "trips.txt":
+        "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed\n" +
+        "2,weekday,9001,A,,0,1,1,1,1\n" +
+        "2,weekday,9002,B,,1,2,2,1,1\n",
+      "stop_times.txt":
+        "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n" +
+        // Both directions pass straight through -- 40 is a plain mid-route
+        // stop for each, never a terminus for either.
+        "9001,08:00:00,08:00:00,21289,1,,0,0,,1\n" +
+        "9001,08:05:00,08:05:00,40,2,,0,0,,1\n" +
+        "9001,08:10:00,08:10:00,96,3,,0,0,,1\n" +
+        "9002,09:00:00,09:00:00,96,1,,0,0,,1\n" +
+        "9002,09:05:00,09:05:00,40,2,,0,0,,1\n" +
+        "9002,09:10:00,09:10:00,21289,3,,0,0,,1\n",
+    };
+    assert.equal(resolveTerminusExclusion(fileTexts, "2", 40, ["0", "1"]), null);
+  });
+
+  await t.test("both directions uniformly terminal -> unresolvable (null), not an arbitrary pick", () => {
+    const fileTexts = {
+      "trips.txt":
+        "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed\n" +
+        "2,weekday,9001,A,,0,1,1,1,1\n" +
+        "2,weekday,9002,B,,1,2,2,1,1\n",
+      "stop_times.txt":
+        "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n" +
+        "9001,08:00:00,08:00:00,21289,1,,0,0,,1\n" +
+        "9001,08:05:00,08:05:00,40,2,,0,0,,1\n" +
+        "9002,09:00:00,09:00:00,96,1,,0,0,,1\n" +
+        "9002,09:05:00,09:05:00,40,2,,0,0,,1\n",
+    };
+    assert.equal(resolveTerminusExclusion(fileTexts, "2", 40, ["0", "1"]), null);
+  });
+
+  await t.test("a trip that never reaches stopId at all doesn't count against its direction's uniformity", () => {
+    const fileTexts = {
+      "trips.txt":
+        "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed\n" +
+        "17,weekday,9001,A,,0,1,1,1,1\n" +
+        "17,weekday,9002,B,,1,2,2,1,1\n",
+      "stop_times.txt":
+        "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n" +
+        "9001,08:00:00,08:00:00,21289,1,,0,0,,1\n" +
+        "9001,08:05:00,08:05:00,40,2,,0,0,,1\n" + // direction 0: 40 is last
+        "9002,09:00:00,09:00:00,21289,1,,0,0,,1\n" + // direction 1: never reaches 40 at all
+        "9002,09:05:00,09:05:00,96,2,,0,0,,1\n",
+    };
+    // direction 1 is vacuously "uniformly terminal" (no pattern ever
+    // contradicts it), so this is really "both uniformly terminal" -> null.
+    assert.equal(resolveTerminusExclusion(fileTexts, "17", 40, ["0", "1"]), null);
+  });
+});
+
+test("buildScheduleCache computes terminusExclusions for ambiguous stops", async (t) => {
+  const terminusTexts = {
+    "trips.txt":
+      "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed\n" +
+      "T1,weekday,9001,13th St,,0,1,1,1,1\n" +
+      "T1,weekday,9002,63rd-Malvern,,1,2,2,1,1\n",
+    "stop_times.txt":
+      "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n" +
+      "9001,08:00:00,08:00:00,20642,1,,0,0,,1\n" +
+      "9001,08:05:00,08:05:00,20643,2,,0,0,,1\n" +
+      "9001,08:10:00,08:10:00,283,3,,0,0,,1\n" +
+      "9002,08:15:00,08:15:00,283,1,,0,0,,1\n" +
+      "9002,08:20:00,08:20:00,20659,2,,0,0,,1\n" +
+      "9002,08:25:00,08:25:00,20660,3,,0,0,,1\n",
+    "calendar.txt":
+      "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\n" +
+      "weekday,1,1,1,1,1,0,0,20260101,20261231\n",
+    "calendar_dates.txt": "service_id,date,exception_type\n",
+  };
+
+  await t.test("ambiguous stop resolves to the kept direction_id, keyed by routeId:stopId", () => {
+    const cache = buildScheduleCache(terminusTexts, ["T1"], [283, 20642, 20643, 20659, 20660]);
+    assert.deepEqual(cache.terminusExclusions, { "T1:283": "1" });
+  });
+
+  await t.test("getTerminusExclusionDirectionId looks it up the same way", () => {
+    const cache = buildScheduleCache(terminusTexts, ["T1"], [283]);
+    assert.equal(getTerminusExclusionDirectionId(cache, "T1", 283), "1");
+  });
+
+  await t.test("getTerminusExclusionDirectionId returns null for a non-ambiguous stop", () => {
+    const cache = buildScheduleCache(terminusTexts, ["T1"], [20642]);
+    assert.equal(getTerminusExclusionDirectionId(cache, "T1", 20642), null);
+  });
+
+  await t.test("a normal single-direction stop contributes no entry at all", () => {
+    const fileTexts = {
+      "trips.txt":
+        "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed\n" +
+        "17,weekday,9001,Front-Market,,0,1,1,1,1\n",
+      "stop_times.txt":
+        "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n" +
+        "9001,06:00:00,06:00:00,21289,2,,0,0,,1\n",
+      "calendar.txt":
+        "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\n" +
+        "weekday,1,1,1,1,1,0,0,20260101,20261231\n",
+      "calendar_dates.txt": "service_id,date,exception_type\n",
+    };
+    const cache = buildScheduleCache(fileTexts, ["17"], [21289]);
+    assert.deepEqual(cache.terminusExclusions, {});
   });
 });
 
