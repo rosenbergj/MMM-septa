@@ -172,6 +172,17 @@ function septaAssignMergedMarkers(arrivals, headsignOrder) {
   return new Map(order.map((headsign, index) => [headsign, septaFootnoteMarker(index)]));
 }
 
+// Wraps a merged row's sub-route id in the same color-only styling hook the
+// single-route label uses (routeColor, from SEPTA's /routes/ metadata --
+// see septa-client.js's resolveRouteLabelColor) -- no font-size/weight of
+// its own, so it picks up whatever the surrounding context (the label cell
+// up top, or a muted .septa-full-width row below) already provides and only
+// ever changes color.
+function septaColoredRouteLabel(id, routeColor) {
+  const style = routeColor ? ` style="color:${septaEscapeHtml(routeColor)}"` : "";
+  return `<span class="septa-route-number"${style}>${id}</span>`;
+}
+
 // Beyond countdownWithinMinutes, a clock time ("5:47 PM") is more useful than
 // a big minute count; respects the mirror's global 12h/24h config.timeFormat
 // if present (falls back to the browser's locale default otherwise).
@@ -502,6 +513,7 @@ Module.register("MMM-septa", {
       return { subRouteId, direction, state };
     });
     const knownSubRoutes = subRoutes.filter((s) => s.state);
+    const routeColorFor = new Map(subRoutes.map((s) => [s.subRouteId, s.state && s.state.routeColor]));
 
     const stopName = knownSubRoutes.map((s) => s.state.stopName).find(Boolean);
     if (stopName && route.stopId !== lastHeaderStopId) {
@@ -674,7 +686,7 @@ Module.register("MMM-septa", {
       const contributingSubRouteIds = new Set(shownArrivals.map((a) => a.subRouteId));
       const parts = subRouteIds
         .filter((id) => contributingSubRouteIds.has(id))
-        .map((id) => `${id}(${markerForSubRoute.get(id)})`);
+        .map((id) => `${septaColoredRouteLabel(id, routeColorFor.get(id))}(${markerForSubRoute.get(id)})`);
       if (parts.length > 0) fullWidthRows.push({ flagged: false, html: parts.join(", ") });
     } else {
       const headsignsBySubRoute = new Map();
@@ -694,7 +706,7 @@ Module.register("MMM-septa", {
         });
         fullWidthRows.push({
           flagged: headsigns.some((h) => skipped.includes(h)),
-          html: `${subRouteId} &rarr; ${parts.join(", ")}`,
+          html: `${septaColoredRouteLabel(subRouteId, routeColorFor.get(subRouteId))} &rarr; ${parts.join(", ")}`,
         });
       }
     }
