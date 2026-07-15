@@ -71,17 +71,19 @@
    table's width to flow in, instead of being confined to (and stretching)
    the narrow label column. Muted by default (a plain, unflagged
    destination); .septa-secondary-skip overrides to full-brightness orange
-   for the flagged ones. */
+   for the flagged ones. The dimming is baked into the text color itself
+   (not `opacity` on the row) so a merged row's colored route-number spans
+   (septaColoredRouteLabel) keep the exact color the top summary row shows
+   them in -- `opacity` on an ancestor would composite those inline colors
+   against the background and wash them out to a different, paler shade. */
 .septa-table .septa-full-width {
   font-size: 0.7em;
   padding-top: 2px;
-  color: #fff;
-  opacity: 0.6;
+  color: rgba(255, 255, 255, 0.6);
 }
 
 .septa-table .septa-full-width.septa-secondary-skip {
   color: #e0a050;
-  opacity: 1;
 }
 
 .septa-table .septa-arrivals .septa-first {
