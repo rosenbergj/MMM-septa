@@ -871,6 +871,30 @@ test("mergeDirectionPatterns", async (t) => {
     assert.deepEqual(merged.headsigns, ["Aaa-First", "Bbb-Second", "Zzz-Longest"]);
   });
 
+  await t.test("a branch whose only overlap is an earlier branch's extra stop anchors there, not at the front", () => {
+    // Route 44 Westbound's real shape: the reference is "Gladwyne", one
+    // branch ("54th-City") contributes extras 97/98 after reference stop 3,
+    // and a short-turn branch *starts* at 98 -- a stop that's on no
+    // reference at all and has already been claimed. Its own extras (200,
+    // 201) belong right after 98, not above the reference's first stop.
+    const longest = pattern("Zzz-Reference", [1, 2, 3, 50, 51, 52]);
+    const branch = pattern("Aaa-Branch", [1, 2, 3, 97, 98]);
+    const shortTurn = pattern("Bbb-ShortTurn", [98, 200, 201]);
+    const merged = mergeDirectionPatterns([longest, branch, shortTurn]);
+    assert.deepEqual(rowIds(merged), ["1", "2", "3", "alt:97", "alt:98", "alt:200", "alt:201", "50", "51", "52"]);
+  });
+
+  await t.test("anchoring on an extra stop stays monotonic -- an earlier gap's stop can't pull the anchor backwards", () => {
+    const longest = pattern("Zzz-Reference", [1, 2, 3, 4, 50, 51, 52]);
+    const branch = pattern("Aaa-Branch", [1, 97, 2, 3, 98, 4]); // 97 -> gap after 1, 98 -> gap after 3
+    // Visits 98 (gap after 3) first, then 97 (gap after 1) -- the backwards
+    // one must be skipped rather than rewind the anchor, so 300 still lands
+    // in the later gap.
+    const backwards = pattern("Bbb-Backwards", [98, 97, 300]);
+    const merged = mergeDirectionPatterns([longest, branch, backwards]);
+    assert.deepEqual(rowIds(merged), ["1", "alt:97", "2", "3", "alt:98", "alt:300", "4", "50", "51", "52"]);
+  });
+
   await t.test("headsigns list includes every distinct headsign, sorted, regardless of containment", () => {
     const longest = pattern("B-Longest", [1, 2, 3, 4]);
     const contained = pattern("A-Contained", [1, 2, 3]);

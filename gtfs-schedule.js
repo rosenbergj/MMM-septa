@@ -371,7 +371,10 @@ function buildRouteStopPatterns(fileTexts, routeId) {
 // loop -- can't match backwards). Matched stops are "anchors"; stops that
 // don't match anything in the reference are "extra", grouped into
 // contiguous runs and anchored to whichever reference stop precedes them
-// (or "before everything" if there's no preceding anchor yet).
+// (or "before everything" if there's no preceding anchor yet). Once an
+// extra run has been placed, its stops become anchors too, so a branch that
+// only overlaps an *earlier branch* (not the reference) still lands at the
+// right place -- see gapIndexByStopId below.
 //
 // A pattern with zero extra stops is fully contained in the reference (SEPTA
 // often just runs a shorter/truncated version of the same route) and
@@ -399,6 +402,18 @@ function mergeDirectionPatterns(directionPatterns) {
   // there.
   const gapRuns = new Map();
   const alreadyIncluded = new Set(reference.stops.map((stop) => stop.stopId));
+  // stopId -> the gapRuns key an already-placed extra stop was flushed into,
+  // so a *later* pattern can anchor on it the same way it anchors on a
+  // reference stop. Without this, a pattern whose only overlap with
+  // everything seen so far is an extra stop claimed by an earlier pattern
+  // has no anchor at all: lastMatchedIndex never leaves -1 and its entire
+  // stop list flushes to the leading gap, printing a mid-route or trailing
+  // branch as if it ran before the reference's first stop. Confirmed live on
+  // route 44 Westbound, where the short "Ardmore via Montgomery Ave"
+  // short-turn starts at 54th St & City Av (not a reference stop, and
+  // already claimed by "54th-City") and so dumped its whole 24-stop Ardmore
+  // tail above the reference instead of at the City Av divergence point.
+  const gapIndexByStopId = new Map();
 
   const others = directionPatterns.filter((p) => p !== reference).sort((a, b) => a.headsign.localeCompare(b.headsign));
   for (const pattern of others) {
@@ -408,20 +423,27 @@ function mergeDirectionPatterns(directionPatterns) {
       if (pending.length === 0) return;
       if (!gapRuns.has(lastMatchedIndex)) gapRuns.set(lastMatchedIndex, []);
       gapRuns.get(lastMatchedIndex).push(...pending);
+      for (const stop of pending) gapIndexByStopId.set(stop.stopId, lastMatchedIndex);
       pending = [];
     };
     for (const stop of pattern.stops) {
       const refIndex = referenceIndexByStopId.get(stop.stopId);
-      if (refIndex != null && refIndex > lastMatchedIndex) {
+      // An extra stop's gap index is only consulted when the stop isn't on
+      // the reference at all -- a reference stop that failed the
+      // monotonicity check above is a backwards match (a loop), and must
+      // stay rejected rather than get a second chance here.
+      const anchorIndex = refIndex != null ? refIndex : gapIndexByStopId.get(stop.stopId);
+      if (anchorIndex != null && anchorIndex > lastMatchedIndex) {
         flushPending();
-        lastMatchedIndex = refIndex;
+        lastMatchedIndex = anchorIndex;
       } else if (!alreadyIncluded.has(stop.stopId)) {
         pending.push(stop);
         alreadyIncluded.add(stop.stopId);
       }
       // else: already represented (on the reference itself, just not
       // reachable monotonically from here -- e.g. a loop -- or already
-      // claimed by an earlier pattern's extra run) -- never repeat it.
+      // claimed by an earlier pattern's extra run at a position we've
+      // already passed) -- never repeat it.
     }
     flushPending();
   }
