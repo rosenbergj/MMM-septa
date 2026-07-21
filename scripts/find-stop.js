@@ -284,6 +284,17 @@ function formatHeadsignList(headsigns) {
 // alt block apart from the main sequence regardless of whether it's a
 // leading, trailing, or interior block -- see gtfs-schedule.js's
 // mergeDirectionPatterns for how rows are ordered.
+//
+// Also breaks *within* an alt block wherever mergeDirectionPatterns set
+// breakBefore, i.e. where the two stops don't actually run one into the
+// other on any trip. Without that, one block of alt rows reads as a single
+// consecutive stretch of road when it can really be several unrelated
+// branches printed back to back (route 44 Westbound stacks three).
+function shouldBreakBefore(row, prevType) {
+  if (prevType === null) return false; // never before the very first row
+  return row.type !== prevType || Boolean(row.breakBefore);
+}
+
 function printMergedDirection(routeId, label, merged) {
   console.log(`\nRoute ${routeId} — ${label} — ${formatHeadsignList(merged.headsigns)}`);
   const stopRows = merged.rows.filter((r) => r.type === "stop");
@@ -292,7 +303,7 @@ function printMergedDirection(routeId, label, merged) {
   console.log(`  ${"seq".padEnd(seqWidth)}  ${"stop_id".padEnd(idWidth)}  stop_name`);
   let prevType = null;
   for (const row of merged.rows) {
-    if (prevType !== null && row.type !== prevType) console.log("");
+    if (shouldBreakBefore(row, prevType)) console.log("");
     const seqLabel = row.type === "alt" ? "alt" : String(row.stopSequence);
     console.log(`  ${seqLabel.padEnd(seqWidth)}  ${String(row.stopId).padEnd(idWidth)}  ${row.stopName || ""}`);
     prevType = row.type;
@@ -305,7 +316,7 @@ function printMergedDirectionFull(routeId, label, merged, directionEntry, direct
   const commentSuffix = comment ? ` // ${comment}` : "";
   let prevType = null;
   for (const row of merged.rows) {
-    if (prevType !== null && row.type !== prevType) console.log("");
+    if (shouldBreakBefore(row, prevType)) console.log("");
     console.log(`  ${row.stopName || ""}`);
     console.log(`  { routeId: "${routeId}", stopId: ${row.stopId}, direction: ${value}, label: "${routeId}" },${commentSuffix}`);
     prevType = row.type;

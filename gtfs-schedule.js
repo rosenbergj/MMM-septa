@@ -387,6 +387,9 @@ function buildRouteStopPatterns(fileTexts, routeId) {
 // Returns { headsigns: string[], rows: [{ type: "stop"|"alt", stopId,
 // stopSequence, stopName }] } -- rows is the reference's own stops in
 // order, with each pattern's extra runs spliced in at the right position.
+// An "alt" row additionally carries breakBefore: true when it does not
+// actually follow the alt row above it on any trip (see the end of this
+// function); the field is absent otherwise.
 function mergeDirectionPatterns(directionPatterns) {
   const headsigns = [...new Set(directionPatterns.map((p) => p.headsign).filter(Boolean))].sort();
   if (directionPatterns.length === 0) return { headsigns, rows: [] };
@@ -459,6 +462,36 @@ function mergeDirectionPatterns(directionPatterns) {
     rows.push({ type: "stop", stopId: stop.stopId, stopSequence: stop.stopSequence, stopName: stop.stopName });
     appendGapRun(index);
   });
+
+  // A run of adjacent "alt" rows reads as "these stops follow one another on
+  // some trip" -- but a single gap run can hold extra stops from several
+  // different patterns (each contributes one contiguous run, appended in
+  // turn), and even one pattern's own run can have an interior stop dropped
+  // (already claimed by an earlier pattern, or a backwards loop match), so
+  // that reading isn't always true. Mark the rows where it breaks down, so
+  // callers can separate them visually the same way they already separate
+  // stop-vs-alt transitions.
+  //
+  // The test is literal rather than structural (e.g. "did these two come
+  // from the same flush?"): a pair is consecutive if *any* pattern in this
+  // direction runs one stop straight into the other. That's exactly the
+  // assumption a reader is making, and it correctly stays silent when two
+  // separate patterns' runs happen to abut at a genuinely consecutive pair.
+  const consecutivePairs = new Set();
+  for (const pattern of directionPatterns) {
+    for (let i = 1; i < pattern.stops.length; i++) {
+      consecutivePairs.add(`${pattern.stops[i - 1].stopId}|${pattern.stops[i].stopId}`);
+    }
+  }
+  for (let i = 1; i < rows.length; i++) {
+    const previous = rows[i - 1];
+    const row = rows[i];
+    // Only within an alt run -- a stop/alt transition is already a visible
+    // boundary for callers, and reference stops are consecutive by
+    // definition.
+    if (previous.type !== "alt" || row.type !== "alt") continue;
+    if (!consecutivePairs.has(`${previous.stopId}|${row.stopId}`)) row.breakBefore = true;
+  }
 
   return { headsigns, rows };
 }

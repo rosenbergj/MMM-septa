@@ -895,6 +895,68 @@ test("mergeDirectionPatterns", async (t) => {
     assert.deepEqual(rowIds(merged), ["1", "alt:97", "2", "3", "alt:98", "alt:300", "4", "50", "51", "52"]);
   });
 
+  // rowIds() with a "|" marking each breakBefore, so the assertions below
+  // read as the printed layout does.
+  function rowIdsWithBreaks(merged) {
+    const out = [];
+    for (const r of merged.rows) {
+      if (r.breakBefore) out.push("|");
+      out.push(r.type === "alt" ? `alt:${r.stopId}` : `${r.stopId}`);
+    }
+    return out;
+  }
+
+  await t.test("two branches stacked in one gap are broken apart when their stops don't actually adjoin", () => {
+    const longest = pattern("Zzz-Reference", [1, 2, 3, 50, 51]);
+    const branchA = pattern("Aaa-Branch", [1, 2, 3, 90, 91]); // ends at 91
+    const branchB = pattern("Bbb-Branch", [1, 2, 3, 80, 81]); // ends at 81; 91->80 adjoins nothing
+    const merged = mergeDirectionPatterns([longest, branchA, branchB]);
+    assert.deepEqual(rowIdsWithBreaks(merged), [
+      "1", "2", "3", "alt:90", "alt:91", "|", "alt:80", "alt:81", "50", "51",
+    ]);
+  });
+
+  await t.test("no break where two patterns' runs abut at a genuinely consecutive pair", () => {
+    // Route 44 Westbound's real shape: "54th-City" contributes ...->97, and
+    // the short-turn branch starts at 97 and runs straight into 98. They're
+    // different patterns, but 97->98 is a real consecutive pair, so the
+    // reader's "these follow one another" assumption holds -- no break.
+    const longest = pattern("Zzz-Reference", [1, 2, 3, 50, 51]);
+    const branch = pattern("Aaa-Branch", [1, 2, 3, 96, 97]);
+    const shortTurn = pattern("Bbb-ShortTurn", [97, 98, 99]);
+    const merged = mergeDirectionPatterns([longest, branch, shortTurn]);
+    assert.deepEqual(rowIdsWithBreaks(merged), [
+      "1", "2", "3", "alt:96", "alt:97", "alt:98", "alt:99", "50", "51",
+    ]);
+  });
+
+  await t.test("a break can fall inside one pattern's own run, where an interior stop was claimed by an earlier pattern", () => {
+    // Bbb's run is 90,91,92 -- but 91 was already claimed by Aaa and placed
+    // in a different gap, so Bbb contributes 90 and 92, which are *not*
+    // consecutive on any trip.
+    // "longest" needs enough unique tail stops to stay the reference despite
+    // Bbb-Later's three extras.
+    const longest = pattern("Zzz-Reference", [1, 2, 3, 4, 50, 51, 52, 53]);
+    const claimer = pattern("Aaa-Claimer", [1, 91, 2, 3, 4]); // claims 91 into the gap after stop 1
+    const later = pattern("Bbb-Later", [1, 2, 3, 90, 91, 92, 4]);
+    const merged = mergeDirectionPatterns([longest, claimer, later]);
+    assert.deepEqual(rowIdsWithBreaks(merged), [
+      "1", "alt:91", "2", "3", "alt:90", "|", "alt:92", "4", "50", "51", "52", "53",
+    ]);
+  });
+
+  await t.test("breakBefore is never set on a stop row, nor on the first row of an alt run", () => {
+    const longest = pattern("Zzz-Reference", [1, 2, 3, 50, 51]);
+    const branchA = pattern("Aaa-Branch", [1, 2, 3, 90, 91]);
+    const branchB = pattern("Bbb-Branch", [1, 2, 3, 80, 81]);
+    const merged = mergeDirectionPatterns([longest, branchA, branchB]);
+    assert.ok(merged.rows.every((r) => !(r.type === "stop" && r.breakBefore)));
+    assert.equal(merged.rows[0].breakBefore, undefined);
+    // The alt run's own first row abuts a stop row, which callers already
+    // break on -- flagging it too would print a double blank line.
+    assert.equal(merged.rows.find((r) => r.type === "alt").breakBefore, undefined);
+  });
+
   await t.test("headsigns list includes every distinct headsign, sorted, regardless of containment", () => {
     const longest = pattern("B-Longest", [1, 2, 3, 4]);
     const contained = pattern("A-Contained", [1, 2, 3]);
