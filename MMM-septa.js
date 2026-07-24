@@ -211,6 +211,12 @@ Module.register("MMM-septa", {
     // GPS-tracking yet (and, later, static-schedule arrivals) instead of
     // showing only fully GPS-confirmed buses.
     useScheduleSupplement: true,
+    // How many minutes ahead the static-schedule supplement reaches. SEPTA's
+    // live feed alone only covers ~15 min out; this fills the rest of the
+    // window in from the schedule. Larger shows arrivals farther out (still
+    // capped by maxArrivals); smaller keeps the display shorter-term. Only has
+    // an effect when useScheduleSupplement is true.
+    scheduleHorizonMinutes: 60,
     // Set false to hide the destination line(s) below each route and the
     // footnote markers on mixed-destination arrivals. When a route also has
     // a secondaryStopId, trips that skip it structurally (by headsign) are
@@ -229,6 +235,7 @@ Module.register("MMM-septa", {
       refreshIntervalSeconds: this.config.refreshIntervalSeconds,
       retryIntervalSeconds: this.config.retryIntervalSeconds,
       useScheduleSupplement: this.config.useScheduleSupplement,
+      scheduleHorizonMinutes: this.config.scheduleHorizonMinutes,
     });
 
     setInterval(() => {

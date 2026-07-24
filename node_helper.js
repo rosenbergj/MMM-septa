@@ -19,7 +19,7 @@ const {
 } = require("./gtfs-schedule.js");
 const { parseRouteIds, resolveDirectionForRoute } = require("./route-config.js");
 
-const SCHEDULE_HORIZON_MINUTES = 60;
+const DEFAULT_SCHEDULE_HORIZON_MINUTES = 60; // how far ahead the static-schedule supplement reaches; overridable via config's scheduleHorizonMinutes
 const SCHEDULE_INITIAL_DELAY_MS = 60 * 1000; // wait until well after MagicMirror's own startup
 const SCHEDULE_REFRESH_MS = 24 * 60 * 60 * 1000; // once daily thereafter
 const SCHEDULE_RETRY_MS = 60 * 60 * 1000; // retry sooner than a full day if a refresh fails
@@ -217,7 +217,14 @@ module.exports = NodeHelper.create({
   },
 
   registerConfig(payload) {
-    const { instanceId, routes, refreshIntervalSeconds, retryIntervalSeconds, useScheduleSupplement } = payload;
+    const { instanceId, routes, refreshIntervalSeconds, retryIntervalSeconds, useScheduleSupplement, scheduleHorizonMinutes } = payload;
+    // Fall back to the default for anything not a positive finite number
+    // (unset, or a nonsense value) -- a 0/negative horizon would just silently
+    // suppress every supplemented arrival, which useScheduleSupplement:false
+    // already expresses more clearly.
+    const horizon = Number(scheduleHorizonMinutes);
+    const resolvedHorizon =
+      Number.isFinite(horizon) && horizon > 0 ? horizon : DEFAULT_SCHEDULE_HORIZON_MINUTES;
     for (const route of routes || []) {
       // A merged route entry ("T2,T3,T4,T5") fans out here into N fully
       // independent single-route registrations -- same polling, same
@@ -250,6 +257,7 @@ module.exports = NodeHelper.create({
           },
           merged,
           useScheduleSupplement: useScheduleSupplement !== false,
+          scheduleHorizonMinutes: resolvedHorizon,
           instanceId,
           routeKey: routeKey(subRoute),
           refreshIntervalSeconds: refreshIntervalSeconds || 120,
@@ -380,7 +388,7 @@ module.exports = NodeHelper.create({
           state.config.routeId,
           state.config.stopId,
           new Date(),
-          SCHEDULE_HORIZON_MINUTES,
+          state.scheduleHorizonMinutes,
           state.directionId
         );
         state.etas = mergeScheduledArrivals(result.etas, scheduled);

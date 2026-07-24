@@ -128,6 +128,7 @@ MagicMirror module option, outside `config`) to override it.
     warnMinutes: 5,
     countdownWithinMinutes: 30,
     useScheduleSupplement: true,
+    scheduleHorizonMinutes: 60,
     showHeadsigns: true,
   },
 }
@@ -142,7 +143,8 @@ MagicMirror module option, outside `config`) to override it.
 | `warnMinutes`             | `5`     | Arrivals at or under this many minutes are styled as "urgent" (global default; can be overridden per route) |
 | `countdownWithinMinutes`  | `30`    | Arrivals at or under this many minutes show as "Nm"; farther out shows a clock time (e.g. "5:47 PM"), honoring the mirror's global `timeFormat` (12/24h) |
 | `countdownTickSeconds`    | `15`    | How often the displayed "Nm" countdown re-renders client-side            |
-| `useScheduleSupplement`   | `true`  | Include arrivals SEPTA hasn't fully GPS-confirmed yet, plus static-schedule arrivals up to 60 minutes out that live tracking doesn't cover yet (both shown as "~Nm", italic/muted). Set `false` to show only GPS-confirmed arrivals. |
+| `useScheduleSupplement`   | `true`  | Include arrivals SEPTA hasn't fully GPS-confirmed yet, plus static-schedule arrivals up to `scheduleHorizonMinutes` out that live tracking doesn't cover yet (both shown as "~Nm", italic/muted). Set `false` to show only GPS-confirmed arrivals. |
+| `scheduleHorizonMinutes`  | `60`    | How many minutes ahead the static-schedule supplement reaches (SEPTA's live feed alone only covers ~15 min out). Raise to show arrivals farther out, lower for a shorter-term view; still capped by `maxArrivals`. Only applies when `useScheduleSupplement` is `true`. |
 | `showHeadsigns`           | `true`  | Show each trip's headsign (see below) below the route, and footnote markers when several are mixed together. Global default, overridable per route. Set `false` to hide both and compact the display -- see "Secondary stop" below for how this interacts with `secondaryStopId`. |
 
 Each route's `direction` should match SEPTA's `direction_name` for that route
