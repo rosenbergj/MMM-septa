@@ -6,6 +6,7 @@ const { pollRoute, mergeScheduledArrivals, fetchRoutes, resolveRouteLabelColor }
 const {
   fetchScheduleCache,
   getScheduledArrivals,
+  hasActiveServiceOn,
   getAllHeadsignsForStop,
   getHeadsignsSkippingStop,
   getDirectionIdsForStop,
@@ -143,6 +144,19 @@ module.exports = NodeHelper.create({
       this.scheduleCache = await fetchScheduleCache([...routeIds], [...stopIds]);
       saveCacheToDisk(this.scheduleCache);
       console.log(`MMM-septa: refreshed GTFS schedule cache (${this.scheduleCache.entries.length} entries)`);
+      // SEPTA sometimes publishes a feed whose calendar doesn't cover today
+      // (e.g. it has already rolled forward to the next service period, ahead
+      // of a schedule change). When that happens the schedule supplement can
+      // contribute nothing and the display quietly drops to live-only data --
+      // easy to mistake for a broken module -- so warn about it here, once per
+      // refresh (not per poll cycle). See gtfs-schedule.js's hasActiveServiceOn.
+      if (!hasActiveServiceOn(this.scheduleCache, new Date())) {
+        console.warn(
+          `MMM-septa: the current GTFS feed has no service active for today -- the schedule supplement is ` +
+            `unavailable and only SEPTA's short live-arrival window will show until the feed covers today ` +
+            `again (usually a temporary gap around a SEPTA schedule change).`
+        );
+      }
       this.validateSecondaryStopIds();
       this.validateMergedRouteStops();
       this.scheduleTimer = setTimeout(() => this.refreshScheduleCache(), SCHEDULE_REFRESH_MS);
@@ -396,6 +410,16 @@ module.exports = NodeHelper.create({
         state.etas = result.etas;
       }
 
+      // Whether the schedule supplement is expected but the static feed
+      // doesn't cover today at all (see gtfs-schedule.js's hasActiveServiceOn)
+      // -- the frontend surfaces a single "live data only" note when true. Only
+      // meaningful for a route actually using the supplement, once the cache
+      // has loaded (before that it's a plain startup gap, not a feed problem).
+      const scheduleUnavailable =
+        state.useScheduleSupplement &&
+        Boolean(this.scheduleCache) &&
+        !hasActiveServiceOn(this.scheduleCache, new Date());
+
       // A stable order for footnote-marker assignment (see MMM-septa.js's
       // septaGroupByDestination) -- every headsign this route/stop is ever
       // scheduled to see, not just whichever trips happen to be next right
@@ -436,6 +460,7 @@ module.exports = NodeHelper.create({
         secondaryStopName: state.secondaryStopName,
         secondaryStopSkippedHeadsigns,
         routeColor: this.routeColors[state.config.routeId] || null,
+        scheduleUnavailable,
       });
 
       state.timer = setTimeout(() => this.runCycle(fullKey), state.refreshIntervalSeconds * 1000);

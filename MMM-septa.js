@@ -284,6 +284,24 @@ Module.register("MMM-septa", {
     // non-adjacent routes out of the order they were configured in.
     let lastHeaderStopId = null;
 
+    // One module-wide note when the static GTFS feed doesn't cover today, so
+    // the thin, live-only arrivals that result (SEPTA's live feed alone only
+    // reaches ~15 min out) read as a known temporary gap rather than a broken
+    // module. scheduleUnavailable is a feed-wide fact node_helper computes per
+    // route (see its runCycle); every route agrees, so any one being true is
+    // enough. Rendered at the very top, above the first route, so it's clear
+    // the note applies to every route below it, not just an adjacent one.
+    const scheduleUnavailable = Object.values(this.routeStates).some((s) => s && s.scheduleUnavailable);
+    if (scheduleUnavailable) {
+      const noteRow = document.createElement("tr");
+      const noteCell = document.createElement("td");
+      noteCell.className = "septa-full-width septa-schedule-note";
+      noteCell.colSpan = 2;
+      noteCell.innerHTML = "Note: Realtime data only; schedule data unavailable";
+      noteRow.appendChild(noteCell);
+      wrapper.appendChild(noteRow);
+    }
+
     for (const route of this.config.routes) {
       const subRouteIds = septaParseRouteIds(route.routeId);
       if (subRouteIds.length > 1) {

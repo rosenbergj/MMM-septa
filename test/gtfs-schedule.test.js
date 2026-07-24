@@ -15,6 +15,7 @@ const {
   parseCalendar,
   parseCalendarDates,
   isServiceActiveOn,
+  hasActiveServiceOn,
   buildScheduleCache,
   buildRouteStopPatterns,
   mergeDirectionPatterns,
@@ -284,6 +285,49 @@ test("isServiceActiveOn", async (t) => {
 
   await t.test("unknown service_id -> false", () => {
     assert.equal(isServiceActiveOn(calendar, exceptions, "nonexistent", new Date(2026, 6, 6)), false);
+  });
+});
+
+test("hasActiveServiceOn", async (t) => {
+  // Mirrors the real 2026-07-24 SEPTA gap: the feed's only service_id starts
+  // two days out (20260726), so today and tomorrow are uncovered.
+  const cache = {
+    calendar: parseCalendar(
+      "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\n" +
+        "weekday,1,1,1,1,1,0,0,20260726,20260822\n" +
+        "saturday,0,0,0,0,0,1,0,20260726,20260822\n"
+    ),
+    calendarExceptions: parseCalendarDates("service_id,date,exception_type\n"),
+  };
+
+  await t.test("false when no service_id covers the date (the feed-gap case)", () => {
+    // 2026-07-24 is a Friday, but every service_id starts 20260726.
+    assert.equal(hasActiveServiceOn(cache, new Date(2026, 6, 24)), false);
+  });
+
+  await t.test("true once a weekday falls inside a service_id's range", () => {
+    // 2026-07-27 is a Monday, within the weekday service range.
+    assert.equal(hasActiveServiceOn(cache, new Date(2026, 6, 27)), true);
+  });
+
+  await t.test("true on a Saturday only the saturday service_id covers", () => {
+    // 2026-08-01 is a Saturday: weekday is inactive, saturday is active.
+    assert.equal(hasActiveServiceOn(cache, new Date(2026, 7, 1)), true);
+  });
+
+  await t.test("a calendar_dates addition alone can make a date covered", () => {
+    const addOnly = {
+      calendar: parseCalendar(
+        "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\n"
+      ),
+      calendarExceptions: parseCalendarDates("service_id,date,exception_type\nspecial,20260724,1\n"),
+    };
+    assert.equal(hasActiveServiceOn(addOnly, new Date(2026, 6, 24)), true);
+  });
+
+  await t.test("null/empty cache -> false, no crash", () => {
+    assert.equal(hasActiveServiceOn(null, new Date(2026, 6, 27)), false);
+    assert.equal(hasActiveServiceOn({}, new Date(2026, 6, 27)), false);
   });
 });
 

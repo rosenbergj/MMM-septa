@@ -303,6 +303,30 @@ function isServiceActiveOn(calendar, calendarExceptions, serviceId, date) {
   return Boolean(cal[DOW_KEYS[date.getDay()]]);
 }
 
+// Does the static feed cover `date` at all -- i.e. is *any* service_id active
+// that day? SEPTA occasionally publishes a google_bus.zip whose calendar
+// starts a day or two in the future (seen 2026-07-24, ahead of the Aug 23
+// New Bus Network: every service_id started 20260726, leaving today/tomorrow
+// uncovered). When that happens getScheduledArrivals correctly returns
+// nothing for today, so the schedule supplement silently contributes zero and
+// the display collapses to SEPTA's short live-only window -- which looks
+// alarmingly like a breakage. node_helper.js uses this to log and surface a
+// note when it happens. Checks both calendar.txt service_ids and any that
+// exist only as calendar_dates.txt additions (a date-specific service with no
+// regular calendar.txt row). Global by design (not scoped to one route): "the
+// feed doesn't cover today" is a feed-wide fact, distinct from "this
+// particular route just isn't running / has nothing in the next hour," which
+// is normal and must NOT trigger the note.
+function hasActiveServiceOn(cache, date) {
+  if (!cache || !cache.calendar) return false;
+  const exceptions = cache.calendarExceptions || {};
+  const serviceIds = new Set([...Object.keys(cache.calendar), ...Object.keys(exceptions)]);
+  for (const serviceId of serviceIds) {
+    if (isServiceActiveOn(cache.calendar, exceptions, serviceId, date)) return true;
+  }
+  return false;
+}
+
 // Builds the full (unfiltered-by-date) cache object from raw zip file
 // contents. Pure given the extracted text -- no I/O, easy to unit test.
 // stopNames is filtered down to just stopIds (like entries is) so a
@@ -783,6 +807,7 @@ module.exports = {
   parseCalendar,
   parseCalendarDates,
   isServiceActiveOn,
+  hasActiveServiceOn,
   buildScheduleCache,
   buildRouteStopPatterns,
   getDirectionIdsForStop,

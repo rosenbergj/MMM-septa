@@ -86,6 +86,13 @@
   color: #e0a050;
 }
 
+/* Module-wide "live data only; schedule data unavailable" status note (see
+   MMM-septa.js's getDom) -- italicized to read as a transient status message
+   rather than one of the per-route destination lines it sits among. */
+.septa-table .septa-full-width.septa-schedule-note {
+  font-style: italic;
+}
+
 .septa-table .septa-arrivals .septa-first {
   font-weight: bold;
 }
