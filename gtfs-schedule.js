@@ -523,11 +523,16 @@ function mergeDirectionPatterns(directionPatterns) {
 // Returns scheduled arrivals for one route/stop within the next
 // horizonMinutes, each shaped to match septa-client.js's etas entries
 // (minus `tracked`, which callers should set to false -- these are always
-// schedule-only by definition). Checks both "today" and "yesterday" as the
-// service-day basis so post-midnight arrival_time values (GTFS allows
-// times >= 24:00:00 for trips that start the previous service day) resolve
-// correctly; at most one basis can ever fall within a 60-minute-scale
-// horizon, so no double-counting is possible.
+// schedule-only by definition). Checks "tomorrow", "today", and "yesterday"
+// as the service-day basis: "yesterday" so post-midnight arrival_time values
+// (GTFS allows times >= 24:00:00 for trips that start the previous service
+// day) resolve correctly, and "tomorrow" so that in the final horizonMinutes
+// of a day the window can reach forward into the next service day's early
+// arrivals (e.g. a 00:10 trip is visible from 23:35). No time-of-day gating
+// is needed -- the horizon filter itself means the tomorrow/yesterday bases
+// only ever contribute near a midnight boundary. Adjacent bases are exactly
+// 24h apart, so at most one of the three can fall within a 60-minute-scale
+// horizon and no double-counting is possible.
 //
 // directionId, when given, filters to just that direction -- some stop_ids
 // are (rarely, but confirmed live -- e.g. route 2 stop 40) served by both
@@ -549,7 +554,7 @@ function getScheduledArrivals(cache, routeId, stopId, now, horizonMinutes, direc
   for (const entry of cache.entries) {
     if (entry.routeId !== targetRouteId || entry.stopId !== targetStopId) continue;
     if (targetDirectionId != null && entry.directionId !== targetDirectionId) continue;
-    for (const dayOffset of [0, -1]) {
+    for (const dayOffset of [1, 0, -1]) {
       const basisDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset);
       if (!isServiceActiveOn(cache.calendar, cache.calendarExceptions, entry.serviceId, basisDate)) continue;
       const etaMs = basisDate.getTime() + entry.arrivalTimeSeconds * 1000;

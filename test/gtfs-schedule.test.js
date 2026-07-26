@@ -402,6 +402,21 @@ test("buildScheduleCache + getScheduledArrivals", async (t) => {
     assert.equal(results[0].tripId, "9001");
   });
 
+  await t.test("getScheduledArrivals reaches into the next service day's early arrivals near end of day", () => {
+    const earlyNextDayTexts = {
+      ...fileTexts,
+      "stop_times.txt": fileTexts["stop_times.txt"].replace("08:15:00,08:15:00", "00:20:00,00:20:00"),
+    };
+    const cache = buildScheduleCache(earlyNextDayTexts, ["17"], [21289]);
+    // 23:50 Monday; the trip is a 00:20 arrival on Tuesday's (weekday) service,
+    // 30 min out -- only reachable by looking forward into tomorrow's service
+    // day, since today's basis puts it at 00:20 *this* morning (already past).
+    const now = new Date(2026, 6, 6, 23, 50, 0); // Monday 23:50
+    const results = getScheduledArrivals(cache, "17", 21289, now, 60);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].tripId, "9001");
+  });
+
   // Reproduces a real bug found live: route 2 stop 40 is served by trips in
   // *both* directions (direction_id 0 -> "20th-Johnston", direction_id 1 ->
   // other headsigns) -- rare, but real, and the static schedule has no
