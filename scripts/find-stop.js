@@ -19,6 +19,14 @@
 // the same route -- contributes nothing beyond its headsign name). See
 // gtfs-schedule.js's mergeDirectionPatterns for the actual algorithm.
 //
+// Each row can carry a trip count, printed sparsely (see pickAnnotatedRows).
+// The reference is chosen by stop count alone, which is uncorrelated with
+// how often a pattern runs, so an "alt" row can easily be better served
+// than the main sequence it's spliced into -- the counts are the only thing
+// in the output that distinguishes a genuine branch from a once-a-day
+// variant. Not printed by --full, whose rows are meant to be pasted into
+// config.js verbatim.
+//
 // Output is deterministic across runs: no "currently running" annotation,
 // no calendar/day filtering (a weekend-only pattern shows up even if you
 // run this on a Tuesday), same result every time for a given GTFS feed.
@@ -295,19 +303,77 @@ function shouldBreakBefore(row, prevType) {
   return row.type !== prevType || Boolean(row.breakBefore);
 }
 
-function printMergedDirection(routeId, label, merged) {
+// How many trips actually serve each stop, in one direction. Built from the
+// full per-trip patterns list (not the reduced `representative` set), since
+// that's the only place the real counts survive -- pickRepresentativePatterns
+// keeps one trip per distinct (direction, headsign, shape) and discards how
+// many trips shared it.
+//
+// A stop is counted once per trip even if that trip stops there twice (a
+// loop route's turnaround), because the printed column is labelled "trips",
+// not "stop events".
+function countTripsByStop(patterns, directionId) {
+  const counts = new Map();
+  for (const pattern of patterns) {
+    if (directionId != null && String(pattern.directionId) !== String(directionId)) continue;
+    const seen = new Set();
+    for (const stop of pattern.stops) {
+      if (seen.has(stop.stopId)) continue;
+      seen.add(stop.stopId);
+      counts.set(stop.stopId, (counts.get(stop.stopId) || 0) + 1);
+    }
+  }
+  return counts;
+}
+
+// Which rows get a trip count printed next to them. Annotating every row
+// buries the signal (a long route is ~100 near-identical numbers), so this
+// prints one only where it tells the reader something they can't infer from
+// the row above:
+//
+//   - the first and last row, so the listing is always anchored;
+//   - either side of a blank line, i.e. wherever an alt block starts or
+//     ends or one alt block breaks into another (see shouldBreakBefore) --
+//     these are exactly the branch points, where "how much service does
+//     this stretch actually get" is the question being asked;
+//   - any row whose count differs from the row immediately above it.
+//
+// Everything else is silent and inherits the last number printed, so a
+// mid-route detour reads as a dip and a return (route 63 Northbound drops
+// to 14 for the Essington stops, then resumes at 230) rather than as a wall
+// of digits. Typically annotates well under a fifth of rows; a
+// single-pattern direction gets exactly two, first and last.
+function pickAnnotatedRows(rows, tripsByStop) {
+  const tripsAt = (row) => tripsByStop.get(row.stopId) || 0;
+  return rows.map((row, index) => {
+    if (index === 0 || index === rows.length - 1) return true;
+    if (shouldBreakBefore(row, rows[index - 1].type)) return true;
+    const next = rows[index + 1];
+    if (next && shouldBreakBefore(next, row.type)) return true;
+    return tripsAt(row) !== tripsAt(rows[index - 1]);
+  });
+}
+
+function printMergedDirection(routeId, label, merged, tripsByStop) {
   console.log(`\nRoute ${routeId} — ${label} — ${formatHeadsignList(merged.headsigns)}`);
   const stopRows = merged.rows.filter((r) => r.type === "stop");
   const seqWidth = Math.max(3, ...stopRows.map((r) => String(r.stopSequence).length));
   const idWidth = Math.max(7, ...merged.rows.map((r) => String(r.stopId).length));
-  console.log(`  ${"seq".padEnd(seqWidth)}  ${"stop_id".padEnd(idWidth)}  stop_name`);
+  const nameWidth = Math.max(9, ...merged.rows.map((r) => (r.stopName || "").length));
+  const annotated = pickAnnotatedRows(merged.rows, tripsByStop);
+  console.log(`  ${"seq".padEnd(seqWidth)}  ${"stop_id".padEnd(idWidth)}  ${"stop_name".padEnd(nameWidth)}  trips`);
   let prevType = null;
-  for (const row of merged.rows) {
+  merged.rows.forEach((row, index) => {
     if (shouldBreakBefore(row, prevType)) console.log("");
     const seqLabel = row.type === "alt" ? "alt" : String(row.stopSequence);
-    console.log(`  ${seqLabel.padEnd(seqWidth)}  ${String(row.stopId).padEnd(idWidth)}  ${row.stopName || ""}`);
+    // trimEnd so an unannotated row is byte-for-byte what it printed before
+    // this column existed, rather than carrying invisible padding.
+    const trips = annotated[index] ? String(tripsByStop.get(row.stopId) || 0).padStart(5) : "";
+    console.log(
+      `  ${seqLabel.padEnd(seqWidth)}  ${String(row.stopId).padEnd(idWidth)}  ${(row.stopName || "").padEnd(nameWidth)}  ${trips}`.trimEnd()
+    );
     prevType = row.type;
-  }
+  });
 }
 
 function printMergedDirectionFull(routeId, label, merged, directionEntry, directionId) {
@@ -412,7 +478,7 @@ async function main() {
     if (full) {
       printMergedDirectionFull(routeId, label, merged, entry, directionId);
     } else {
-      printMergedDirection(routeId, label, merged);
+      printMergedDirection(routeId, label, merged, countTripsByStop(patterns, directionId));
     }
   }
 
@@ -442,6 +508,8 @@ if (require.main === module) main();
 
 module.exports = {
   pickRepresentativePatterns,
+  countTripsByStop,
+  pickAnnotatedRows,
   buildDirectionNameMap,
   computeDirectionTrend,
   applyGeographySanityCheck,

@@ -56,21 +56,32 @@ running" status, no filtering by day, same result every time you run it for
 a given feed — e.g.:
 
 ```
-Route 17 — Southbound — "20th-Johnston" and "Broad-Pattison"
-  seq  stop_id  stop_name
-  1    31442    2nd St & Church St
-  2    20961    2nd St & Market St
+Route 17 — Northbound — "2nd-Market" and "Front-Market"
+  seq  stop_id  stop_name                   trips
+  1    40       20th St & Johnston St         214
+  2    21289    20th St & Oregon Av
   ...
-  44   21340    19th St & Oregon Av
+  45   21318    Market St & 3rd St            214
 
-  alt  21341    19th St & Johnston St
-  alt  38       19th St & Moyamensing Av
-  alt  31456    Moyamensing Av & 20th St
-  alt  40       20th St & Johnston St
+  alt  69       Front St & Market St Loop      19
 
-  45   30872    20th St & Oregon Av - FS
+  46   7657     Market St & Front St          195
   ...
 ```
+
+The `trips` column is how many trips in that direction actually serve the
+stop, over the whole feed. It's printed sparsely — on the first and last
+row, on either side of a blank line, and wherever the number changes from
+the row above — so a run of identical values stays quiet and you read a
+stop's service level from the last number printed above it. Above, 19 of
+the 214 trips detour through the Front St loop.
+
+This matters because an `alt` row is not necessarily a rare one. Whether a
+stop lands in the main sequence or in an `alt` block is decided purely by
+which pattern is longest, which has nothing to do with how often each
+pattern runs — so a well-served stop can appear as an `alt` row while the
+main sequence runs a once-a-day variant. The counts are what tell the two
+apart. (`--full` output is unaffected; it has no `trips` column.)
 
 Live `/trips/` data is still fetched, but only to label each direction with
 its real `direction_name` string (the static feed only has a bare 0/1
