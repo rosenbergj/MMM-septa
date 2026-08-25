@@ -1,10 +1,10 @@
 "use strict";
 
-// Pure config-parsing helpers for a "merged" route entry -- one config.js
-// routes[] entry that covers more than one SEPTA route_id at a shared stop
-// (see README's "Merging routes" section). No I/O, no MagicMirror/Node
-// dependency, so these are unit-testable in isolation and safe to call from
-// node_helper.js's config registration.
+// Pure config-parsing helpers. No I/O, no MagicMirror/Node dependency, so
+// these are unit-testable in isolation and safe to call from node_helper.js's
+// config registration. Most of them concern a "merged" route entry -- one
+// config.js routes[] entry that covers more than one SEPTA route_id at a
+// shared stop (see README's "Merging routes" section).
 
 // Splits a configured routeId into the list of route_ids it actually means.
 // A comma-separated string ("T2,T3,T4,T5") is the primary, documented form;
@@ -39,4 +39,50 @@ function resolveDirectionForRoute(direction, routeId) {
   return direction;
 }
 
-module.exports = { parseRouteIds, resolveDirectionForRoute };
+// How far ahead the static-schedule supplement reaches, in minutes, when
+// config.js doesn't say.
+const DEFAULT_SCHEDULE_HORIZON_MINUTES = 60;
+
+// Hard ceiling on that horizon. Twelve hours is far past the point where a
+// bus could be live-tracked, but the binding reason is structural:
+// getScheduledArrivals evaluates each schedule entry against yesterday's,
+// today's and tomorrow's service day, and relies on those bases being 24h
+// apart so at most one can land inside the horizon (see its comment). A
+// horizon at or past 24h breaks that and the same trip is returned twice --
+// measured on route 14 at stop 22524, a 48h horizon returns 127 arrivals of
+// which 45 are duplicate tripIds. 720 keeps a 2x margin under that bound.
+const MAX_SCHEDULE_HORIZON_MINUTES = 720;
+
+// Resolves config.js's scheduleHorizonMinutes to a usable number of minutes.
+//
+// A value that genuinely expresses a number but lands out of range -- zero,
+// negative, or past the ceiling -- resolves to the ceiling. That's
+// deliberate: both "0 means unlimited" and "-1 means unlimited" are long-
+// standing config conventions, and the ceiling is what unlimited means
+// here. Other negatives and Infinity ride along on the same rule rather
+// than earn a branch that would never fire. Turning the supplement *off*
+// is useScheduleSupplement:false, not a zero horizon.
+//
+// Everything else expresses no number to honor -- unset, null, "", a string
+// that won't parse, a boolean, an array -- and falls back to the default.
+// The type check comes first precisely so those don't reach the range
+// branch: Number() would quietly coerce null, "" and false to 0 and hand
+// them the ceiling, which reads as "unlimited" for values that said nothing
+// of the kind. A numeric string ("90") is still honored, and "0" still
+// means unlimited, since both do express a number.
+function resolveScheduleHorizonMinutes(value) {
+  const expressesANumber = typeof value === "number" || (typeof value === "string" && value.trim() !== "");
+  if (!expressesANumber) return DEFAULT_SCHEDULE_HORIZON_MINUTES;
+  const minutes = Number(value);
+  if (Number.isNaN(minutes)) return DEFAULT_SCHEDULE_HORIZON_MINUTES;
+  if (minutes <= 0 || minutes > MAX_SCHEDULE_HORIZON_MINUTES) return MAX_SCHEDULE_HORIZON_MINUTES;
+  return minutes;
+}
+
+module.exports = {
+  parseRouteIds,
+  resolveDirectionForRoute,
+  resolveScheduleHorizonMinutes,
+  DEFAULT_SCHEDULE_HORIZON_MINUTES,
+  MAX_SCHEDULE_HORIZON_MINUTES,
+};
