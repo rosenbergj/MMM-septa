@@ -158,7 +158,7 @@ module.exports = NodeHelper.create({
         );
       }
       this.validateSecondaryStopIds();
-      this.validateMergedRouteStops();
+      this.validateStopIds();
       this.scheduleTimer = setTimeout(() => this.refreshScheduleCache(), SCHEDULE_REFRESH_MS);
     } catch (err) {
       console.error(`MMM-septa: GTFS schedule refresh failed: ${err.message}; retrying in ${SCHEDULE_RETRY_MS / 1000}s`);
@@ -199,29 +199,49 @@ module.exports = NodeHelper.create({
     }
   },
 
-  // A merged route entry ("T2,T3,T4,T5") requires every one of its
-  // sub-routeIds to actually stop at the configured stopId -- otherwise
-  // whichever one doesn't just silently shows no arrivals forever,
-  // indistinguishable from a real route with nothing currently running
-  // (same failure mode validateRouteIds already warns about for an
-  // unrecognized routeId). Checked direction-agnostically, same reasoning
-  // as validateSecondaryStopIds -- a stop simply being real on the route at
-  // all is enough to rule out this failure mode. Only applies to routes
-  // that actually came from a merged entry (registerConfig's `merged`
-  // flag) -- an ordinary single-routeId entry has no "other routes in the
-  // group" to be mismatched against.
-  validateMergedRouteStops() {
+  // A configured stopId that the route never actually stops at (a typo, a
+  // stop on a different route entirely, a stop_id retired in a service
+  // change) otherwise just shows no arrivals forever, indistinguishable
+  // from a real route with nothing currently running -- and because the
+  // stop's name never resolves either, even the stop header above the row
+  // silently vanishes. Checked direction-agnostically, same reasoning as
+  // validateSecondaryStopIds -- a stop simply being real on the route at
+  // all is enough to rule out this failure mode. Skips routes that opted
+  // out of the schedule supplement, since their data was never pulled into
+  // the cache in the first place (see refreshScheduleCache).
+  //
+  // Sets state.stopIdValid (re-evaluated fresh on every refresh, not
+  // latched -- so a config fixed between restarts is picked up rather than
+  // being stuck on a stale verdict), which rides along to the display so it
+  // can label the row instead of leaving it looking merely quiet.
+  //
+  // A merged route entry ("T2,T3,T4,T5") fans out into one registration per
+  // sub-routeId, all sharing the one configured stopId, so this same check
+  // doubles as the merged-group requirement that every sub-routeId really
+  // stops there -- only the warning wording differs, since for a merged
+  // entry the likelier mistake is a route that doesn't belong in the list
+  // rather than a bad stopId. The display draws the same distinction (see
+  // MMM-septa.js's renderMergedRouteRow).
+  validateStopIds() {
     for (const state of this.routes.values()) {
-      if (!state.merged) continue;
       if (state.useScheduleSupplement === false) continue;
       const headsigns = getAllHeadsignsForStop(this.scheduleCache, state.config.routeId, state.config.stopId);
-      if (headsigns.length > 0) continue;
-      console.warn(
-        `MMM-septa: merged route ${state.routeKey} -- routeId ${state.config.routeId} doesn't appear to stop at ` +
-          `stopId ${state.config.stopId} anywhere in its schedule -- check your merged routeId list for a typo or ` +
-          `a route that doesn't actually share this stop; it will otherwise just show no arrivals, ` +
-          `indistinguishable from a real route with nothing currently running.`
-      );
+      state.stopIdValid = headsigns.length > 0;
+      if (state.stopIdValid) continue;
+      if (state.merged) {
+        console.warn(
+          `MMM-septa: merged route ${state.routeKey} -- routeId ${state.config.routeId} doesn't appear to stop at ` +
+            `stopId ${state.config.stopId} anywhere in its schedule -- check your merged routeId list for a typo or ` +
+            `a route that doesn't actually share this stop; it will otherwise just show no arrivals, ` +
+            `indistinguishable from a real route with nothing currently running.`
+        );
+      } else {
+        console.warn(
+          `MMM-septa: stopId ${state.config.stopId} for route ${state.routeKey} doesn't appear anywhere on ` +
+            `route ${state.config.routeId}'s schedule -- check for a typo or wrong route/stop id; the row will ` +
+            `show "Invalid stop ID configured" until it's fixed.`
+        );
+      }
     }
   },
 
@@ -247,7 +267,7 @@ module.exports = NodeHelper.create({
       // display time (see MMM-septa.js), so nothing below this point needs
       // to know a route came from a merged entry at all except the two
       // small exceptions marked `merged` (used only by
-      // validateMergedRouteStops).
+      // validateStopIds).
       const subRouteIds = parseRouteIds(route.routeId);
       const merged = subRouteIds.length > 1;
       for (const subRouteId of subRouteIds) {
@@ -285,6 +305,11 @@ module.exports = NodeHelper.create({
           // is available); treated as valid/unconfirmed until then so the
           // feature works as before during that window -- see runCycle.
           secondaryStopIdValid: null,
+          // Likewise null until validateStopIds runs -- the display only
+          // flags an invalid stopId on a definite false, so the row looks
+          // completely normal during the startup window rather than
+          // flashing a config error at every restart.
+          stopIdValid: null,
           secondaryStopDetour: false,
           secondaryStopName: null,
           direction,
@@ -453,6 +478,7 @@ module.exports = NodeHelper.create({
         stopName: state.stopName,
         direction: state.direction,
         hasTripError: state.hasTripError,
+        stopIdValid: state.stopIdValid,
         lastFetchTime: state.lastFetchTime,
         refreshIntervalSeconds: state.refreshIntervalSeconds,
         headsignOrder,

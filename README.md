@@ -174,6 +174,19 @@ indistinguishable from a real route that legitimately has nothing running
 right now. A warning is logged to the console (once at startup, and again
 on each daily refresh if it's still wrong) if this happens.
 
+A `stopId` the configured route never actually stops at (a typo, a stop
+that belongs to a different route, or a `stop_id` retired in a service
+change) *is* called out on screen. The row keeps its usual shape — route
+number, direction, and an empty `--` where the times go — with the stop
+header showing the raw configured `stopId` (since there's no real stop name
+to look up) and a small orange **"Invalid stop ID configured"** note
+underneath. A warning is logged to the console on each daily schedule
+refresh as well. The check is direction-agnostic: a `stopId` that's real on
+the route but paired with the wrong `direction` isn't flagged this way (see
+the note about `direction` above). Routes with `useScheduleSupplement: false`
+aren't checked at all, since the static schedule this compares against is
+never downloaded for them.
+
 ### What's a "headsign"?
 
 The destination text shown on the front of the bus (or train) — SEPTA's
@@ -265,7 +278,11 @@ route) — merging only changes how the results are displayed:
 - Every sub-route in the list must actually stop at the configured
   `stopId` — a mismatch (wrong route, a typo) is a warn-only config error,
   logged on each schedule refresh, same treatment as an unrecognized
-  `routeId` elsewhere in this module.
+  `routeId` elsewhere in this module. The on-screen "Invalid stop ID
+  configured" note is deliberately *not* shown in that case: with the rest
+  of the group still arriving normally, the stop itself is fine and it's
+  the routeId list that's wrong. The note appears on a merged row only when
+  *no* sub-route in the group stops there.
 
 **Direction**: a single `direction` string applies to every sub-route,
 which covers most merges (they usually share one cardinal direction). If

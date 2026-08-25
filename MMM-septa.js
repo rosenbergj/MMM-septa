@@ -310,7 +310,16 @@ Module.register("MMM-septa", {
       }
       const state = this.routeStates[septaRouteKey(route)];
 
-      const stopName = state && state.stopName;
+      // An invalid stopId (see node_helper's validateStopIds) never
+      // resolves a stop name, from live data or the schedule cache, so
+      // without a fallback the header row would silently vanish and take
+      // the row's context with it. Show the raw configured stopId there
+      // instead, so the block keeps its normal shape and the note below
+      // has something to point at. Only on a definite invalid verdict --
+      // during the startup window (stopIdValid still null) a nameless
+      // route keeps its existing header-less treatment.
+      const invalidStopId = Boolean(state) && state.stopIdValid === false;
+      const stopName = (state && state.stopName) || (invalidStopId ? String(route.stopId) : null);
       if (stopName && route.stopId !== lastHeaderStopId) {
         const headerRow = document.createElement("tr");
         const headerCell = document.createElement("td");
@@ -427,6 +436,13 @@ Module.register("MMM-septa", {
           html: `Detour skips stop at ${septaEscapeHtml(secondaryStopDisplayName)}`,
         });
       }
+      // Everything above stays exactly as it would be for a working route
+      // -- route number, direction, an empty "--" arrivals cell -- and this
+      // just names the reason it will never fill in, so a config typo reads
+      // as a config typo rather than as a route with nothing running.
+      if (invalidStopId) {
+        fullWidthRows.push({ flagged: false, configError: true, html: "Invalid stop ID configured" });
+      }
       row.appendChild(labelCell);
 
       const arrivalsCell = document.createElement("td");
@@ -506,7 +522,11 @@ Module.register("MMM-septa", {
       for (const entry of fullWidthRows) {
         const entryRow = document.createElement("tr");
         const entryCell = document.createElement("td");
-        entryCell.className = entry.flagged ? "septa-full-width septa-secondary-skip" : "septa-full-width";
+        entryCell.className = entry.configError
+          ? "septa-full-width septa-config-error"
+          : entry.flagged
+            ? "septa-full-width septa-secondary-skip"
+            : "septa-full-width";
         entryCell.colSpan = 2;
         entryCell.innerHTML = entry.html;
         entryRow.appendChild(entryCell);
@@ -545,7 +565,18 @@ Module.register("MMM-septa", {
     const knownSubRoutes = subRoutes.filter((s) => s.state);
     const routeColorFor = new Map(subRoutes.map((s) => [s.subRouteId, s.state && s.state.routeColor]));
 
-    const stopName = knownSubRoutes.map((s) => s.state.stopName).find(Boolean);
+    // A merged group shares one configured stopId, so an invalid one is
+    // only really invalid when *every* sub-route fails to find it -- a
+    // single sub-route missing it means that route doesn't belong in the
+    // merged list, not that the stop is wrong (node_helper's validateStopIds
+    // warns about that case separately, and it already degrades gracefully:
+    // that sub-route just contributes no arrivals). Sub-routes still
+    // awaiting a verdict (stopIdValid null, the startup window) don't count
+    // as failures, so the note can't flash on at restart.
+    const invalidStopId =
+      knownSubRoutes.length > 0 && knownSubRoutes.every((s) => s.state.stopIdValid === false);
+    const stopName =
+      knownSubRoutes.map((s) => s.state.stopName).find(Boolean) || (invalidStopId ? String(route.stopId) : null);
     if (stopName && route.stopId !== lastHeaderStopId) {
       const headerRow = document.createElement("tr");
       const headerCell = document.createElement("td");
@@ -757,11 +788,20 @@ Module.register("MMM-septa", {
         html: `Detour skips stop at ${septaEscapeHtml(secondaryStopDisplayName)}`,
       });
     }
+    // Same treatment as the single-route case in getDom() -- the merged row
+    // above keeps its usual shape and this names why it's empty.
+    if (invalidStopId) {
+      fullWidthRows.push({ flagged: false, configError: true, html: "Invalid stop ID configured" });
+    }
 
     for (const entry of fullWidthRows) {
       const entryRow = document.createElement("tr");
       const entryCell = document.createElement("td");
-      entryCell.className = entry.flagged ? "septa-full-width septa-secondary-skip" : "septa-full-width";
+      entryCell.className = entry.configError
+        ? "septa-full-width septa-config-error"
+        : entry.flagged
+          ? "septa-full-width septa-secondary-skip"
+          : "septa-full-width";
       entryCell.colSpan = 2;
       entryCell.innerHTML = entry.html;
       entryRow.appendChild(entryCell);

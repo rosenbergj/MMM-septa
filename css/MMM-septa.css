@@ -93,6 +93,14 @@
   font-style: italic;
 }
 
+/* "Invalid stop ID configured" (see node_helper.js's validateStopIds) --
+   the module's usual warning orange, but left upright rather than
+   italicized like the schedule note above: this one is a standing
+   misconfiguration that won't clear on its own, not a transient status. */
+.septa-table .septa-full-width.septa-config-error {
+  color: #e0a050;
+}
+
 .septa-table .septa-arrivals .septa-first {
   font-weight: bold;
 }
