@@ -28,9 +28,12 @@ function septaEscapeHtml(text) {
   return div.innerHTML;
 }
 
-// Classic footnote marker sequence; falls back to "[N]" past the sixth
-// distinct destination (never expected given maxArrivals defaults to 3).
-const FOOTNOTE_MARKERS = ["*", "†", "‡", "§", "¶", "‖"];
+// Classic footnote marker sequence: six singles, then the same six doubled
+// minus "‖‖" (four bars reads as its own glyph, not as a repeat). The highest
+// index needed is a stop's distinct-headsign count, not maxArrivals --
+// septaGroupByDestination assigns from headsignOrder's full positions, and
+// route 14 northbound at Roosevelt Blvd & Conwell Av has ten. "[N]" past 11.
+const FOOTNOTE_MARKERS = ["*", "†", "‡", "§", "¶", "‖", "**", "††", "‡‡", "§§", "¶¶"];
 function septaFootnoteMarker(index) {
   return FOOTNOTE_MARKERS[index] || `[${index + 1}]`;
 }
