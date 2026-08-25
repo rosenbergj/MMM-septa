@@ -394,11 +394,19 @@ function buildRouteStopPatterns(fileTexts, routeId) {
 // reference index than the previous match, so a repeated stop_id -- e.g. a
 // loop -- can't match backwards). Matched stops are "anchors"; stops that
 // don't match anything in the reference are "extra", grouped into
-// contiguous runs and anchored to whichever reference stop precedes them
-// (or "before everything" if there's no preceding anchor yet). Once an
-// extra run has been placed, its stops become anchors too, so a branch that
-// only overlaps an *earlier branch* (not the reference) still lands at the
-// right place -- see gapIndexByStopId below.
+// contiguous runs and spliced in next to the anchor each run actually
+// adjoins on its own trip: after the anchor it follows, or -- for a run at
+// the very start of a pattern, which has no preceding anchor -- immediately
+// *before* the anchor it runs into. Both readings describe the same
+// adjacency; only a run with no anchor on either side (a pattern sharing no
+// stop with anything placed so far) has nowhere to go but the top of the
+// listing. Anchoring a leading run forward is what puts route 63
+// Northbound's short-turn origin (Baltimore Av & 59th St, where a handful of
+// Overbrook trips start) down at the Baltimore Av crossing it joins, instead
+// of stranding it above the route's first stop miles away in South Philly.
+// Once an extra run has been placed, its stops become anchors too, so a
+// branch that only overlaps an *earlier branch* (not the reference) still
+// lands at the right place -- see gapIndexByStopId below.
 //
 // A pattern with zero extra stops is fully contained in the reference (SEPTA
 // often just runs a shorter/truncated version of the same route) and
@@ -446,11 +454,11 @@ function mergeDirectionPatterns(directionPatterns) {
   for (const pattern of others) {
     let lastMatchedIndex = -1;
     let pending = [];
-    const flushPending = () => {
+    const flushPending = (gapIndex) => {
       if (pending.length === 0) return;
-      if (!gapRuns.has(lastMatchedIndex)) gapRuns.set(lastMatchedIndex, []);
-      gapRuns.get(lastMatchedIndex).push(...pending);
-      for (const stop of pending) gapIndexByStopId.set(stop.stopId, lastMatchedIndex);
+      if (!gapRuns.has(gapIndex)) gapRuns.set(gapIndex, []);
+      gapRuns.get(gapIndex).push(...pending);
+      for (const stop of pending) gapIndexByStopId.set(stop.stopId, gapIndex);
       pending = [];
     };
     for (const stop of pattern.stops) {
@@ -461,7 +469,12 @@ function mergeDirectionPatterns(directionPatterns) {
       // stay rejected rather than get a second chance here.
       const anchorIndex = refIndex != null ? refIndex : gapIndexByStopId.get(stop.stopId);
       if (anchorIndex != null && anchorIndex > lastMatchedIndex) {
-        flushPending();
+        // Normally a run is placed after the anchor it followed. A run with
+        // no preceding anchor at all (lastMatchedIndex still -1: the pattern
+        // *starts* off the reference) is instead placed immediately before
+        // the anchor it runs into, since that's the only adjacency the trip
+        // actually demonstrates -- see the doc comment above.
+        flushPending(lastMatchedIndex === -1 ? anchorIndex - 1 : lastMatchedIndex);
         lastMatchedIndex = anchorIndex;
       } else if (!alreadyIncluded.has(stop.stopId)) {
         pending.push(stop);
@@ -472,7 +485,11 @@ function mergeDirectionPatterns(directionPatterns) {
       // claimed by an earlier pattern's extra run at a position we've
       // already passed) -- never repeat it.
     }
-    flushPending();
+    // A trailing run has an anchor before it but none after, so it can only
+    // go after its last anchor; if the pattern never matched anything at
+    // all, lastMatchedIndex is still -1 and it lands above the reference's
+    // own first stop, which is the only placement left.
+    flushPending(lastMatchedIndex);
   }
 
   const rows = [];

@@ -867,10 +867,60 @@ test("mergeDirectionPatterns", async (t) => {
     // has the most total stops despite divergent's unique prefix -- the
     // reference is picked purely by total stop count, not by which one
     // "should" conceptually be the base route.
+    //
+    // The run joins at the reference's *own first stop*, so "immediately
+    // before the stop it runs into" is the top of the listing -- the one
+    // case where a leading run legitimately prints above everything.
     const longest = pattern("Broad-Pattison", [1, 2, 3, 4, 50, 51]);
     const divergent = pattern("Other-Start", [97, 98, 1, 2, 3, 4]);
     const merged = mergeDirectionPatterns([longest, divergent]);
     assert.deepEqual(rowIds(merged), ["alt:97", "alt:98", "1", "2", "3", "4", "50", "51"]);
+  });
+
+  await t.test("a pattern starting off the reference and joining mid-route lands at the junction, not the top", () => {
+    // Route 63 Northbound's real shape: a handful of Overbrook trips start
+    // at Baltimore Av & 59th St -- a stop on no other pattern -- and run
+    // straight into the reference at 57th & Baltimore, two thirds of the way
+    // along. The run has no *preceding* anchor, so it's placed immediately
+    // before the anchor it runs into; putting it above the reference's first
+    // stop would claim an adjacency (Baltimore Av -> the route's South Philly
+    // origin) that no trip has.
+    const longest = pattern("Overbrook", [1, 2, 3, 4, 50, 51]);
+    const shortTurn = pattern("Overbrook-ShortTurn", [97, 4, 50, 51]);
+    const merged = mergeDirectionPatterns([longest, shortTurn]);
+    assert.deepEqual(rowIds(merged), ["1", "2", "3", "alt:97", "4", "50", "51"]);
+  });
+
+  await t.test("only the *leading* run anchors forward -- a later run in the same pattern still anchors backward", () => {
+    // One pattern with both shapes: it starts off-reference (97 -> joins at
+    // 2) and later diverges again (98, after 3). The first run goes before
+    // its junction, the second after its anchor -- each next to the
+    // reference stop it actually adjoins.
+    const longest = pattern("Zzz-Reference", [1, 2, 3, 4, 50, 51, 52]);
+    const branch = pattern("Aaa-Branch", [97, 2, 3, 98, 50]);
+    const merged = mergeDirectionPatterns([longest, branch]);
+    assert.deepEqual(rowIds(merged), ["1", "alt:97", "2", "3", "alt:98", "4", "50", "51", "52"]);
+  });
+
+  await t.test("a pattern sharing no stop with anything placed so far still falls back to the top", () => {
+    // No anchor on either side, so there's nothing to place it next to --
+    // the leading gap is the only honest position left.
+    const longest = pattern("Zzz-Reference", [1, 2, 3, 4]);
+    const unrelated = pattern("Aaa-Unrelated", [90, 91]);
+    const merged = mergeDirectionPatterns([longest, unrelated]);
+    assert.deepEqual(rowIds(merged), ["alt:90", "alt:91", "1", "2", "3", "4"]);
+  });
+
+  await t.test("a later branch can anchor on a forward-anchored run's stop", () => {
+    // Aaa starts off-reference at 97 and joins at 3, so its run lands in the
+    // gap before 3. Bbb's only overlap is 98 (Aaa's, not the reference's) --
+    // it must anchor there and drop its own extra into the same gap, not
+    // rewind to the top.
+    const longest = pattern("Zzz-Reference", [1, 2, 3, 4, 50, 51]);
+    const branchA = pattern("Aaa-Branch", [97, 98, 3, 4]);
+    const branchB = pattern("Bbb-Branch", [98, 200, 3]);
+    const merged = mergeDirectionPatterns([longest, branchA, branchB]);
+    assert.deepEqual(rowIdsWithBreaks(merged), ["1", "2", "alt:97", "alt:98", "alt:200", "3", "4", "50", "51"]);
   });
 
   await t.test("suffix divergence: extra stops after the last shared stop, as alt rows at the end", () => {

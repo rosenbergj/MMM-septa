@@ -14,10 +14,13 @@
 // Same-direction patterns are merged into one deduped view rather than
 // printed as separate blocks: the longest pattern becomes the reference,
 // and any other pattern's stops the reference doesn't already have are
-// spliced in as unlabeled "alt" rows at the point where they diverge (a
-// pattern with nothing extra -- SEPTA often just runs a shorter version of
-// the same route -- contributes nothing beyond its headsign name). See
-// gtfs-schedule.js's mergeDirectionPatterns for the actual algorithm.
+// spliced in as unlabeled "alt" rows at the point where they leave the
+// reference -- or, for a pattern that *starts* off the reference, at the
+// point where it rejoins, so that an alt block always sits next to the
+// reference stop it really connects to on some trip (a pattern with nothing
+// extra -- SEPTA often just runs a shorter version of the same route --
+// contributes nothing beyond its headsign name). See gtfs-schedule.js's
+// mergeDirectionPatterns for the actual algorithm.
 //
 // Each row can carry a trip count, printed sparsely (see pickAnnotatedRows).
 // The reference is chosen by stop count alone, which is uncorrelated with

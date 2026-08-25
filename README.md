@@ -48,8 +48,11 @@ pattern's stops if none of its trips were currently active.
 Patterns sharing a direction are merged into one listing instead of printed
 separately: the longest pattern is the reference, and any other pattern's
 stops the reference doesn't already have are spliced in as unlabeled `alt`
-rows right where they diverge (before, after, or in the middle of the main
-sequence). A pattern that's fully covered by the reference (SEPTA often just
+rows right where they leave the main sequence — or, for a pattern that
+*starts* somewhere off it, right where it rejoins. Either way an `alt` block
+sits next to the stop it actually connects to, whether that's before, after,
+or in the middle of the main sequence. A pattern that's fully covered by the
+reference (SEPTA often just
 runs a shorter version of the same route) contributes nothing beyond its
 name appearing in the header. Output is deterministic — no "currently
 running" status, no filtering by day, same result every time you run it for
