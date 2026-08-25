@@ -23,6 +23,7 @@ const {
   getAllHeadsignsForStop,
   getHeadsignsSkippingStop,
   getDirectionIdsForStop,
+  getScheduledRouteIds,
   resolveTerminusExclusion,
   getTerminusExclusionDirectionId,
   loadCacheFromDisk,
@@ -350,6 +351,25 @@ test("buildScheduleCache + getScheduledArrivals", async (t) => {
     assert.equal(cache.entries.length, 1);
     assert.equal(cache.entries[0].tripId, "9001");
     assert.ok(cache.calendar.weekday);
+  });
+
+  await t.test("buildScheduleCache records which requested routeIds actually have trips", () => {
+    const cache = buildScheduleCache(fileTexts, ["17", "999"], [21289]);
+    assert.deepEqual(getScheduledRouteIds(cache), ["17"]);
+  });
+
+  await t.test("routeIdsWithTrips ignores stopIds -- a real route with a wrong stopId still counts as real", () => {
+    // 21289 is the only stop in stop_times.txt, so this cache has zero
+    // entries; route 17 is still a real route and must not read as a typo.
+    const cache = buildScheduleCache(fileTexts, ["17"], [40404]);
+    assert.equal(cache.entries.length, 0);
+    assert.deepEqual(getScheduledRouteIds(cache), ["17"]);
+  });
+
+  await t.test("getScheduledRouteIds returns null for a cache that predates the field", () => {
+    assert.equal(getScheduledRouteIds({ entries: [] }), null);
+    assert.equal(getScheduledRouteIds(null), null);
+    assert.equal(getScheduledRouteIds(undefined), null);
   });
 
   await t.test("buildScheduleCache: no stops.txt in fileTexts -> stopNames is an empty object, not a crash", () => {

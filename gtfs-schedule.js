@@ -342,7 +342,13 @@ function buildScheduleCache(fileTexts, routeIds, stopIds) {
   const calendarExceptions = parseCalendarDates(fileTexts["calendar_dates.txt"]);
   const stopNames = fileTexts["stops.txt"] ? Object.fromEntries(parseStops(fileTexts["stops.txt"], stopIds)) : {};
   const terminusExclusions = buildTerminusExclusions(fileTexts, entries, routeIds, stopIds);
-  return { builtAt: Date.now(), entries, calendar, calendarExceptions, stopNames, terminusExclusions };
+  // Which of the requested routeIds trips.txt actually knows about. Recorded
+  // from the trips, not the entries, so it stays independent of stopIds --
+  // a real route configured with a wrong stopId still counts as a real
+  // route, and gets reported as the stop problem it is rather than as a
+  // phantom typo'd routeId. See node_helper.js's validateRouteIds.
+  const routeIdsWithTrips = [...new Set([...trips.values()].map((trip) => trip.routeId))];
+  return { builtAt: Date.now(), entries, calendar, calendarExceptions, stopNames, terminusExclusions, routeIdsWithTrips };
 }
 
 // Every trip on a route, stop-by-stop with names, straight from the static
@@ -625,6 +631,18 @@ function getAllHeadsignsForStop(cache, routeId, stopId, directionId) {
 // all. It can come back with more than one (some stops really are served by
 // both directions of the same route, e.g. route 2 stop 40) or zero (nothing
 // in the schedule cache matches).
+// The route_ids from the last feed build that actually had trips, or null
+// for "this cache can't answer" -- either it predates the field (loaded from
+// a disk cache written by an older version) or it's malformed. Callers must
+// treat null as "don't know", never as "no routes exist": SEPTA's own
+// /routes/ endpoint is not usable for this (it omits real bus routes -- 41,
+// 51, 63, 71, 72, 76, 81, 82 and several OWL/BUS variants as of 2026-08-25 --
+// while listing 33 ids with no trips at all), which is why this exists.
+function getScheduledRouteIds(cache) {
+  if (!cache || !Array.isArray(cache.routeIdsWithTrips)) return null;
+  return cache.routeIdsWithTrips.map(String);
+}
+
 function getDirectionIdsForStop(cache, routeId, stopId) {
   const targetRouteId = String(routeId);
   const targetStopId = Number(stopId);
@@ -833,6 +851,7 @@ module.exports = {
   buildScheduleCache,
   buildRouteStopPatterns,
   getDirectionIdsForStop,
+  getScheduledRouteIds,
   resolveTerminusExclusion,
   getTerminusExclusionDirectionId,
   mergeDirectionPatterns,

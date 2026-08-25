@@ -10,6 +10,7 @@ const {
   getAllHeadsignsForStop,
   getHeadsignsSkippingStop,
   getDirectionIdsForStop,
+  getScheduledRouteIds,
   getTerminusExclusionDirectionId,
   // Both fully generic (path-parameterized, no GTFS-specific structure
   // assumed) despite living in gtfs-schedule.js -- reused as-is for the
@@ -55,14 +56,6 @@ module.exports = NodeHelper.create({
     // JSON request, not worth deferring).
     const cachedRouteColors = loadCacheFromDisk(ROUTE_COLORS_CACHE_PATH);
     this.routeColors = cachedRouteColors || {};
-    // Derived from the cached colors' keys rather than stored separately --
-    // refreshRouteColors builds routeColors with an entry (color or null)
-    // for every route /routes/ returns, so its keys already are the full
-    // valid-routeId set. null (not an empty Set) when there's no persisted
-    // cache yet at all, so registerConfig/validateRouteIds know to wait for
-    // a real fetch rather than treating "nothing cached yet" as "no routes
-    // exist".
-    this.validRouteIds = cachedRouteColors ? new Set(Object.keys(cachedRouteColors)) : null;
     this.refreshRouteColors();
   },
 
@@ -86,13 +79,20 @@ module.exports = NodeHelper.create({
     try {
       const routes = await fetchRoutes();
       this.routeColors = Object.fromEntries(routes.map((r) => [String(r.route_id), resolveRouteLabelColor(r)]));
-      this.validRouteIds = new Set(routes.map((r) => String(r.route_id)));
       saveCacheToDisk(this.routeColors, ROUTE_COLORS_CACHE_PATH);
       console.log(`MMM-septa: refreshed route color metadata (${routes.length} routes)`);
-      this.validateRouteIds();
       this.routeColorTimer = setTimeout(() => this.refreshRouteColors(), SCHEDULE_REFRESH_MS);
     } catch (err) {
-      console.error(`MMM-septa: route color metadata refresh failed: ${err.message}; retrying in ${SCHEDULE_RETRY_MS / 1000}s`);
+      // warn, not error: /routes/ 404s intermittently and always has (~55%
+      // of requests, measured 2026-07-08 and still ~7-in-12 on 2026-08-25),
+      // so a failure here is the expected case rather than a fault. Nothing
+      // is lost when it happens -- label colors are cosmetic, the last
+      // known-good set is already loaded from disk, and the retry below
+      // picks up the next success.
+      console.warn(
+        `MMM-septa: route color metadata refresh failed: ${err.message}; this endpoint is known to fail ` +
+          `intermittently -- keeping the cached label colors and retrying in ${SCHEDULE_RETRY_MS / 1000}s.`
+      );
       this.routeColorTimer = setTimeout(() => this.refreshRouteColors(), SCHEDULE_RETRY_MS);
     }
   },
@@ -106,13 +106,28 @@ module.exports = NodeHelper.create({
   // already degrades to exactly what it would show anyway -- so this only
   // warns, once per refresh (same daily cadence as validateSecondaryStopIds),
   // rather than changing any display behavior.
+  //
+  // Checked against the static GTFS feed, NOT SEPTA's /routes/ endpoint.
+  // /routes/ looks like a route inventory and isn't one: on 2026-08-25 it
+  // omitted 13 routes that were running that day (41, 51, 63, 71, 72, 76,
+  // 81, 82, B1_OWL, L1_OWL, M1_BUS, MANN, NOR_BUS) while listing 33 ids with
+  // no trips in the feed at all. Validating against it warned about a live
+  // route 63 with buses reporting GPS at that moment. It stays in use for
+  // what it's actually good for -- label colors and is_frequent_bus.
   validateRouteIds() {
+    const scheduledRouteIds = getScheduledRouteIds(this.scheduleCache);
+    if (!scheduledRouteIds) return; // cache predates the field; nothing to check against
+    const known = new Set(scheduledRouteIds);
     for (const state of this.routes.values()) {
-      if (this.validRouteIds.has(String(state.config.routeId))) continue;
+      // Routes that opted out of the supplement were never pulled into the
+      // cache, so it can't speak to them either way (same skip as
+      // validateSecondaryStopIds).
+      if (state.useScheduleSupplement === false) continue;
+      if (known.has(String(state.config.routeId))) continue;
       console.warn(
-        `MMM-septa: routeId ${state.config.routeId} for route ${state.routeKey} doesn't match any route in ` +
-          `SEPTA's /routes/ list -- check for a typo; it will otherwise just show no arrivals, indistinguishable ` +
-          `from a real route with nothing currently running.`
+        `MMM-septa: routeId ${state.config.routeId} for route ${state.routeKey} has no trips in SEPTA's ` +
+          `static GTFS feed -- check for a typo or a discontinued route; it will otherwise just show no ` +
+          `arrivals, indistinguishable from a real route with nothing currently running.`
       );
     }
   },
@@ -156,6 +171,7 @@ module.exports = NodeHelper.create({
             `again (usually a temporary gap around a SEPTA schedule change).`
         );
       }
+      this.validateRouteIds();
       this.validateSecondaryStopIds();
       this.validateStopIds();
       this.scheduleTimer = setTimeout(() => this.refreshScheduleCache(), SCHEDULE_REFRESH_MS);
@@ -321,13 +337,12 @@ module.exports = NodeHelper.create({
         this.runCycle(fullKey); // kick off the first fetch immediately
       }
     }
-    // Unlike the GTFS schedule cache (scoped to just the currently
-    // configured routes/stops, so validating secondaryStopId against it
-    // before a route is registered could false-positive on a legitimately
-    // new one), SEPTA's full /routes/ list doesn't depend on what's
-    // configured -- so it's safe to validate as soon as it's available,
-    // rather than waiting for the next daily refresh.
-    if (this.validRouteIds) this.validateRouteIds();
+    // No eager routeId validation here. It used to be safe because SEPTA's
+    // /routes/ list didn't depend on what was configured, but the GTFS cache
+    // that replaced it is scoped to the currently configured routes -- so
+    // checking a route before the next refresh has pulled it into the feed
+    // would false-positive on every legitimately new one. Deferred to
+    // refreshScheduleCache, same as the stop validators.
   },
 
   // Self-rescheduling setTimeout chain (not setInterval) so a slow cycle
