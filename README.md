@@ -198,8 +198,8 @@ now, match your route *and* direction, run no longer than 28 days (longer ones
 are the new normal rather than news), and carry at least two turn coordinates
 so there's a path to locate. Roughly half of all detours carry no coordinates
 at all and are never reported this way. Measured against detours where SEPTA
-*did* list the stops, the inferred span contains them about three-quarters of
-the time -- so it under-reports rather than crying wolf.
+*did* list the stops, the inferred span contains all of them about two-thirds
+of the time -- so it under-reports rather than crying wolf.
 
 A `routeId` that doesn't match any real SEPTA route (a typo, a
 discontinued route, etc) fails silently — it just never has any arrivals,

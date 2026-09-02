@@ -806,8 +806,17 @@ test("detour span inference", async (t) => {
 
   await t.test("the span covers the bypassed stops plus the margin", () => {
     const span = inferDetourSpanStops(cache, "17", "1", detour);
-    // s5..s12 bypassed, widened by 2 either side -> s3..s14
-    assert.deepEqual([...span].sort(), ["s10","s11","s12","s13","s14","s3","s4","s5","s6","s7","s8","s9"].sort());
+    // s5..s12 bypassed, widened by the default +/-1 -> s4..s13
+    assert.deepEqual([...span].sort(), ["s10","s11","s12","s13","s4","s5","s6","s7","s8","s9"].sort());
+  });
+
+  await t.test("the margin is exactly one stop either side of the deviation", () => {
+    const tight = inferDetourSpanStops(cache, "17", "1", detour, 0);
+    const span = inferDetourSpanStops(cache, "17", "1", detour);
+    assert.equal(span.size - tight.size, 2, "one stop added at each end");
+    assert.equal(tight.has("s4"), false);
+    assert.equal(span.has("s4"), true);
+    assert.equal(span.has("s3"), false, "two out is beyond the margin");
   });
 
   await t.test("a stop outside the span is excluded -- the whole point of the feature", () => {

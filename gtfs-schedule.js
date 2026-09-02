@@ -766,12 +766,23 @@ function getScheduledRouteIds(cache) {
 // entire lap that ends there.
 // --- Inferred detour spans (see node_helper.js's inferred-detour handling) ---
 
-// How many stops either side of the detected deviation to treat as affected.
-// Measured against the 45 detours where SEPTA did list skipped stops: with no
-// margin the span fully contained them in 26 cases, with +/-2 in 34. Widening
-// further barely helps (35 at +/-5) while doubling how much of the route is
-// covered, so +/-2 is where the curve flattens.
-const DETOUR_SPAN_MARGIN_STOPS = 2;
+// How many stops either side of the detected deviation to treat as affected,
+// covering for the fact that the deviation's endpoints are approximate (see
+// inferDetourSpanStops -- they're derived from turn coordinates, which don't
+// always sit where the bus actually leaves or rejoins the route).
+//
+// Measured against the 45 detours where SEPTA did list its skipped stops, the
+// span fully contains them in 26 cases at +/-0, 29 at +/-1, and 31 at +/-2;
+// past that it stops improving (31 at +/-3 and +/-5) while the span keeps
+// growing, from 9% of the route to 22%.
+//
+// Set to 1 on Josh's call, 2026-09-02, after reading the actual stop list it
+// produced for the live route 17 southbound detour: +/-2 reached 19th &
+// Moravian and 19th & Federal, neither plausibly affected, and the tighter
+// margin still covers every stop that detour genuinely bypasses. Costs 2 of
+// 45 detours their full containment and cuts alerts from 6.0% to 4.9% of
+// stops on affected routes.
+const DETOUR_SPAN_MARGIN_STOPS = 1;
 
 const EARTH_RADIUS_METERS = 6371000;
 
