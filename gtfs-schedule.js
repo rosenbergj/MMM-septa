@@ -28,6 +28,34 @@ const FEED_CACHE_PATH = path.join(__dirname, "find-stop-feed-cache.json");
 // this feed at most about that often anyway).
 const FEED_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const NEEDED_FILES = ["trips.txt", "stop_times.txt", "calendar.txt", "calendar_dates.txt", "stops.txt"];
+// Read separately from NEEDED_FILES and tolerated as missing: it identifies a
+// feed rather than describing service, and a feed without it is still usable
+// for everything except retention.
+const FEED_INFO_FILE = "feed_info.txt";
+// Enough of a feed to decide whether to keep it and whether it covers a given
+// date, without the 100MB stop_times.txt scan a full parse needs.
+const FEED_SELECTION_FILES = [FEED_INFO_FILE, "calendar.txt", "calendar_dates.txt"];
+const FEEDS_DIR = path.join(__dirname, "feeds");
+const FEED_INDEX_PATH = path.join(FEEDS_DIR, "index.json");
+// How many distinct feed *days* to retain -- see feedDayFromVersion. Two is
+// the minimum that survives SEPTA's habit of publishing the next service
+// period's feed days early: the incoming one, plus the outgoing one that's
+// still the only thing covering today. SEPTA serves no feed history, so an
+// evicted feed is gone for good.
+//
+// KNOWN RISK, accepted deliberately (Josh, 2026-09-02). Two days is not
+// enough if SEPTA publishes a *second* forward-dated feed before the first
+// one's start date arrives: e.g. holding 20260823 (covering Sept 2-5) and
+// 20260906, then receiving 20260907 on Sept 3 would evict 20260823 and
+// reopen exactly the gap this feature exists to close. Considered unlikely --
+// SEPTA has published one forward-dated feed at a time in both observed
+// changeovers -- and not defended against.
+//
+// If it ever bites, the cheap fix is to make eviction refuse to drop the only
+// retained feed that covers today, letting the store grow to three
+// temporarily, rather than raising FEED_RETENTION_DAYS (which spends disk
+// every day to insure against a rare week).
+const FEED_RETENTION_DAYS = 2;
 const DOW_KEYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]; // index by Date#getDay()
 
 // --- ZIP reading (central directory only; plain 32-bit fields, no ZIP64 --
@@ -348,7 +376,22 @@ function buildScheduleCache(fileTexts, routeIds, stopIds) {
   // route, and gets reported as the stop problem it is rather than as a
   // phantom typo'd routeId. See node_helper.js's validateRouteIds.
   const routeIdsWithTrips = [...new Set([...trips.values()].map((trip) => trip.routeId))];
-  return { builtAt: Date.now(), entries, calendar, calendarExceptions, stopNames, terminusExclusions, routeIdsWithTrips };
+  // Which feed this cache came from, when the caller supplied feed_info.txt.
+  // Purely diagnostic, but the absence of it is what made the 2026-09-02
+  // incident hard to read off the Pi: the cache on disk gave no clue which
+  // feed had produced it.
+  const feedInfo = parseFeedInfo(fileTexts[FEED_INFO_FILE]);
+  return {
+    builtAt: Date.now(),
+    feedVersion: feedInfo ? feedInfo.version : null,
+    feedDay: feedInfo ? feedInfo.day : null,
+    entries,
+    calendar,
+    calendarExceptions,
+    stopNames,
+    terminusExclusions,
+    routeIdsWithTrips,
+  };
 }
 
 // Every trip on a route, stop-by-stop with names, straight from the static
@@ -797,6 +840,83 @@ function getHeadsignsSkippingStop(cache, routeId, primaryStopId, secondaryStopId
 // stops.txt-inclusive one-off set) -- so both stay unit-testable without a
 // network call, and the runtime path's file list is untouched by the
 // script's needs.
+// --- Feed store: retain the last FEED_RETENTION_DAYS feed "days" ---
+
+// A feed's *day* is the date prefix of its feed_version: "v202609060" ->
+// "20260906". SEPTA can republish the same service period more than once
+// (v202609060, v202609061, ...), and those are revisions of one feed rather
+// than separate ones -- retaining both would waste a slot and could evict the
+// outgoing feed that's still covering today, which is the whole thing we're
+// trying to keep.
+function feedDayFromVersion(version) {
+  const match = /^v?(\d{8})/.exec(String(version || "").trim());
+  return match ? match[1] : null;
+}
+
+// feed_info.txt -> { version, day, feedStartDate, feedEndDate }, or null when
+// the file is absent or has no feed_version (retention then can't apply).
+function parseFeedInfo(text) {
+  if (!text) return null;
+  const rows = parseCsv(text, splitCsvLineSimple);
+  const row = rows[0];
+  if (!row || !row.feed_version) return null;
+  const version = String(row.feed_version).trim();
+  return {
+    version,
+    day: feedDayFromVersion(version),
+    feedStartDate: (row.feed_start_date || "").trim() || null,
+    feedEndDate: (row.feed_end_date || "").trim() || null,
+  };
+}
+
+// Which retained feeds survive once `incoming` arrives. Same day replaces
+// (a revision supersedes what it revises); otherwise the oldest days fall off
+// once more than maxDays remain. `evict` lists only *previously stored*
+// entries whose zips should be deleted -- if `incoming` itself is older than
+// everything retained it simply won't appear in `keep`, and the caller should
+// not store it.
+function planFeedRetention(entries, incoming, maxDays = FEED_RETENTION_DAYS) {
+  const withoutSameDay = entries.filter((entry) => entry.day !== incoming.day);
+  const merged = [...withoutSameDay, incoming];
+  const days = [...new Set(merged.map((entry) => entry.day))].sort();
+  const keepDays = new Set(days.slice(-maxDays));
+  const keep = merged.filter((entry) => keepDays.has(entry.day)).sort((a, b) => (a.day < b.day ? -1 : 1));
+  const keptVersions = new Set(keep.map((entry) => entry.version));
+  return { keep, evict: entries.filter((entry) => !keptVersions.has(entry.version)) };
+}
+
+// Does this feed have any service on `date`? Reads only calendar.txt and
+// calendar_dates.txt (tens to low thousands of rows) so a candidate feed can
+// be screened without the full-feed parse buildScheduleCache does. Same rule
+// as hasActiveServiceOn, which screens the already-built cache.
+function feedHasServiceOn(fileTexts, date) {
+  const calendar = parseCalendar(fileTexts["calendar.txt"] || "");
+  const exceptions = parseCalendarDates(fileTexts["calendar_dates.txt"] || "");
+  const serviceIds = new Set([...Object.keys(calendar), ...Object.keys(exceptions)]);
+  for (const serviceId of serviceIds) {
+    if (isServiceActiveOn(calendar, exceptions, serviceId, date)) return true;
+  }
+  return false;
+}
+
+function feedZipPath(version, feedsDir = FEEDS_DIR) {
+  return path.join(feedsDir, `google_bus-${version}.zip`);
+}
+
+function loadFeedIndex(feedsDir = FEEDS_DIR) {
+  try {
+    const entries = JSON.parse(fs.readFileSync(path.join(feedsDir, "index.json"), "utf8"));
+    return Array.isArray(entries) ? entries : [];
+  } catch {
+    return []; // absent or corrupt -- rebuilt by the next successful download
+  }
+}
+
+function saveFeedIndex(entries, feedsDir = FEEDS_DIR) {
+  fs.mkdirSync(feedsDir, { recursive: true });
+  fs.writeFileSync(path.join(feedsDir, "index.json"), JSON.stringify(entries, null, 2));
+}
+
 async function downloadGtfsFiles(fileNames, fetchImpl = fetch) {
   const response = await fetchImpl(GTFS_URL);
   if (!response.ok) {
@@ -814,9 +934,138 @@ async function downloadGtfsFiles(fileNames, fetchImpl = fetch) {
   return fileTexts;
 }
 
-async function fetchScheduleCache(routeIds, stopIds, fetchImpl = fetch) {
-  const fileTexts = await downloadGtfsFiles(NEEDED_FILES, fetchImpl);
+// Newest first, by feed day then version -- the order candidates are tried in.
+function orderFeedsNewestFirst(entries) {
+  return [...entries].sort((a, b) => {
+    if (a.day !== b.day) return a.day < b.day ? 1 : -1;
+    return a.version < b.version ? 1 : -1;
+  });
+}
+
+function readSelectionTexts(buffer) {
+  const found = readZipEntries(buffer, FEED_SELECTION_FILES);
+  const texts = {};
+  for (const name of FEED_SELECTION_FILES) {
+    const data = found.get(name);
+    if (data) texts[name] = data.toString("utf8");
+  }
+  return texts;
+}
+
+// Downloads the live feed unless the server says it's unchanged. SEPTA's zip
+// serves an ETag and answers If-None-Match with a bare 304 (verified
+// 2026-09-02), which matters because every MagicMirror restart triggers a
+// refresh 60s later -- six restarts in half an hour otherwise means six 21MB
+// downloads. Last-Modified is deliberately not used: the freshly published
+// v202609060 reported 2026-08-28, i.e. when it was built, not when it went up.
+async function downloadFeed(fetchImpl = fetch, etag = null) {
+  const options = etag ? { headers: { "If-None-Match": etag } } : undefined;
+  const response = await fetchImpl(GTFS_URL, options);
+  if (response.status === 304) return { unchanged: true };
+  if (!response.ok) {
+    throw new Error(`gtfs-schedule: failed to download feed: ${response.status} ${response.statusText}`);
+  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  const responseEtag = response.headers && typeof response.headers.get === "function" ? response.headers.get("etag") : null;
+  return { buffer, etag: responseEtag };
+}
+
+// Fetches the live feed and folds it into the retained set. Returns the index
+// as it now stands. A feed with no readable feed_version can't take part in
+// retention (there's nothing to key a day on), so it's used for this refresh
+// but not stored -- rather than being stored under a synthetic id that would
+// later masquerade as a real feed day.
+async function refreshFeedStore(fetchImpl = fetch, feedsDir = FEEDS_DIR) {
+  const entries = loadFeedIndex(feedsDir);
+  const newest = orderFeedsNewestFirst(entries)[0] || null;
+  const { unchanged, buffer, etag } = await downloadFeed(fetchImpl, newest ? newest.etag : null);
+  if (unchanged) return { entries, downloaded: false, transientBuffer: null };
+
+  const meta = parseFeedInfo(readSelectionTexts(buffer)[FEED_INFO_FILE]);
+  if (!meta || !meta.day) return { entries, downloaded: true, transientBuffer: buffer };
+
+  const incoming = { ...meta, etag: etag || null, downloadedAt: Date.now() };
+  const { keep, evict } = planFeedRetention(entries, incoming);
+  if (!keep.some((entry) => entry.version === incoming.version)) {
+    // Older than everything already retained -- don't displace newer feeds.
+    return { entries, downloaded: true, transientBuffer: buffer };
+  }
+
+  fs.mkdirSync(feedsDir, { recursive: true });
+  fs.writeFileSync(feedZipPath(incoming.version, feedsDir), buffer);
+  for (const entry of evict) {
+    try {
+      fs.unlinkSync(feedZipPath(entry.version, feedsDir));
+    } catch {
+      // already gone; the index rewrite below is what actually matters
+    }
+  }
+  saveFeedIndex(keep, feedsDir);
+  return { entries: keep, downloaded: true, transientBuffer: null, stored: incoming, evicted: evict };
+}
+
+// The newest retained feed that actually has service on `date`, screened with
+// calendar.txt/calendar_dates.txt rather than feed_info's declared date range
+// -- the declared range says what a feed is *for*, not what it can answer.
+// Returns null when nothing retained covers the date.
+function selectFeedForDate(entries, date, feedsDir = FEEDS_DIR) {
+  for (const entry of orderFeedsNewestFirst(entries)) {
+    let buffer;
+    try {
+      buffer = fs.readFileSync(feedZipPath(entry.version, feedsDir));
+    } catch {
+      continue; // indexed but missing on disk; try the next one
+    }
+    if (feedHasServiceOn(readSelectionTexts(buffer), date)) return { entry, buffer };
+  }
+  return null;
+}
+
+function buildCacheFromBuffer(buffer, routeIds, stopIds) {
+  const zipEntries = readZipEntries(buffer, [...NEEDED_FILES, FEED_INFO_FILE]);
+  const fileTexts = {};
+  for (const name of NEEDED_FILES) {
+    const data = zipEntries.get(name);
+    if (!data) throw new Error(`gtfs-schedule: ${name} not found in feed`);
+    fileTexts[name] = data.toString("utf8");
+  }
+  const feedInfo = zipEntries.get(FEED_INFO_FILE);
+  if (feedInfo) fileTexts[FEED_INFO_FILE] = feedInfo.toString("utf8");
   return buildScheduleCache(fileTexts, routeIds, stopIds);
+}
+
+// Refreshes the retained feeds, then builds the runtime cache from whichever
+// retained feed covers today -- not necessarily the newest one. SEPTA
+// republishes the next service period's feed several days before it starts
+// (see FEED_RETENTION_DAYS), and during that window the newest feed answers
+// nothing while the previous one still answers everything.
+//
+// Falls back to the newest retained feed when none covers today, which
+// reproduces the old behavior: node_helper then reports the supplement as
+// unavailable and the display drops to live-only data.
+async function fetchScheduleCache(routeIds, stopIds, fetchImpl = fetch, options = {}) {
+  const feedsDir = options.feedsDir || FEEDS_DIR;
+  const date = options.now || new Date();
+  const { entries, transientBuffer } = await refreshFeedStore(fetchImpl, feedsDir);
+
+  if (transientBuffer) return buildCacheFromBuffer(transientBuffer, routeIds, stopIds);
+
+  const selected = selectFeedForDate(entries, date, feedsDir);
+  if (selected) return buildCacheFromBuffer(selected.buffer, routeIds, stopIds);
+
+  const newest = orderFeedsNewestFirst(entries)[0];
+  if (!newest) throw new Error("gtfs-schedule: no feed available to build a schedule cache from");
+  return buildCacheFromBuffer(fs.readFileSync(feedZipPath(newest.version, feedsDir)), routeIds, stopIds);
+}
+
+// Rebuilds from the retained feeds without touching the network -- used at a
+// service-day rollover, when the feed that was answering yesterday stops
+// covering today and a different retained feed takes over. Returns null when
+// nothing retained covers the date, leaving the caller's current cache alone.
+function rebuildScheduleCacheForDate(routeIds, stopIds, date, feedsDir = FEEDS_DIR) {
+  const selected = selectFeedForDate(loadFeedIndex(feedsDir), date, feedsDir);
+  if (!selected) return null;
+  return buildCacheFromBuffer(selected.buffer, routeIds, stopIds);
 }
 
 const ROUTE_STOP_PATTERN_FILES = ["trips.txt", "stop_times.txt", "stops.txt"];
@@ -886,6 +1135,19 @@ module.exports = {
   mergeDirectionPatterns,
   getScheduledArrivals,
   getLastStopSequence,
+  readZipEntries,
+  feedDayFromVersion,
+  parseFeedInfo,
+  planFeedRetention,
+  feedHasServiceOn,
+  orderFeedsNewestFirst,
+  loadFeedIndex,
+  saveFeedIndex,
+  feedZipPath,
+  selectFeedForDate,
+  refreshFeedStore,
+  rebuildScheduleCacheForDate,
+  FEEDS_DIR,
   getAllHeadsignsForStop,
   getHeadsignsSkippingStop,
   fetchScheduleCache,

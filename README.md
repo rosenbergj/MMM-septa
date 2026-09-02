@@ -367,6 +367,28 @@ don't copy that into your real `config.js`.
 
 ## How it works
 
+### Schedule feed retention
+
+SEPTA publishes one `google_bus.zip` and keeps no older versions. It also
+republishes the **next** service period's feed several days before that period
+begins -- so for a few days the only feed you can download has no service for
+today, and the module falls back to "Realtime data only; schedule data
+unavailable".
+
+To survive that, the module keeps the last two feed *versions* it has seen in
+`feeds/` next to the module (about 21MB each, created automatically) and
+builds its schedule from **the newest retained feed that actually covers
+today** -- which during a changeover is the older one. It re-checks at each
+service-day rollover, so the switch to the new feed happens on its own. The
+feed is only re-downloaded when SEPTA's copy actually changes.
+
+If both retained feeds are newer than today, the display drops to live-only
+data as before, and logs why.
+
+`node scripts/compare-feeds.js <old.zip> <new.zip>` prints what changed
+between two feeds -- service coverage per day, routes added/removed, trip
+counts, and with `--headsigns`/`--stops`, those too.
+
 ### How often the display fades
 
 The module fades out and back in **only when a poll actually brings something

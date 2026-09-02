@@ -24,6 +24,11 @@ const {
   getHeadsignsSkippingStop,
   getDirectionIdsForStop,
   getLastStopSequence,
+  feedDayFromVersion,
+  parseFeedInfo,
+  planFeedRetention,
+  feedHasServiceOn,
+  orderFeedsNewestFirst,
   getScheduledRouteIds,
   resolveTerminusExclusion,
   getTerminusExclusionDirectionId,
@@ -538,6 +543,149 @@ test("getAllHeadsignsForStop", async (t) => {
     assert.deepEqual(getAllHeadsignsForStop(mixedCache, "17", 21289, "0"), ["Front-Market"]);
     assert.deepEqual(getAllHeadsignsForStop(mixedCache, "17", 21289, "1"), ["Broad-Pattison"]);
     assert.deepEqual(getAllHeadsignsForStop(mixedCache, "17", 21289), ["Front-Market", "Broad-Pattison"]);
+  });
+});
+
+test("feedDayFromVersion", async (t) => {
+  await t.test("real SEPTA versions -> their date prefix", () => {
+    assert.equal(feedDayFromVersion("v202608233"), "20260823");
+    assert.equal(feedDayFromVersion("v202609060"), "20260906");
+  });
+
+  await t.test("revisions of one service period share a day", () => {
+    assert.equal(feedDayFromVersion("v202609060"), feedDayFromVersion("v202609061"));
+  });
+
+  await t.test("no leading v, and surrounding whitespace, still parse", () => {
+    assert.equal(feedDayFromVersion("202609060"), "20260906");
+    assert.equal(feedDayFromVersion("  v202609060\n"), "20260906");
+  });
+
+  await t.test("unparseable -> null, never a partial date", () => {
+    for (const bad of ["", null, undefined, "draft", "v2026", "xv202609060"]) {
+      assert.equal(feedDayFromVersion(bad), null, String(bad));
+    }
+  });
+});
+
+test("parseFeedInfo", async (t) => {
+  const header = "feed_publisher_name,feed_publisher_url,feed_lang,feed_start_date,feed_end_date,feed_version\n";
+
+  await t.test("the real 2026-09-02 feed_info rows", () => {
+    assert.deepEqual(
+      parseFeedInfo(header + "SEPTA,https://septa.org/,en,20260823,20270220,v202608233\n"),
+      { version: "v202608233", day: "20260823", feedStartDate: "20260823", feedEndDate: "20270220" }
+    );
+    assert.deepEqual(
+      parseFeedInfo(header + "SEPTA,https://septa.org/,en,20260906,20270220,v202609060\n"),
+      { version: "v202609060", day: "20260906", feedStartDate: "20260906", feedEndDate: "20270220" }
+    );
+  });
+
+  await t.test("missing file or missing feed_version -> null", () => {
+    assert.equal(parseFeedInfo(undefined), null);
+    assert.equal(parseFeedInfo(""), null);
+    assert.equal(parseFeedInfo(header), null);
+  });
+});
+
+test("planFeedRetention", async (t) => {
+  const aug = { version: "v202608233", day: "20260823" };
+  const sep6 = { version: "v202609060", day: "20260906" };
+  const sep6rev = { version: "v202609061", day: "20260906" };
+  const sep7 = { version: "v202609070", day: "20260907" };
+  const versions = (list) => list.map((e) => e.version);
+
+  await t.test("first feed is simply kept", () => {
+    const { keep, evict } = planFeedRetention([], aug);
+    assert.deepEqual(versions(keep), ["v202608233"]);
+    assert.deepEqual(evict, []);
+  });
+
+  await t.test("a second, newer day is kept alongside the first", () => {
+    const { keep, evict } = planFeedRetention([aug], sep6);
+    assert.deepEqual(versions(keep), ["v202608233", "v202609060"]);
+    assert.deepEqual(evict, []);
+  });
+
+  // The case that motivated day-based rather than version-based retention:
+  // a same-day revision must not consume the second slot and push out the
+  // outgoing feed that is still the only one covering today.
+  await t.test("a same-day revision replaces its predecessor, not the older day", () => {
+    const { keep, evict } = planFeedRetention([aug, sep6], sep6rev);
+    assert.deepEqual(versions(keep), ["v202608233", "v202609061"]);
+    assert.deepEqual(versions(evict), ["v202609060"]);
+  });
+
+  // Josh's identified failure mode, accepted rather than defended against --
+  // asserted here so the behavior is deliberate and visible rather than a
+  // surprise if it ever happens.
+  await t.test("a third distinct day evicts the oldest, reopening the coverage gap (known, accepted)", () => {
+    const { keep, evict } = planFeedRetention([aug, sep6], sep7);
+    assert.deepEqual(versions(keep), ["v202609060", "v202609070"]);
+    assert.deepEqual(versions(evict), ["v202608233"]);
+  });
+
+  await t.test("a feed older than everything retained is not kept, and evicts nothing", () => {
+    const { keep, evict } = planFeedRetention([sep6, sep7], aug);
+    assert.ok(!versions(keep).includes("v202608233"));
+    assert.deepEqual(evict, []);
+  });
+
+  await t.test("re-receiving the identical version is a no-op", () => {
+    const { keep, evict } = planFeedRetention([aug, sep6], sep6);
+    assert.deepEqual(versions(keep), ["v202608233", "v202609060"]);
+    assert.deepEqual(evict, []);
+  });
+});
+
+test("orderFeedsNewestFirst", async (t) => {
+  await t.test("orders by day, then by version within a day", () => {
+    const entries = [
+      { version: "v202609060", day: "20260906" },
+      { version: "v202608233", day: "20260823" },
+      { version: "v202609061", day: "20260906" },
+    ];
+    assert.deepEqual(orderFeedsNewestFirst(entries).map((e) => e.version), [
+      "v202609061",
+      "v202609060",
+      "v202608233",
+    ]);
+  });
+
+  await t.test("does not mutate its input", () => {
+    const entries = [{ version: "a", day: "20260823" }, { version: "b", day: "20260906" }];
+    orderFeedsNewestFirst(entries);
+    assert.deepEqual(entries.map((e) => e.version), ["a", "b"]);
+  });
+});
+
+test("feedHasServiceOn", async (t) => {
+  // Mirrors the real shape that caused the 2026-09-02 incident: SEPTA's
+  // calendar.txt rows are pinned to a single stale day and the actual service
+  // days come from calendar_dates.txt additions.
+  const texts = {
+    "calendar.txt":
+      "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\n" +
+      "710,1,1,1,1,1,0,0,20260823,20260823\n",
+    "calendar_dates.txt": "service_id,date,exception_type\n" + "210122000,20260902,1\n" + "710,20260904,1\n",
+  };
+
+  await t.test("a calendar_dates-only service makes its date covered", () => {
+    assert.equal(feedHasServiceOn(texts, new Date(2026, 8, 2)), true); // Sep 2
+    assert.equal(feedHasServiceOn(texts, new Date(2026, 8, 4)), true); // Sep 4
+  });
+
+  await t.test("a date with nothing scheduled is not covered", () => {
+    assert.equal(feedHasServiceOn(texts, new Date(2026, 8, 3)), false); // Sep 3
+  });
+
+  await t.test("calendar.txt day-of-week rules still count inside their range", () => {
+    assert.equal(feedHasServiceOn(texts, new Date(2026, 7, 23)), false); // Aug 23 is a Sunday
+  });
+
+  await t.test("an empty feed covers nothing rather than throwing", () => {
+    assert.equal(feedHasServiceOn({}, new Date(2026, 8, 2)), false);
   });
 });
 

@@ -3,3 +3,10 @@ node_modules/
 gtfs-cache.json
 route-colors-cache.json
 find-stop-feed-cache.json
+
+# Banked GTFS feeds (see feeds/README.md) -- large, and not source
+feeds/*.zip
+feeds/index.json
+
+# Plans are working documents that drift from the code
+.claude/plans/

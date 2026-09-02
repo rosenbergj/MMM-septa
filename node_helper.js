@@ -18,6 +18,7 @@ const {
   getHeadsignsSkippingStop,
   getDirectionIdsForStop,
   getLastStopSequence,
+  rebuildScheduleCacheForDate,
   getScheduledRouteIds,
   getTerminusExclusionDirectionId,
   // Both fully generic (path-parameterized, no GTFS-specific structure
@@ -211,7 +212,10 @@ module.exports = NodeHelper.create({
     try {
       this.scheduleCache = await fetchScheduleCache([...routeIds], [...stopIds]);
       saveCacheToDisk(this.scheduleCache);
-      console.log(`MMM-septa: refreshed GTFS schedule cache (${this.scheduleCache.entries.length} entries)`);
+      console.log(
+        `MMM-septa: refreshed GTFS schedule cache (${this.scheduleCache.entries.length} entries` +
+          `${this.scheduleCache.feedVersion ? `, feed ${this.scheduleCache.feedVersion}` : ""})`
+      );
       // SEPTA sometimes publishes a feed whose calendar doesn't cover today
       // (e.g. it has already rolled forward to the next service period, ahead
       // of a schedule change). When that happens the schedule supplement can
@@ -232,6 +236,40 @@ module.exports = NodeHelper.create({
     } catch (err) {
       console.error(`MMM-septa: GTFS schedule refresh failed: ${err.message}; retrying in ${SCHEDULE_RETRY_MS / 1000}s`);
       this.scheduleTimer = setTimeout(() => this.refreshScheduleCache(), SCHEDULE_RETRY_MS);
+    }
+  },
+
+  // Swaps in whichever retained feed covers today, when the active one no
+  // longer does. Network-free (see gtfs-schedule.js's
+  // rebuildScheduleCacheForDate) but not free -- it re-parses a feed, so it's
+  // rate-limited to one attempt per service day rather than being retried on
+  // every poll cycle of a day genuinely covered by nothing.
+  reselectScheduleFeed() {
+    const today = new Date().toDateString();
+    if (this.lastFeedReselectDay === today) return;
+    this.lastFeedReselectDay = today;
+
+    const routeIds = new Set();
+    const stopIds = new Set();
+    for (const state of this.routes.values()) {
+      if (state.useScheduleSupplement === false) continue;
+      routeIds.add(state.config.routeId);
+      stopIds.add(state.config.stopId);
+      if (state.config.secondaryStopId) stopIds.add(state.config.secondaryStopId);
+    }
+    if (routeIds.size === 0) return;
+
+    try {
+      const rebuilt = rebuildScheduleCacheForDate([...routeIds], [...stopIds], new Date());
+      if (!rebuilt) return; // nothing retained covers today; stay as we are
+      this.scheduleCache = rebuilt;
+      saveCacheToDisk(this.scheduleCache);
+      console.log(
+        `MMM-septa: switched the schedule cache to retained feed ${rebuilt.feedVersion || "(unversioned)"} ` +
+          `(${rebuilt.entries.length} entries), which covers today.`
+      );
+    } catch (err) {
+      console.warn(`MMM-septa: could not re-select a retained feed for today: ${err.message}`);
     }
   },
 
@@ -527,6 +565,14 @@ module.exports = NodeHelper.create({
       // -- the frontend surfaces a single "live data only" note when true. Only
       // meaningful for a route actually using the supplement, once the cache
       // has loaded (before that it's a plain startup gap, not a feed problem).
+      // A retained feed other than the active one may cover today: at a
+      // service-day rollover the feed that was answering yesterday can stop
+      // covering, while a newer retained feed starts. Cheap to check (this
+      // only runs when the active cache has already come up empty for today),
+      // and it re-selects without touching the network.
+      if (state.useScheduleSupplement && this.scheduleCache && !hasActiveServiceOn(this.scheduleCache, new Date())) {
+        this.reselectScheduleFeed();
+      }
       const scheduleUnavailable =
         state.useScheduleSupplement &&
         Boolean(this.scheduleCache) &&
