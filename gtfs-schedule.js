@@ -993,6 +993,19 @@ async function refreshFeedStore(fetchImpl = fetch, feedsDir = FEEDS_DIR, date = 
   const entries = loadFeedIndex(feedsDir);
   const newest = orderFeedsNewestFirst(entries)[0] || null;
   const { unchanged, buffer, etag } = await downloadFeed(fetchImpl, newest ? newest.etag : null);
+  // Returning here means retention -- and therefore eviction -- is evaluated
+  // only when SEPTA actually publishes something, not on the daily refresh
+  // (which normally 304s) and not at a service-day rollover (which only
+  // re-selects; see rebuildScheduleCacheForDate). That laziness is
+  // deliberate, not an oversight of the early return: eviction deletes the
+  // zip, and an evicted feed is unrecoverable because SEPTA serves no
+  // history. So a feed held back by the coverage rule can outlive its
+  // usefulness by days -- kept until something actually needs its slot,
+  // which is also exactly when it's still useful to
+  // scripts/compare-feeds.js. The cost is one spare ~21MB zip.
+  //
+  // If eviction is ever made eager, note that it would start destroying
+  // irreplaceable feeds sooner, which is the trade being made.
   if (unchanged) return { entries, downloaded: false, transientBuffer: null };
 
   const incomingTexts = readSelectionTexts(buffer);
