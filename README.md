@@ -432,7 +432,11 @@ rather than one per route.
   line(s) and the footnote markers for a more compact display — see
   "Secondary stop" above for how it also changes secondary-stop handling.
   The nearest arrival is shown larger/brighter than the
-  rest. With `useScheduleSupplement` on (the default), arrivals SEPTA
+  rest. Countdowns round **down**, so "3m" means at least three minutes
+  away and a bus under a minute out shows "0m" -- the display would
+  rather send you to the stop early than tell you a 2m30s bus is 3m off.
+  For the same reason `warnMinutes` and `countdownWithinMinutes` can
+  trigger up to a minute earlier than the exact arithmetic would suggest. With `useScheduleSupplement` on (the default), arrivals SEPTA
   hasn't started GPS-tracking yet — still at their first stop, no
   vehicle assigned, or otherwise not "real-time" — are shown too,
   styled as "~Nm" (italic, muted) instead of being dropped entirely.

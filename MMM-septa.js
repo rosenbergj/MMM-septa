@@ -16,8 +16,18 @@ function septaIsFresh(lastFetchTime, refreshIntervalSeconds, now) {
   return (now - lastFetchTime) / 1000 <= refreshIntervalSeconds * 3;
 }
 
+// Rounds *down*, deliberately. "3m" should mean at least three minutes, not
+// 2m30s dressed up as 3m: overstating the wait by up to 59 seconds is exactly
+// the error that makes you miss a bus, and the number on screen is already up
+// to countdownTickSeconds (15s by default) stale on top of whatever lag
+// SEPTA's own eta carries. Under-promising is the safe direction to be wrong
+// in. A bus less than a minute out therefore reads "0m" -- go now.
+//
+// The two thresholds fed from this -- warnMinutes (urgent styling) and
+// countdownWithinMinutes (countdown vs clock time) -- consequently trip up to
+// a minute earlier than they did under rounding, in the same safe direction.
 function septaMinutesUntil(etaSeconds, nowMs) {
-  return Math.max(0, Math.round((etaSeconds * 1000 - nowMs) / 60000));
+  return Math.max(0, Math.floor((etaSeconds * 1000 - nowMs) / 60000));
 }
 
 // How long a burst of SEPTA_UPDATEs must go quiet before it's rendered, and
