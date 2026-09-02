@@ -358,6 +358,70 @@ function hasActiveServiceOn(cache, date) {
 // structurally-skipping headsign, e.g. a secondary stop, might never do) --
 // stops.txt in fileTexts is optional so callers that don't need names (or
 // don't have it, e.g. NEEDED_FILES-less test fixtures) still work.
+// How many trips per (routeId, directionId) to sample when picking the
+// representative one for routeStopPaths. The longest of the sample wins,
+// which is what makes short-turn variants lose to a full-length pattern.
+const ROUTE_PATH_TRIP_SAMPLE = 20;
+
+// One ordered, coordinate-bearing stop list per configured (routeId,
+// directionId) -- the geometric backbone the inferred-detour span test needs
+// (see inferDetourSpanStops). Deliberately separate from `entries`, which is
+// filtered down to the user's configured stops and so can't say what lies
+// between them.
+//
+// Built from a small sample of trips rather than all of them: the longest
+// sampled trip stands in for the route's full shape, so a short-turn variant
+// doesn't produce a truncated path. Scanning stop_times.txt a second time
+// costs a few seconds on the Pi, which a once-daily refresh can afford;
+// keeping every trip's stop list resident could not.
+function buildRouteStopPaths(stopTimesText, tripsById, stopLatLon) {
+  const sampled = new Map(); // "routeId|directionId" -> Set of tripIds
+  const tripKey = new Map(); // tripId -> that same key
+  for (const [tripId, trip] of tripsById) {
+    const key = `${trip.routeId}|${trip.directionId}`;
+    let bucket = sampled.get(key);
+    if (!bucket) sampled.set(key, (bucket = new Set()));
+    if (bucket.size >= ROUTE_PATH_TRIP_SAMPLE) continue;
+    bucket.add(tripId);
+    tripKey.set(tripId, key);
+  }
+
+  // stop_times.txt is ordered trip_id-first on every line, so the id can be
+  // read with one indexOf instead of splitting the row -- the same trick the
+  // stopIds pre-check uses, and what keeps this pass cheap over ~2M rows.
+  const rows = new Map(); // tripId -> [{ stopId, stopSequence }]
+  const lines = stopTimesText.split("\n");
+  const header = splitCsvLineSimple(lines[0]).map((h) => h.trim());
+  const stopIdx = header.indexOf("stop_id");
+  const seqIdx = header.indexOf("stop_sequence");
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    const comma = line.indexOf(",");
+    if (comma < 1) continue;
+    const tripId = line.slice(0, comma);
+    if (!tripKey.has(tripId)) continue;
+    const cols = splitCsvLineSimple(line);
+    const list = rows.get(tripId) || rows.set(tripId, []).get(tripId);
+    list.push({ stopId: cols[stopIdx], stopSequence: Number(cols[seqIdx]) });
+  }
+
+  const paths = {};
+  for (const [tripId, list] of rows) {
+    const key = tripKey.get(tripId);
+    if (!paths[key] || list.length > paths[key].length) {
+      paths[key] = list
+        .sort((a, b) => a.stopSequence - b.stopSequence)
+        .map((row) => {
+          const point = stopLatLon.get(row.stopId);
+          return point ? { stopId: row.stopId, lat: point.lat, lon: point.lon } : null;
+        })
+        .filter(Boolean);
+    }
+  }
+  return paths;
+}
+
 function buildScheduleCache(fileTexts, routeIds, stopIds) {
   const trips = parseTripsForRoutes(fileTexts["trips.txt"], routeIds);
   const entries = parseStopTimesForTrips(fileTexts["stop_times.txt"], trips, stopIds);
@@ -371,6 +435,9 @@ function buildScheduleCache(fileTexts, routeIds, stopIds) {
   // route, and gets reported as the stop problem it is rather than as a
   // phantom typo'd routeId. See node_helper.js's validateRouteIds.
   const routeIdsWithTrips = [...new Set([...trips.values()].map((trip) => trip.routeId))];
+  const routeStopPaths = fileTexts["stops.txt"]
+    ? buildRouteStopPaths(fileTexts["stop_times.txt"], trips, parseStopLatLon(fileTexts["stops.txt"]))
+    : {};
   // Which feed this cache came from, when the caller supplied feed_info.txt.
   // Purely diagnostic, but the absence of it is what made the 2026-09-02
   // incident hard to read off the Pi: the cache on disk gave no clue which
@@ -386,6 +453,7 @@ function buildScheduleCache(fileTexts, routeIds, stopIds) {
     stopNames,
     terminusExclusions,
     routeIdsWithTrips,
+    routeStopPaths,
   };
 }
 
@@ -696,6 +764,94 @@ function getScheduledRouteIds(cache) {
 // uses this to decide whether a bus has already gone by, so taking the first
 // occurrence would write off a Green Loop bus as "past" 30th St for the
 // entire lap that ends there.
+// --- Inferred detour spans (see node_helper.js's inferred-detour handling) ---
+
+// How many stops either side of the detected deviation to treat as affected.
+// Measured against the 45 detours where SEPTA did list skipped stops: with no
+// margin the span fully contained them in 26 cases, with +/-2 in 34. Widening
+// further barely helps (35 at +/-5) while doubling how much of the route is
+// covered, so +/-2 is where the curve flattens.
+const DETOUR_SPAN_MARGIN_STOPS = 2;
+
+const EARTH_RADIUS_METERS = 6371000;
+
+function haversineMeters(a, b) {
+  const lat1 = (a.lat * Math.PI) / 180;
+  const lat2 = (b.lat * Math.PI) / 180;
+  const dLat = lat2 - lat1;
+  const dLon = ((b.lon - a.lon) * Math.PI) / 180;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return 2 * EARTH_RADIUS_METERS * Math.asin(Math.sqrt(h));
+}
+
+// Where a detour's turn-by-turn coordinates sit, in order. SEPTA gives these
+// in coordinate_detail_from_message keyed by the intersection text ("18th st.
+// and locust st."), and object key order follows the message, so the values
+// are already the path in travel order. Entries can carry a third element
+// (a stop name) and can be missing coordinates entirely, so both are guarded.
+function detourTurnPoints(detour) {
+  const detail = detour && detour.coordinate_detail_from_message;
+  if (!detail || typeof detail !== "object") return [];
+  const points = [];
+  for (const value of Object.values(detail)) {
+    if (!Array.isArray(value) || value.length < 2) continue;
+    // Explicit null/empty guard before Number(): Number(null) and Number("")
+    // are both 0, which would place a missing coordinate at 0,0 and pull the
+    // nearest-stop search thousands of miles off. Mirrors septa-client.js's
+    // isUsableCoordinatePair.
+    if ([value[0], value[1]].some((part) => part === null || part === undefined || part === "")) continue;
+    const lat = Number(value[0]);
+    const lon = Number(value[1]);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) points.push({ lat, lon });
+  }
+  return points;
+}
+
+// The stops a no-skipped-stops detour plausibly bypasses: everything between
+// where its path leaves the route and where it rejoins, widened by
+// DETOUR_SPAN_MARGIN_STOPS. Returns null when the detour can't be localized
+// at all, which the caller must treat as "say nothing" rather than "affects
+// nothing" -- an un-localizable detour is the common case (39 of 73 active
+// ones on 2026-09-02 carry no coordinates) and alerting route-wide for those
+// would drown the useful ones.
+//
+// Null is returned when: the detour has fewer than two turn points; the cache
+// has no stop path for this route/direction (an older cache, or a route whose
+// trips weren't sampled); or the deviation resolves to a single stop, which
+// means the endpoints didn't separate and the "span" is an artifact rather
+// than a bypass.
+function inferDetourSpanStops(cache, routeId, directionId, detour, margin = DETOUR_SPAN_MARGIN_STOPS) {
+  const points = detourTurnPoints(detour);
+  if (points.length < 2) return null;
+  const paths = cache && cache.routeStopPaths;
+  if (!paths) return null;
+  const path = paths[`${routeId}|${directionId}`];
+  if (!Array.isArray(path) || path.length < 3) return null;
+
+  const nearestIndex = (point) => {
+    let best = 0;
+    let bestDistance = Infinity;
+    path.forEach((stop, index) => {
+      const distance = haversineMeters(stop, point);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = index;
+      }
+    });
+    return best;
+  };
+
+  const first = nearestIndex(points[0]);
+  const last = nearestIndex(points[points.length - 1]);
+  const low = Math.min(first, last);
+  const high = Math.max(first, last);
+  if (high - low < 1) return null;
+
+  return new Set(
+    path.slice(Math.max(0, low - margin), Math.min(path.length - 1, high + margin) + 1).map((stop) => stop.stopId)
+  );
+}
+
 function getLastStopSequence(cache, routeId, stopId, tripId) {
   if (!cache || !Array.isArray(cache.entries)) return null;
   const targetRouteId = String(routeId);
@@ -1225,6 +1381,9 @@ module.exports = {
   mergeDirectionPatterns,
   getScheduledArrivals,
   getLastStopSequence,
+  haversineMeters,
+  detourTurnPoints,
+  inferDetourSpanStops,
   readZipEntries,
   feedDayFromVersion,
   parseFeedInfo,

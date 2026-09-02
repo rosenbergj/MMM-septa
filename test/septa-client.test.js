@@ -6,6 +6,7 @@ const path = require("node:path");
 
 const {
   isDetourActive,
+  findInferredDetourCandidates,
   findSkippedStopName,
   filterGoodTrips,
   isTripTracked,
@@ -122,6 +123,72 @@ test("isDetourActive", async (t) => {
   await t.test("missing day_time_active_info -> active for the entire date range", () => {
     const detours = fixture("detours-route17-active.json");
     assert.equal(isDetourActive(detours, 21289, new Date(2026, 0, 1, 3, 0, 0)), true);
+  });
+});
+
+test("findInferredDetourCandidates", async (t) => {
+  const now = new Date(2026, 8, 2, 12, 0, 0);
+  // Shaped after the real route 17 southbound detour of 2026-09-02: five
+  // geocoded turns, four days long, and no skipped_stops at all.
+  const base = {
+    route_id: "17",
+    direction_id: "1",
+    reason: "Road Construction",
+    start: "9/1/2026, 18:52:20",
+    end: "9/6/2026, 00:30:00",
+    skipped_stops: {},
+    coordinate_detail_from_message: {
+      "rittenhouse and 18th st.": [39.9484, -75.17104, "Rittenhouse Sq & 18th St"],
+      "18th st. and locust st.": [39.94899, -75.17092],
+      "locust st. and broad st.": [39.94842, -75.16512],
+      "broad st. and washington ave.": [39.93884, -75.16716],
+      "washington ave. and 19th st,": [39.93975, -75.17325],
+    },
+  };
+
+  await t.test("the real route 17 shape qualifies", () => {
+    assert.deepEqual(findInferredDetourCandidates([base], now), [base]);
+  });
+
+  await t.test("a detour that lists its skipped stops is left to the confident path", () => {
+    const reported = { ...base, skipped_stops: { 14959: ["19th St & South St", 39.9, -75.1] } };
+    assert.deepEqual(findInferredDetourCandidates([reported], now), []);
+    // ...including the flat-array shape skipped_stops sometimes takes.
+    assert.deepEqual(findInferredDetourCandidates([{ ...base, skipped_stops: ["14959"] }], now), []);
+  });
+
+  await t.test("outside its date range -> not a candidate", () => {
+    assert.deepEqual(findInferredDetourCandidates([base], new Date(2026, 8, 8, 12, 0, 0)), []);
+    assert.deepEqual(findInferredDetourCandidates([base], new Date(2026, 7, 20, 12, 0, 0)), []);
+  });
+
+  await t.test("outside today's day_time window -> not a candidate", () => {
+    const evening = { ...base, day_time_active_info: { Wed: "18:00:00-22:00:00" } };
+    assert.deepEqual(findInferredDetourCandidates([evening], now), []);
+    const allDay = { ...base, day_time_active_info: { Wed: "00:00:00-23:59:59" } };
+    assert.deepEqual(findInferredDetourCandidates([allDay], now), [allDay]);
+  });
+
+  // Long-running detours are the new normal rather than news, and a
+  // permanently-orange note would be noise. 18 of the 30 that would otherwise
+  // alert on 2026-09-02 were longer than a month.
+  await t.test("running longer than the cap -> not a candidate", () => {
+    const forever = { ...base, start: "4/20/2026, 13:23:14", end: "1/1/2027, 00:00:00" };
+    assert.deepEqual(findInferredDetourCandidates([forever], now), []);
+  });
+
+  await t.test("fewer than two usable coordinates -> not a candidate, it can't be localized", () => {
+    const oneTurn = { ...base, coordinate_detail_from_message: { "a and b": [39.94, -75.17] } };
+    assert.deepEqual(findInferredDetourCandidates([oneTurn], now), []);
+    assert.deepEqual(findInferredDetourCandidates([{ ...base, coordinate_detail_from_message: {} }], now), []);
+    assert.deepEqual(findInferredDetourCandidates([{ ...base, coordinate_detail_from_message: null }], now), []);
+    const malformed = { ...base, coordinate_detail_from_message: { a: [null, null], b: ["x", "y"], c: [39.9, -75.1] } };
+    assert.deepEqual(findInferredDetourCandidates([malformed], now), []);
+  });
+
+  await t.test("non-array input -> empty, never a throw", () => {
+    assert.deepEqual(findInferredDetourCandidates(null, now), []);
+    assert.deepEqual(findInferredDetourCandidates(undefined, now), []);
   });
 });
 

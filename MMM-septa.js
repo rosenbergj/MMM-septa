@@ -56,6 +56,19 @@ function septaJoinArrivalTimes(rendered) {
 
 const SAME_TRIP_NOTE = "Stops separated by a slash are the same vehicle/trip";
 
+// Wording for the "detour inferred stops" feature: a detour SEPTA published
+// without a stop list, whose bypassed stretch of route we inferred from its
+// turn coordinates (see gtfs-schedule.js's inferDetourSpanStops). Kept
+// visibly hedgier than the confident "Detour skips stop at X" used when SEPTA
+// does list the stops, because the inference misses roughly one detour in
+// nine and shouldn't be read as certainty.
+function septaInferredDetourNote(which, secondaryStopName) {
+  if (which === "secondary" && secondaryStopName) {
+    return `Detour near ${septaEscapeHtml(secondaryStopName)} (SEPTA didn't list exact stops)`;
+  }
+  return "Detour near here (SEPTA didn't list exact stops)";
+}
+
 // How long a burst of SEPTA_UPDATEs must go quiet before it's rendered, and
 // the hard ceiling on how long that wait can be extended. See
 // scheduleDataRender for why a burst happens at all.
@@ -540,6 +553,15 @@ Module.register("MMM-septa", {
           html: `(Note: Some trips omitted that don't stop at ${septaEscapeHtml(secondaryStopDisplayName)})`,
         });
       }
+      // Inferred detours never replace the reported note below -- if SEPTA
+      // told us the stop is skipped, that statement is strictly better.
+      const inferredDetourNear = state && state.inferredDetourNear;
+      if (inferredDetourNear && !secondaryStopDetour) {
+        fullWidthRows.push({
+          flagged: true,
+          html: septaInferredDetourNote(inferredDetourNear, secondaryStopDisplayName),
+        });
+      }
       if (secondaryStopDetour && shownArrivals.length > 0) {
         fullWidthRows.push({
           flagged: true,
@@ -911,6 +933,20 @@ Module.register("MMM-septa", {
       fullWidthRows.push({
         flagged: false,
         html: `(Note: Some trips omitted that don't stop at ${septaEscapeHtml(secondaryStopDisplayName)})`,
+      });
+    }
+    // One note for the whole merged row: sub-routes share a stop, so a detour
+    // inferred near one of them is inferred near all of them. "primary" wins
+    // over "secondary" for the same reason it does in the single-route case.
+    const anyInferredDetour = knownSubRoutes.some((s) => s.state.inferredDetourNear === "primary")
+      ? "primary"
+      : knownSubRoutes.some((s) => s.state.inferredDetourNear === "secondary")
+        ? "secondary"
+        : null;
+    if (anyInferredDetour && !anySecondaryStopDetour) {
+      fullWidthRows.push({
+        flagged: true,
+        html: septaInferredDetourNote(anyInferredDetour, secondaryStopDisplayName),
       });
     }
     if (anySecondaryStopDetour && shownArrivals.length > 0) {

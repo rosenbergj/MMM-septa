@@ -24,6 +24,9 @@ const {
   getHeadsignsSkippingStop,
   getDirectionIdsForStop,
   getLastStopSequence,
+  haversineMeters,
+  detourTurnPoints,
+  inferDetourSpanStops,
   feedDayFromVersion,
   parseFeedInfo,
   planFeedRetention,
@@ -761,6 +764,82 @@ test("getHeadsignsSkippingStop ordering", async (t) => {
     const skipping = getHeadsignsSkippingStop(cache, "LUCYGR", 21441, 28325, "0");
     assert.equal(skipping.includes("Green Loop"), false);
     assert.equal(skipping.includes("Green Detour"), true);
+  });
+});
+
+test("detour span inference", async (t) => {
+  // A straight north-south route, one stop per block, ~110m apart.
+  const path = Array.from({ length: 20 }, (_, i) => ({
+    stopId: `s${i}`,
+    lat: 39.95 - i * 0.001,
+    lon: -75.172,
+  }));
+  const cache = { routeStopPaths: { "17|1": path } };
+  // A detour leaving at s5 and rejoining at s12, swinging two blocks east.
+  const detour = {
+    coordinate_detail_from_message: {
+      "leave at s5": [path[5].lat, path[5].lon],
+      "east leg": [path[8].lat, -75.169],
+      "rejoin at s12": [path[12].lat, path[12].lon],
+    },
+  };
+
+  await t.test("haversineMeters is sane over city-block distances", () => {
+    const d = haversineMeters(path[0], path[1]);
+    assert.ok(d > 100 && d < 120, `expected ~111m, got ${d.toFixed(0)}m`);
+    assert.equal(haversineMeters(path[0], path[0]), 0);
+  });
+
+  await t.test("detourTurnPoints reads the coordinates in message order", () => {
+    const points = detourTurnPoints(detour);
+    assert.equal(points.length, 3);
+    assert.equal(points[0].lat, path[5].lat);
+    assert.equal(points[2].lat, path[12].lat);
+  });
+
+  await t.test("a missing coordinate is dropped, not read as 0,0", () => {
+    const points = detourTurnPoints({
+      coordinate_detail_from_message: { a: [null, null], b: ["", ""], c: [39.95, -75.172] },
+    });
+    assert.deepEqual(points, [{ lat: 39.95, lon: -75.172 }]);
+  });
+
+  await t.test("the span covers the bypassed stops plus the margin", () => {
+    const span = inferDetourSpanStops(cache, "17", "1", detour);
+    // s5..s12 bypassed, widened by 2 either side -> s3..s14
+    assert.deepEqual([...span].sort(), ["s10","s11","s12","s13","s14","s3","s4","s5","s6","s7","s8","s9"].sort());
+  });
+
+  await t.test("a stop outside the span is excluded -- the whole point of the feature", () => {
+    const span = inferDetourSpanStops(cache, "17", "1", detour);
+    assert.equal(span.has("s8"), true);
+    assert.equal(span.has("s17"), false);
+    assert.equal(span.has("s0"), false);
+  });
+
+  await t.test("margin is configurable and clamps at the route ends", () => {
+    const span = inferDetourSpanStops(cache, "17", "1", detour, 99);
+    assert.equal(span.size, path.length);
+  });
+
+  // Every "can't localize" case must return null, which callers treat as
+  // "say nothing" rather than "affects nothing".
+  await t.test("returns null when it cannot localize the detour", () => {
+    assert.equal(inferDetourSpanStops(cache, "17", "1", { coordinate_detail_from_message: { a: [39.95, -75.172] } }), null);
+    assert.equal(inferDetourSpanStops(cache, "17", "1", {}), null);
+    assert.equal(inferDetourSpanStops(cache, "17", "0", detour), null, "no path for that direction");
+    assert.equal(inferDetourSpanStops({}, "17", "1", detour), null, "cache with no routeStopPaths");
+    assert.equal(inferDetourSpanStops(null, "17", "1", detour), null);
+  });
+
+  await t.test("a degenerate span (endpoints resolving to one stop) returns null", () => {
+    const tiny = {
+      coordinate_detail_from_message: {
+        a: [path[5].lat, path[5].lon],
+        b: [path[5].lat + 0.00001, path[5].lon],
+      },
+    };
+    assert.equal(inferDetourSpanStops(cache, "17", "1", tiny), null);
   });
 });
 

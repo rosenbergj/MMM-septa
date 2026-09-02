@@ -18,6 +18,7 @@ const {
   getHeadsignsSkippingStop,
   getDirectionIdsForStop,
   getLastStopSequence,
+  inferDetourSpanStops,
   rebuildScheduleCacheForDate,
   getScheduledRouteIds,
   getTerminusExclusionDirectionId,
@@ -424,6 +425,7 @@ module.exports = NodeHelper.create({
         stopIdValid: null,
         secondaryStopDetour: false,
         secondaryStopName: null,
+        inferredDetourNear: null,
         direction,
         hasTripError: false,
         // Raw per-cycle failure count, reset to 0 on any success -- hasTripError
@@ -578,6 +580,36 @@ module.exports = NodeHelper.create({
         Boolean(this.scheduleCache) &&
         !hasActiveServiceOn(this.scheduleCache, new Date());
 
+      // "Detour inferred stops": SEPTA publishes plenty of detours with no
+      // skipped_stops at all (75 of 121 on 2026-09-02, 73 of them active), so
+      // the confident path below can't see them. For the subset that carry
+      // turn-by-turn coordinates, infer which stretch of route they bypass
+      // and mention it only if the configured stop falls inside -- see
+      // gtfs-schedule.js's inferDetourSpanStops for the geometry and its
+      // measured accuracy.
+      //
+      // Never overrides the reported path: a detour that actually names our
+      // stop has already returned early in pollRoute, and a reported
+      // secondary-stop skip keeps its own confident treatment rather than
+      // being restated as an inference.
+      let inferredDetourNear = null; // null | "primary" | "secondary"
+      const spanDirectionId = result.directionId != null ? String(result.directionId) : structuralDirectionId;
+      if (!result.detour && spanDirectionId != null && this.scheduleCache) {
+        for (const detour of result.inferredDetourCandidates || []) {
+          if (String(detour.direction_id) !== spanDirectionId) continue;
+          const span = inferDetourSpanStops(this.scheduleCache, state.config.routeId, spanDirectionId, detour);
+          if (!span) continue;
+          if (span.has(String(state.config.stopId))) {
+            inferredDetourNear = "primary";
+            break; // the primary stop is the stronger statement; stop looking
+          }
+          if (!inferredDetourNear && secondaryStopId && !state.secondaryStopDetour && span.has(String(secondaryStopId))) {
+            inferredDetourNear = "secondary";
+          }
+        }
+      }
+      state.inferredDetourNear = inferredDetourNear;
+
       // A stable order for footnote-marker assignment (see MMM-septa.js's
       // septaGroupByDestination) -- every headsign this route/stop is ever
       // scheduled to see, not just whichever trips happen to be next right
@@ -618,6 +650,7 @@ module.exports = NodeHelper.create({
         secondaryStopDetour: state.secondaryStopDetour,
         secondaryStopName: state.secondaryStopName,
         secondaryStopSkippedHeadsigns,
+        inferredDetourNear: state.inferredDetourNear || null,
         routeColor: this.routeColors[state.config.routeId] || null,
         scheduleUnavailable,
       });

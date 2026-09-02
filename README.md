@@ -176,6 +176,31 @@ that later visit, the trip is flagged as skipping the secondary stop even
 though it technically served it earlier. A stop the bus has already passed
 is no use to you when you board.
 
+#### Detours SEPTA doesn't detail
+
+Most SEPTA detours arrive without a list of skipped stops -- 75 of 121 on
+2026-09-02, nearly all of them active. For those, the module infers which
+stretch of route the detour bypasses from the turn-by-turn coordinates SEPTA
+does provide, and if your stop falls inside it, adds a note:
+
+> Detour near here (SEPTA didn't list exact stops)
+
+or, when only your `secondaryStopId` is affected:
+
+> Detour near 19th St & South St (SEPTA didn't list exact stops)
+
+**Arrival times are still shown**, unlike a detour that names your stop
+outright (which replaces the row with `DETOUR`). The inference is a good
+guess, not a fact, so it doesn't take your bus times away.
+
+It stays quiet unless it can be reasonably sure: the detour must be active
+now, match your route *and* direction, run no longer than 28 days (longer ones
+are the new normal rather than news), and carry at least two turn coordinates
+so there's a path to locate. Roughly half of all detours carry no coordinates
+at all and are never reported this way. Measured against detours where SEPTA
+*did* list the stops, the inferred span contains them about three-quarters of
+the time -- so it under-reports rather than crying wolf.
+
 A `routeId` that doesn't match any real SEPTA route (a typo, a
 discontinued route, etc) fails silently — it just never has any arrivals,
 indistinguishable from a real route that legitimately has nothing running

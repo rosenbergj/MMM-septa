@@ -88,6 +88,15 @@ function parseSeptaDateTime(value) {
 // strings, but every live detour we've actually captured returns an object
 // keyed by stop id instead (values are [name, lat, lon], not needed here).
 // Handle both, plus null/missing.
+// skipped_stops is either an object keyed by stop id or a flat array of them
+// (both shapes are real -- see detourSkipsStop), and sometimes neither.
+function detourSkippedStopIds(detour) {
+  const skippedStops = detour && detour.skipped_stops;
+  if (Array.isArray(skippedStops)) return skippedStops.map(String);
+  if (skippedStops && typeof skippedStops === "object") return Object.keys(skippedStops);
+  return [];
+}
+
 function detourSkipsStop(skippedStops, targetStopId) {
   if (Array.isArray(skippedStops)) {
     return skippedStops.map(String).includes(targetStopId);
@@ -145,6 +154,52 @@ function findActiveDetour(detours, stopId, now = new Date()) {
       return isWithinDayTimeWindow(detour.day_time_active_info, now);
     }) || null
   );
+}
+
+// One entry of a detour's coordinate_detail_from_message. Guards against
+// Number()'s coercions rather than trusting it: Number(null) and Number("")
+// are both 0, so a missing coordinate would otherwise read as a valid point
+// at 0,0 -- in the Atlantic -- and drag the nearest-stop search with it.
+function isUsableCoordinatePair(value) {
+  if (!Array.isArray(value) || value.length < 2) return false;
+  return [value[0], value[1]].every((part) => {
+    if (part === null || part === undefined || part === "") return false;
+    return Number.isFinite(Number(part));
+  });
+}
+
+// Longest a no-skipped-stops detour can run and still be worth mentioning.
+// Past this it's the new normal rather than news, and a permanently-orange
+// note on the mirror is noise. Measured 2026-09-02: of the 30 active
+// empty-skipped detours that would otherwise alert, 18 run longer than a
+// month, so this cut is doing most of the noise reduction on its own.
+const INFERRED_DETOUR_MAX_DAYS = 28;
+
+// Detours eligible for span inference: active now, carrying no skipped_stops
+// of their own (when SEPTA lists them we use those, and far more
+// confidently), short-lived enough to be news, and carrying at least two
+// turn coordinates so there's a path to localize. Everything geometric
+// happens later, against the schedule cache -- see gtfs-schedule.js's
+// inferDetourSpanStops.
+//
+// Note this returns *candidates*, not a verdict: a detour surviving these
+// filters may still turn out to bypass a stretch of route nowhere near the
+// configured stop, which is exactly what the span test decides.
+function findInferredDetourCandidates(detours, now = new Date(), maxDays = INFERRED_DETOUR_MAX_DAYS) {
+  if (!Array.isArray(detours)) return [];
+  return detours.filter((detour) => {
+    if (!detour) return false;
+    if (detourSkippedStopIds(detour).length > 0) return false;
+    const start = parseSeptaDateTime(detour.start);
+    const end = parseSeptaDateTime(detour.end);
+    if (!start || !end) return false;
+    if (!(now > start && now < end)) return false;
+    if (!isWithinDayTimeWindow(detour.day_time_active_info, now)) return false;
+    if ((end - start) / 86400000 > maxDays) return false;
+    const detail = detour.coordinate_detail_from_message;
+    if (!detail || typeof detail !== "object") return false;
+    return Object.values(detail).filter(isUsableCoordinatePair).length >= 2;
+  });
 }
 
 function isDetourActive(detours, stopId, now = new Date()) {
@@ -625,6 +680,11 @@ async function pollRoute(routeConfig, options = {}) {
     secondaryStopDetour,
     secondaryStopName,
     directionId,
+    // Detours SEPTA left without a stop list, narrowed to the ones worth
+    // localizing (see findInferredDetourCandidates). Passed up raw because
+    // deciding whether they touch this stop needs the GTFS schedule cache,
+    // which lives in node_helper -- this module stays network-and-cache-free.
+    inferredDetourCandidates: findInferredDetourCandidates(detours, nowDate),
   };
 }
 
@@ -657,6 +717,8 @@ module.exports = {
   parseSeptaDateTime,
   isDetourActive,
   findActiveDetour,
+  findInferredDetourCandidates,
+  detourSkippedStopIds,
   findSkippedStopName,
   filterGoodTrips,
   isTripTracked,
