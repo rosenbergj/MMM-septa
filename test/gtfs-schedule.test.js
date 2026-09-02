@@ -23,6 +23,7 @@ const {
   getAllHeadsignsForStop,
   getHeadsignsSkippingStop,
   getDirectionIdsForStop,
+  getLastStopSequence,
   getScheduledRouteIds,
   resolveTerminusExclusion,
   getTerminusExclusionDirectionId,
@@ -537,6 +538,57 @@ test("getAllHeadsignsForStop", async (t) => {
     assert.deepEqual(getAllHeadsignsForStop(mixedCache, "17", 21289, "0"), ["Front-Market"]);
     assert.deepEqual(getAllHeadsignsForStop(mixedCache, "17", 21289, "1"), ["Broad-Pattison"]);
     assert.deepEqual(getAllHeadsignsForStop(mixedCache, "17", 21289), ["Front-Market", "Broad-Pattison"]);
+  });
+});
+
+test("getLastStopSequence", async (t) => {
+  // Shapes taken from the real 2026-09-02 feed: trip 8001 is an ordinary
+  // single-visit trip; 8002 mirrors route 95's Metroplex spur (stop 5909 at
+  // sequences 38 and 40 either side of the shopping centre); 8003 mirrors
+  // LUCYGR's Green Loop (stop 28325 opening at sequence 1 and closing at 21).
+  const fileTexts = {
+    "trips.txt":
+      "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed\n" +
+      "17,weekday,8001,Front-Market,,0,1,1,1,1\n" +
+      "95,weekday,8002,Willow Grove,,1,2,2,1,1\n" +
+      "LUCYGR,weekday,8003,Green Loop,,0,3,3,1,1\n",
+    "stop_times.txt":
+      "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n" +
+      "8001,06:00:00,06:00:00,21289,16,,0,0,,1\n" +
+      "8002,06:30:57,06:30:57,5909,38,,0,0,,1\n" +
+      "8002,06:33:14,06:33:14,5909,40,,0,0,,1\n" +
+      "8003,07:00:00,07:00:00,28325,1,,0,0,,1\n" +
+      "8003,07:34:00,07:34:00,28325,21,,0,0,,1\n",
+    "calendar.txt":
+      "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\n" +
+      "weekday,1,1,1,1,1,0,0,20260101,20261231\n",
+    "calendar_dates.txt": "service_id,date,exception_type\n",
+  };
+  const cache = buildScheduleCache(fileTexts, ["17", "95", "LUCYGR"], [21289, 5909, 28325]);
+
+  await t.test("ordinary single-visit trip -> that sequence", () => {
+    assert.equal(getLastStopSequence(cache, "17", 21289, "8001"), 16);
+  });
+
+  await t.test("stop served twice -> the LAST sequence, not the first", () => {
+    assert.equal(getLastStopSequence(cache, "95", 5909, "8002"), 40);
+    assert.equal(getLastStopSequence(cache, "LUCYGR", 28325, "8003"), 21);
+  });
+
+  await t.test("numeric or string tripId both resolve", () => {
+    assert.equal(getLastStopSequence(cache, "17", 21289, 8001), 16);
+    assert.equal(getLastStopSequence(cache, "17", "21289", "8001"), 16);
+  });
+
+  await t.test("unknown trip / stop / route -> null, never a number", () => {
+    assert.equal(getLastStopSequence(cache, "17", 21289, "does-not-exist"), null);
+    assert.equal(getLastStopSequence(cache, "17", 99999, "8001"), null);
+    assert.equal(getLastStopSequence(cache, "999", 21289, "8001"), null);
+  });
+
+  await t.test("missing or malformed cache -> null rather than throwing", () => {
+    assert.equal(getLastStopSequence(null, "17", 21289, "8001"), null);
+    assert.equal(getLastStopSequence({}, "17", 21289, "8001"), null);
   });
 });
 

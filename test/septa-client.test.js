@@ -10,11 +10,13 @@ const {
   filterGoodTrips,
   isTripTracked,
   isNoGpsSource,
+  isTripPastStop,
   filterStopTimes,
   findStopName,
   tripReachesStop,
   computeIsFresh,
   alignedDelayMs,
+  makeCachingFetch,
   pollRoute,
   mergeScheduledArrivals,
   resolveRouteLabelColor,
@@ -369,6 +371,189 @@ test("computeIsFresh", async (t) => {
   });
 });
 
+test("isTripPastStop", async (t) => {
+  const running = (nextStopSequence) => ({
+    next_stop_sequence: nextStopSequence,
+    status: "ON-TIME",
+    vehicle_id: "7478",
+  });
+
+  await t.test("bus past our stop -> skip its trip-update", () => {
+    assert.equal(isTripPastStop(running(42), 16), true);
+  });
+
+  await t.test("bus approaching our stop -> keep", () => {
+    assert.equal(isTripPastStop(running(11), 17), false);
+  });
+
+  await t.test("bus at our stop right now -> keep (it hasn't served it yet)", () => {
+    assert.equal(isTripPastStop(running(17), 17), false);
+  });
+
+  await t.test("trip not yet started (next_stop_sequence 1) -> keep", () => {
+    assert.equal(isTripPastStop(running(1), 16), false);
+  });
+
+  // Every uncertain case must fail open: an extra fetch costs one request, a
+  // wrong skip silently drops a real arrival off the display.
+  await t.test("unknown stop sequence (cache cold or trip unknown) -> keep", () => {
+    assert.equal(isTripPastStop(running(42), null), false);
+    assert.equal(isTripPastStop(running(42), undefined), false);
+  });
+
+  await t.test('"NO GPS" trip -> keep, its next_stop_sequence is a sentinel', () => {
+    assert.equal(isTripPastStop({ ...running(998), status: "NO GPS" }, 16), false);
+  });
+
+  await t.test("no vehicle assigned yet -> keep", () => {
+    assert.equal(isTripPastStop({ ...running(998), vehicle_id: "None" }, 16), false);
+  });
+
+  await t.test("non-numeric next_stop_sequence -> keep", () => {
+    assert.equal(isTripPastStop(running(null), 16), false);
+    assert.equal(isTripPastStop(running("N/A"), 16), false);
+    assert.equal(isTripPastStop({ status: "ON-TIME", vehicle_id: "7478" }, 16), false);
+  });
+
+  await t.test("missing trip entry -> keep", () => {
+    assert.equal(isTripPastStop(null, 16), false);
+  });
+
+  // Real shapes from the 2026-09-02 feed. Callers pass the LAST sequence at
+  // which the trip serves the stop; these assert that doing so is what keeps
+  // a returning bus on screen.
+  await t.test("route 95 Metroplex spur: stop 5909 at sequences 38 and 40", () => {
+    // Bus at sequence 39 (inside the shopping-center spur) is about to serve
+    // 5909 again 2 minutes later -- must not be written off.
+    assert.equal(isTripPastStop(running(39), 40), false);
+    assert.equal(isTripPastStop(running(41), 40), true); // genuinely past both
+    // Using the first occurrence instead would have skipped it:
+    assert.equal(isTripPastStop(running(39), 38), true);
+  });
+
+  await t.test("LUCYGR Green Loop: stop 28325 opens at sequence 1, closes at 21", () => {
+    // Mid-lap, still 30-odd minutes from coming back to 30th St.
+    assert.equal(isTripPastStop(running(10), 21), false);
+    assert.equal(isTripPastStop(running(10), 1), true); // first-occurrence bug
+  });
+});
+
+test("makeCachingFetch", async (t) => {
+  // Minimal Response stand-in: json() is single-use on a real Response, so
+  // these deliberately throw on a second read to catch any body sharing.
+  function response(body, { ok = true, status = 200, statusText = "OK" } = {}) {
+    let read = false;
+    return {
+      ok,
+      status,
+      statusText,
+      json: async () => {
+        if (read) throw new Error("body already consumed");
+        read = true;
+        return body;
+      },
+    };
+  }
+
+  await t.test("identical URLs inside the window share one real request", async () => {
+    let calls = 0;
+    const fetchImpl = async (url) => {
+      calls++;
+      return response({ url, n: calls });
+    };
+    const cachingFetch = makeCachingFetch(10_000, fetchImpl, () => 1000);
+
+    const a = await (await cachingFetch("/trips/?route_id=17")).json();
+    const b = await (await cachingFetch("/trips/?route_id=17")).json();
+    assert.equal(calls, 1);
+    assert.deepEqual(a, b);
+  });
+
+  await t.test("each caller gets its own readable body", async () => {
+    const cachingFetch = makeCachingFetch(10_000, async () => response({ ok: 1 }), () => 1000);
+    const first = await cachingFetch("/detours/?route=17");
+    const second = await cachingFetch("/detours/?route=17");
+    assert.deepEqual(await first.json(), { ok: 1 });
+    assert.deepEqual(await second.json(), { ok: 1 }); // would throw if shared
+  });
+
+  await t.test("concurrent callers share a single in-flight request", async () => {
+    let calls = 0;
+    const cachingFetch = makeCachingFetch(10_000, async () => {
+      calls++;
+      await new Promise((r) => setTimeout(r, 5));
+      return response({ n: calls });
+    }, () => 1000);
+
+    const [a, b] = await Promise.all([cachingFetch("/trips/?route_id=63"), cachingFetch("/trips/?route_id=63")]);
+    assert.equal(calls, 1);
+    assert.deepEqual(await a.json(), await b.json());
+  });
+
+  await t.test("different URLs are not shared", async () => {
+    let calls = 0;
+    const cachingFetch = makeCachingFetch(10_000, async () => response({ n: ++calls }), () => 1000);
+    await cachingFetch("/trips/?route_id=17");
+    await cachingFetch("/trips/?route_id=63");
+    assert.equal(calls, 2);
+  });
+
+  await t.test("past the TTL the URL is fetched again", async () => {
+    let calls = 0;
+    let clock = 1000;
+    const cachingFetch = makeCachingFetch(10_000, async () => response({ n: ++calls }), () => clock);
+    await cachingFetch("/trips/?route_id=17");
+    clock += 10_001;
+    await cachingFetch("/trips/?route_id=17");
+    assert.equal(calls, 2);
+  });
+
+  await t.test("a rejected fetch is not cached, and still rejects", async () => {
+    let calls = 0;
+    const cachingFetch = makeCachingFetch(10_000, async () => {
+      calls++;
+      throw new Error("network down");
+    }, () => 1000);
+
+    await assert.rejects(() => cachingFetch("/trips/?route_id=17"), /network down/);
+    await assert.rejects(() => cachingFetch("/trips/?route_id=17"), /network down/);
+    assert.equal(calls, 2); // retried, not replayed from cache
+  });
+
+  await t.test("a non-ok response is not cached, and keeps its status", async () => {
+    let calls = 0;
+    const cachingFetch = makeCachingFetch(10_000, async () => {
+      calls++;
+      return response(null, { ok: false, status: 503, statusText: "Service Unavailable" });
+    }, () => 1000);
+
+    const first = await cachingFetch("/routes/");
+    assert.equal(first.ok, false);
+    assert.equal(first.status, 503);
+    assert.equal(first.statusText, "Service Unavailable");
+    await cachingFetch("/routes/");
+    assert.equal(calls, 2);
+  });
+
+  await t.test("expired entries are evicted rather than accumulating", async () => {
+    let clock = 0;
+    const cachingFetch = makeCachingFetch(1000, async () => response({}), () => clock);
+    for (let i = 0; i < 50; i++) {
+      clock += 2000; // every entry is stale by the next call
+      await cachingFetch(`/trip-update/?trip_id=${i}`);
+    }
+    // One more call at a fresh clock must still be a miss, proving nothing
+    // stale was retained and served.
+    let calls = 0;
+    const counting = makeCachingFetch(1000, async () => {
+      calls++;
+      return response({});
+    }, () => clock);
+    await counting("/trip-update/?trip_id=0");
+    assert.equal(calls, 1);
+  });
+});
+
 test("alignedDelayMs", async (t) => {
   const INTERVAL = 120;
   const INTERVAL_MS = INTERVAL * 1000;
@@ -554,6 +739,79 @@ test("pollRoute", async (t) => {
     assert.equal(result.detour, false);
     assert.equal(result.hasTripError, false);
     assert.equal(result.stopName, "20th St & Oregon Av");
+  });
+
+  await t.test("skips the trip-update for a bus already past the stop, and never requests it", async () => {
+    const requested = [];
+    const base = stubFetch([
+      ["detours/?route=17", detoursEmpty],
+      ["trips/?route_id=17", trips],
+      ["trip-update/?trip_id=787404", tripUpdate787404],
+      ["trip-update/?trip_id=900002", tripUpdate900002],
+    ]);
+    const fetchImpl = (url, options) => {
+      requested.push(url);
+      return base(url, options);
+    };
+
+    // Northbound good trips here are 787404 (next_stop_sequence 1) and 900002
+    // (next_stop_sequence 2). Put our stop at sequence 1 on 900002 -- so that
+    // bus has already served it -- and at 16 on 787404, which hasn't.
+    const result = await pollRoute(
+      { routeId: "17", stopId: 21289, direction: "Northbound" },
+      {
+        fetchImpl,
+        now: fixedNow,
+        stopSequenceForTrip: (tripId) => (String(tripId) === "900002" ? 1 : 16),
+      }
+    );
+
+    assert.ok(!requested.some((url) => url.includes("trip_id=900002")), "must not fetch the passed trip");
+    assert.ok(requested.some((url) => url.includes("trip_id=787404")), "must still fetch the approaching trip");
+    assert.deepEqual(result.etas, [
+      { eta: 1783312560, headsign: "Front-Market", tracked: false, tripId: "787404" },
+    ]);
+    // A skip is not an error -- it must not light the display's "!" indicator.
+    assert.equal(result.hasTripError, false);
+  });
+
+  await t.test("without a stopSequenceForTrip lookup, every good trip is still fetched", async () => {
+    const requested = [];
+    const base = stubFetch([
+      ["detours/?route=17", detoursEmpty],
+      ["trips/?route_id=17", trips],
+      ["trip-update/?trip_id=787404", tripUpdate787404],
+      ["trip-update/?trip_id=900002", tripUpdate900002],
+    ]);
+    const fetchImpl = (url, options) => {
+      requested.push(url);
+      return base(url, options);
+    };
+    const result = await pollRoute(
+      { routeId: "17", stopId: 21289, direction: "Northbound" },
+      { fetchImpl, now: fixedNow }
+    );
+    assert.equal(requested.filter((url) => url.includes("trip-update")).length, 2);
+    assert.equal(result.etas.length, 2);
+  });
+
+  await t.test("a cold schedule cache (lookup returns null) skips nothing", async () => {
+    const requested = [];
+    const base = stubFetch([
+      ["detours/?route=17", detoursEmpty],
+      ["trips/?route_id=17", trips],
+      ["trip-update/?trip_id=787404", tripUpdate787404],
+      ["trip-update/?trip_id=900002", tripUpdate900002],
+    ]);
+    const fetchImpl = (url, options) => {
+      requested.push(url);
+      return base(url, options);
+    };
+    await pollRoute(
+      { routeId: "17", stopId: 21289, direction: "Northbound" },
+      { fetchImpl, now: fixedNow, stopSequenceForTrip: () => null }
+    );
+    assert.equal(requested.filter((url) => url.includes("trip-update")).length, 2);
   });
 
   // End-to-end replay of the real live payloads captured 2026-07-14 ~00:08

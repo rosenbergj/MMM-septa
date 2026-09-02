@@ -391,7 +391,12 @@ rather than one per route.
   trip filtering, stop-time filtering, staleness), fully unit tested.
 - `node_helper.js` — runs one polling loop per configured route on the
   backend, pushes results to the frontend over MagicMirror's socket
-  notifications.
+  notifications. Polls are kept as light as they can be: routes share a
+  single aligned schedule (staggered a second or so apart), rows on the
+  same route share one `/detours/` and `/trips/` response per cycle, and
+  no `/trip-update/` is requested for a bus SEPTA already reports as past
+  your stop. On a four-route setup that's roughly 23 requests per cycle
+  down to 13, with identical arrivals on screen.
 - `MMM-septa.js` — renders the last known state per route, and re-renders
   the "Nm" countdowns every `countdownTickSeconds` without needing a
   fresh backend fetch (see "How often the display fades"). When a detour affects the configured stop, shows

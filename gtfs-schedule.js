@@ -643,6 +643,35 @@ function getScheduledRouteIds(cache) {
   return cache.routeIdsWithTrips.map(String);
 }
 
+// The stop_sequence at which tripId serves stopId on routeId, or null when
+// the cache has nothing for that trip. Callers MUST treat null as "no
+// information" rather than "doesn't serve the stop" -- the cache only knows
+// the feed it was built from, so a trip_id newer than the last daily refresh
+// legitimately isn't in it.
+//
+// Returns the LAST occurrence when a trip serves the same stop more than
+// once. That's rare but real: 405 of 2.1M (trip, stop) pairs in the
+// 2026-09-02 feed, e.g. route 95's "Willow Grove" trips hit stop 5909 at
+// sequences 38 and 40 either side of a Metroplex Shopping Center spur, and
+// LUCYGR's "Green Loop" opens at stop 28325 sequence 1 and closes at that
+// same stop at sequence 21, 34 minutes later. septa-client's isTripPastStop
+// uses this to decide whether a bus has already gone by, so taking the first
+// occurrence would write off a Green Loop bus as "past" 30th St for the
+// entire lap that ends there.
+function getLastStopSequence(cache, routeId, stopId, tripId) {
+  if (!cache || !Array.isArray(cache.entries)) return null;
+  const targetRouteId = String(routeId);
+  const targetStopId = Number(stopId);
+  const targetTripId = String(tripId);
+  let lastSequence = null;
+  for (const entry of cache.entries) {
+    if (entry.routeId !== targetRouteId || entry.stopId !== targetStopId) continue;
+    if (String(entry.tripId) !== targetTripId) continue;
+    if (lastSequence === null || entry.stopSequence > lastSequence) lastSequence = entry.stopSequence;
+  }
+  return lastSequence;
+}
+
 function getDirectionIdsForStop(cache, routeId, stopId) {
   const targetRouteId = String(routeId);
   const targetStopId = Number(stopId);
@@ -856,6 +885,7 @@ module.exports = {
   getTerminusExclusionDirectionId,
   mergeDirectionPatterns,
   getScheduledArrivals,
+  getLastStopSequence,
   getAllHeadsignsForStop,
   getHeadsignsSkippingStop,
   fetchScheduleCache,

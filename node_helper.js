@@ -2,7 +2,14 @@
 
 const path = require("path");
 const NodeHelper = require("node_helper");
-const { pollRoute, mergeScheduledArrivals, fetchRoutes, resolveRouteLabelColor, alignedDelayMs } = require("./septa-client.js");
+const {
+  pollRoute,
+  mergeScheduledArrivals,
+  fetchRoutes,
+  resolveRouteLabelColor,
+  alignedDelayMs,
+  makeCachingFetch,
+} = require("./septa-client.js");
 const {
   fetchScheduleCache,
   getScheduledArrivals,
@@ -10,6 +17,7 @@ const {
   getAllHeadsignsForStop,
   getHeadsignsSkippingStop,
   getDirectionIdsForStop,
+  getLastStopSequence,
   getScheduledRouteIds,
   getTerminusExclusionDirectionId,
   // Both fully generic (path-parameterized, no GTFS-specific structure
@@ -47,6 +55,16 @@ const ROUTE_STAGGER_SPREAD_MS = 5000;
 // below DATA_RENDER_QUIET_MS; the two constants are coupled across the
 // frontend/backend split, so changing either means rechecking the other.
 const ROUTE_STAGGER_MAX_GAP_MS = 1500;
+// How long one route's fetched URL stays available to another route's cycle
+// (see septa-client.js's makeCachingFetch). Two rows on the same routeId --
+// e.g. a northbound and a southbound row on 17 -- issue identical /detours/
+// and /trips/ requests, and the stagger puts their cycles at most
+// ROUTE_STAGGER_SPREAD_MS apart, so this only has to outlast that spread plus
+// however long the earlier row's cycle takes. Deliberately far below any sane
+// refreshIntervalSeconds (120s default): this is a within-a-tick coalescing
+// window, not a data cache, and nothing should ever be served from it across
+// two different polling cycles.
+const REQUEST_CACHE_TTL_MS = 10 * 1000;
 
 function routeKey(route) {
   return `${route.routeId}:${route.stopId}:${route.direction}`;
@@ -89,6 +107,9 @@ module.exports = NodeHelper.create({
     // JSON request, not worth deferring).
     const cachedRouteColors = loadCacheFromDisk(ROUTE_COLORS_CACHE_PATH);
     this.routeColors = cachedRouteColors || {};
+    // Shared by every route's cycle -- that sharing is the entire point, so
+    // it must not be per-route.
+    this.cachingFetch = makeCachingFetch(REQUEST_CACHE_TTL_MS);
     this.refreshRouteColors();
   },
 
@@ -428,9 +449,23 @@ module.exports = NodeHelper.create({
           : this.scheduleCache
             ? getTerminusExclusionDirectionId(this.scheduleCache, state.config.routeId, state.config.stopId)
             : null;
+      // Lets pollRoute skip a /trip-update/ for any bus SEPTA already reports
+      // as past our stop -- see septa-client.js's isTripPastStop. Returns null
+      // whenever the schedule cache can't answer (not loaded yet, or a
+      // trip_id newer than the last daily refresh), which pollRoute treats as
+      // "fetch it anyway".
+      const stopSequenceForTrip = (tripId) =>
+        this.scheduleCache
+          ? getLastStopSequence(this.scheduleCache, state.config.routeId, state.config.stopId, tripId)
+          : null;
       const result = await pollRoute(
         { ...state.config, secondaryStopId },
-        { useScheduleSupplement: state.useScheduleSupplement, structuralDirectionId }
+        {
+          useScheduleSupplement: state.useScheduleSupplement,
+          structuralDirectionId,
+          stopSequenceForTrip,
+          fetchImpl: this.cachingFetch,
+        }
       );
       state.detour = result.detour;
       state.detourReason = result.detourReason;

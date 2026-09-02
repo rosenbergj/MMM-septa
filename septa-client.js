@@ -221,6 +221,37 @@ function isNoGpsSource(tripsEntry) {
   return tripsEntry.status === "NO GPS" || tripsEntry.vehicle_id === "None";
 }
 
+// Whether SEPTA's own /trips/ entry already proves this bus is past the
+// configured stop, making its /trip-update/ fetch pure waste -- the response
+// would contain nothing filterStopTimes could use (every stop_time at our
+// stop is already `departed`, or its eta is in the past). Measured against
+// the full service day for the four configured rows on 2026-09-02: 63% of
+// per-cycle trip-update calls fall into this bucket, because a bus stays "in
+// service, already past you" for the whole remainder of its run. The saving
+// is largest for stops near the *start* of a route.
+//
+// Fails open in every uncertain case -- an unnecessary fetch costs one
+// request, a wrong skip silently drops a real arrival off the display:
+//
+//   - stopSequence null (the schedule cache doesn't know this trip, or isn't
+//     loaded yet) -> fetch.
+//   - a "NO GPS"/no-vehicle trip -> fetch. Its next_stop_sequence is a
+//     sentinel, not a position (see isNoGpsSource), and these are exactly the
+//     trips the schedule supplement leans on.
+//   - a non-numeric next_stop_sequence -> fetch.
+//
+// stopSequence must be the *last* sequence at which the trip serves the stop
+// when it serves it more than once -- see gtfs-schedule.js's
+// getLastStopSequence for why, and for the routes it actually happens on.
+function isTripPastStop(tripsEntry, stopSequence) {
+  if (!tripsEntry) return false;
+  if (stopSequence == null) return false;
+  if (isNoGpsSource(tripsEntry)) return false;
+  const nextStopSequence = Number(tripsEntry.next_stop_sequence);
+  if (!Number.isFinite(nextStopSequence)) return false;
+  return nextStopSequence > Number(stopSequence);
+}
+
 // SEPTA mis-dates the last trip(s) of the service day for a few minutes
 // after midnight: a stop time expressed with the GTFS past-midnight
 // convention ("24:xx", meaning "still the previous service day") gets its
@@ -294,6 +325,64 @@ function tripReachesStop(stopTimes, stopId) {
   return stopTimes.some((stopTime) => stopTime && Number(stopTime.stop_id) === targetStopId);
 }
 
+// Wraps a fetch implementation so that identical URLs requested inside the
+// same ttlMs window share a single real HTTP request, including sharing one
+// that's still in flight.
+//
+// Exists because each configured row polls independently, and two rows on the
+// same route (e.g. a northbound and a southbound row on 17) build byte-
+// identical /detours/ and /trips/ URLs -- without this, every cycle fetches
+// both twice. Grid-aligned scheduling (see alignedDelayMs) is what makes the
+// windows actually overlap.
+//
+// Only the parsed JSON body is cached, because a real Response body can be
+// read exactly once; each caller therefore gets a fresh minimal
+// Response-shaped object rather than a shared Response. fetchJson above only
+// touches .ok/.status/.statusText/.json(), which is the whole contract here.
+//
+// Failures are never cached -- a rejection or a non-ok response is evicted
+// immediately, so one row's transient error can't poison the other's cycle,
+// and the retry path still sees the real error.
+function makeCachingFetch(ttlMs, fetchImpl = fetch, now = () => Date.now()) {
+  const cache = new Map();
+
+  return function cachingFetch(url, options) {
+    const currentTime = now();
+    // Bounded by eviction on every call rather than by size: trip-update URLs
+    // carry a different trip_id each cycle, so without this the map would
+    // grow forever.
+    for (const [cachedUrl, entry] of cache) {
+      if (currentTime - entry.at > ttlMs) cache.delete(cachedUrl);
+    }
+
+    let entry = cache.get(url);
+    if (!entry) {
+      const promise = fetchImpl(url, options).then(
+        async (response) => {
+          if (!response.ok) {
+            cache.delete(url);
+            return { ok: false, status: response.status, statusText: response.statusText, body: null };
+          }
+          return { ok: true, status: response.status, statusText: response.statusText, body: await response.json() };
+        },
+        (err) => {
+          cache.delete(url);
+          throw err;
+        }
+      );
+      entry = { at: currentTime, promise };
+      cache.set(url, entry);
+    }
+
+    return entry.promise.then((record) => ({
+      ok: record.ok,
+      status: record.status,
+      statusText: record.statusText,
+      json: () => Promise.resolve(record.body),
+    }));
+  };
+}
+
 // How long until the next poll, if polls are to land on a shared wall-clock
 // grid of intervalSeconds rather than "intervalSeconds after whenever this
 // cycle happened to finish".
@@ -352,6 +441,12 @@ async function pollRoute(routeConfig, options = {}) {
   // stop is itself served by more than one direction, or the cache isn't
   // available yet.
   const structuralDirectionId = options.structuralDirectionId != null ? String(options.structuralDirectionId) : null;
+  // tripId -> this stop's last stop_sequence on that trip, or null for
+  // "unknown". Injected by node_helper from the GTFS schedule cache (see
+  // gtfs-schedule.js's getLastStopSequence); defaulting to "always unknown"
+  // keeps the old fetch-everything behavior for any caller that doesn't
+  // supply it, including every existing test.
+  const stopSequenceForTrip = options.stopSequenceForTrip || (() => null);
   const { routeId, stopId, direction } = routeConfig;
 
   const nowDate = nowFn();
@@ -433,9 +528,16 @@ async function pollRoute(routeConfig, options = {}) {
 
   const goodTrips = filterGoodTrips(trips, direction, useScheduleSupplement, structuralDirectionId);
 
+  // Drop the trips SEPTA has already told us are past our stop -- see
+  // isTripPastStop. Everything downstream indexes against pollableTrips
+  // rather than goodTrips, since the results array is positional.
+  const pollableTrips = goodTrips.filter(
+    (trip) => !isTripPastStop(trip, stopSequenceForTrip(trip.trip_id))
+  );
+
   const nowSeconds = nowDate.getTime() / 1000;
   const results = await Promise.allSettled(
-    goodTrips.map((trip) => fetchTripUpdate(trip.trip_id, fetchImpl))
+    pollableTrips.map((trip) => fetchTripUpdate(trip.trip_id, fetchImpl))
   );
 
   // Each arrival keeps the headsign and tracked-status of the specific trip
@@ -455,7 +557,7 @@ async function pollRoute(routeConfig, options = {}) {
     if (routeConfig.secondaryStopId && !secondaryStopName) {
       secondaryStopName = findStopName(stopTimes, routeConfig.secondaryStopId);
     }
-    const tripEntry = goodTrips[index];
+    const tripEntry = pollableTrips[index];
     const headsign = (tripEntry && tripEntry.trip_headsign) || null;
     const tracked = isTripTracked(tripEntry, result.value && result.value.trip);
     const noGpsSource = isNoGpsSource(tripEntry);
@@ -533,11 +635,13 @@ module.exports = {
   filterGoodTrips,
   isTripTracked,
   isNoGpsSource,
+  isTripPastStop,
   filterStopTimes,
   findStopName,
   tripReachesStop,
   computeIsFresh,
   alignedDelayMs,
+  makeCachingFetch,
   pollRoute,
   mergeScheduledArrivals,
 };
