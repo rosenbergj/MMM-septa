@@ -30,6 +30,32 @@ function septaMinutesUntil(etaSeconds, nowMs) {
   return Math.max(0, Math.floor((etaSeconds * 1000 - nowMs) / 60000));
 }
 
+// Joins rendered arrival times, using "/" between two that belong to the same
+// trip and ", " otherwise. Two arrivals sharing a trip_id are one physical
+// vehicle serving this stop twice -- a mid-route loop or an out-and-back spur,
+// e.g. route 107 serves Marshall Rd & Sloan St at sequence 22 and again at 33
+// six minutes later. Comma-separating those reads as two different buses.
+//
+// Only *adjacent* pairs are joined: arrivals are ordered by time, so if
+// another bus falls between a trip's two visits, a slash spanning it would
+// claim something untrue. Returns the joined html plus whether any slash was
+// used, so the caller can explain the notation only when it appears.
+function septaJoinArrivalTimes(rendered) {
+  let sameTripJoined = false;
+  const html = rendered
+    .map((item, index) => {
+      if (index === 0) return item.html;
+      const previous = rendered[index - 1];
+      const sameTrip = Boolean(item.tripId) && item.tripId === previous.tripId;
+      if (sameTrip) sameTripJoined = true;
+      return (sameTrip ? "/" : ", ") + item.html;
+    })
+    .join("");
+  return { html, sameTripJoined };
+}
+
+const SAME_TRIP_NOTE = "Stops separated by a slash are the same vehicle/trip";
+
 // How long a burst of SEPTA_UPDATEs must go quiet before it's rendered, and
 // the hard ceiling on how long that wait can be extended. See
 // scheduleDataRender for why a burst happens at all.
@@ -531,6 +557,9 @@ Module.register("MMM-septa", {
 
       const arrivalsCell = document.createElement("td");
       arrivalsCell.className = "septa-arrivals";
+      // Set by septaJoinArrivalTimes below, and only then; drives the
+      // explanatory note appended after the arrivals row.
+      let sameTripJoined = false;
 
       if (!state) {
         arrivalsCell.innerHTML = "&hellip;";
@@ -547,9 +576,10 @@ Module.register("MMM-septa", {
           // A bare space between entries reads as visually ambiguous once
           // there's more than one, especially with mixed countdown-/clock-
           // style formatting (e.g. "6m 20m 2:55pm"). Comma-separate
-          // whenever there's more than one, tracked or not.
-          const separator = shownArrivals.length > 1 ? ", " : " ";
-          arrivalsCell.innerHTML = shownArrivals
+          // whenever there's more than one, tracked or not -- except between
+          // two arrivals from the same trip, which septaJoinArrivalTimes
+          // joins with a slash instead.
+          const renderedArrivals = shownArrivals
             .map((arrival, index) => {
               const minutes = septaMinutesUntil(arrival.eta, now);
               // Arrivals that skip the secondary stop -- via an active
@@ -586,9 +616,14 @@ Module.register("MMM-septa", {
                 destinationInfo.mixed && destinationInfo.markerFor.has(arrival.headsign)
                   ? destinationInfo.markerFor.get(arrival.headsign)
                   : "";
-              return `<span class="${urgencyClass} ${tierClass}${untrackedClass}">${prefix}${text}${marker}</span>`;
-            })
-            .join(separator);
+              return {
+                tripId: arrival.tripId,
+                html: `<span class="${urgencyClass} ${tierClass}${untrackedClass}">${prefix}${text}${marker}</span>`,
+              };
+            });
+          const joined = septaJoinArrivalTimes(renderedArrivals);
+          sameTripJoined = joined.sameTripJoined;
+          arrivalsCell.innerHTML = joined.html;
         }
 
         if (state.hasTripError) {
@@ -602,6 +637,11 @@ Module.register("MMM-septa", {
 
       row.appendChild(arrivalsCell);
       wrapper.appendChild(row);
+
+      // Explains the slash notation, and only when a slash is actually on
+      // screen -- a standing legend for something that shows up on a handful
+      // of routes would be noise on every other row.
+      if (sameTripJoined) fullWidthRows.push({ flagged: false, html: SAME_TRIP_NOTE });
 
       for (const entry of fullWidthRows) {
         const entryRow = document.createElement("tr");
@@ -781,6 +821,9 @@ Module.register("MMM-septa", {
       arrival.marker = showHeadsigns ? markerFor.get(arrival.headsign) || "" : markerForSubRoute.get(arrival.subRouteId);
     }
 
+    // Set by septaJoinArrivalTimes below, and only then.
+    let sameTripJoined = false;
+
     if (allDetoured) {
       arrivalsCell.classList.add("septa-detour");
       const reason = knownSubRoutes.map((s) => s.state.detourReason).find(Boolean);
@@ -788,8 +831,7 @@ Module.register("MMM-septa", {
     } else if (shownArrivals.length === 0) {
       arrivalsCell.innerHTML = "&ndash;&ndash;";
     } else {
-      const separator = shownArrivals.length > 1 ? ", " : " ";
-      arrivalsCell.innerHTML = shownArrivals
+      const renderedArrivals = shownArrivals
         .map((arrival, index) => {
           const minutes = septaMinutesUntil(arrival.eta, now);
           const urgencyClass = arrival.skipsSecondaryStop
@@ -802,9 +844,14 @@ Module.register("MMM-septa", {
           const prefix = arrival.tracked === false ? "~" : "";
           const text =
             minutes <= this.config.countdownWithinMinutes ? `${minutes}m` : septaFormatClockTime(arrival.eta);
-          return `<span class="${urgencyClass} ${tierClass}${untrackedClass}">${prefix}${text}${arrival.marker}</span>`;
-        })
-        .join(separator);
+          return {
+            tripId: arrival.tripId,
+            html: `<span class="${urgencyClass} ${tierClass}${untrackedClass}">${prefix}${text}${arrival.marker}</span>`,
+          };
+        });
+      const joined = septaJoinArrivalTimes(renderedArrivals);
+      sameTripJoined = joined.sameTripJoined;
+      arrivalsCell.innerHTML = joined.html;
     }
 
     if (hasTripError) {
@@ -877,6 +924,10 @@ Module.register("MMM-septa", {
     if (invalidStopId) {
       fullWidthRows.push({ flagged: false, configError: true, html: "Invalid stop ID configured" });
     }
+    // See the single-route path: only shown when a slash is actually on
+    // screen. On a merged row the same trip_id can only come from one
+    // sub-route, so the note needs no per-route qualification.
+    if (sameTripJoined) fullWidthRows.push({ flagged: false, html: SAME_TRIP_NOTE });
 
     for (const entry of fullWidthRows) {
       const entryRow = document.createElement("tr");

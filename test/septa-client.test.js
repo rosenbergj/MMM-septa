@@ -13,7 +13,7 @@ const {
   isTripPastStop,
   filterStopTimes,
   findStopName,
-  tripReachesStop,
+  tripReachesStopAfter,
   computeIsFresh,
   alignedDelayMs,
   makeCachingFetch,
@@ -329,24 +329,50 @@ test("findStopName", async (t) => {
   });
 });
 
-test("tripReachesStop", async (t) => {
+test("tripReachesStopAfter", async (t) => {
+  // Fixture trip: stop 21289 at sequence 2, stop 21290 at sequence 3.
   const stopTimes = fixture("trip-update-900002.json").stop_times;
 
-  await t.test("stop present anywhere in the trip's stop_times -> true", () => {
-    assert.equal(tripReachesStop(stopTimes, 21289), true);
+  await t.test("a stop later in the trip -> true", () => {
+    assert.equal(tripReachesStopAfter(stopTimes, 21290, 2), true);
   });
 
   await t.test("matches string stop_id (numeric coercion)", () => {
-    assert.equal(tripReachesStop(stopTimes, "21289"), true);
+    assert.equal(tripReachesStopAfter(stopTimes, "21290", 2), true);
+  });
+
+  await t.test("a stop the bus already passed -> false, even though the trip does serve it", () => {
+    assert.equal(tripReachesStopAfter(stopTimes, 21289, 2), false);
   });
 
   await t.test("stop not in this trip's sequence at all -> false (ground truth: confirmed skip)", () => {
-    assert.equal(tripReachesStop(stopTimes, 99999), false);
+    assert.equal(tripReachesStopAfter(stopTimes, 99999, 1), false);
   });
 
   await t.test("non-array input (stop_times unavailable) -> null (unknown, not a confirmed skip)", () => {
-    assert.equal(tripReachesStop(null, 21289), null);
-    assert.equal(tripReachesStop(undefined, 21289), null);
+    assert.equal(tripReachesStopAfter(null, 21289, 1), null);
+    assert.equal(tripReachesStopAfter(undefined, 21289, 1), null);
+  });
+
+  await t.test("no usable sequence to compare against -> counts any visit (permissive)", () => {
+    assert.equal(tripReachesStopAfter(stopTimes, 21289, undefined), true);
+    assert.equal(tripReachesStopAfter(stopTimes, 21289, "N/A"), true);
+  });
+
+  // The case Josh raised: LUCYGR's Green Loop opens at stop 28325 (sequence
+  // 1) and normally closes there again (sequence 21). Boarding mid-route,
+  // only the closing visit is reachable -- so when a detour removes it, the
+  // opening visit must not be mistaken for the secondary stop being served.
+  await t.test("looping route: only the visit after boarding counts", () => {
+    const looping = [
+      { stop_id: 28325, stop_sequence: 1 },
+      { stop_id: 21441, stop_sequence: 18 },
+      { stop_id: 28325, stop_sequence: 21 },
+    ];
+    assert.equal(tripReachesStopAfter(looping, 28325, 18), true);
+
+    const detoured = looping.filter((stopTime) => stopTime.stop_sequence !== 21);
+    assert.equal(tripReachesStopAfter(detoured, 28325, 18), false);
   });
 });
 
@@ -812,6 +838,91 @@ test("pollRoute", async (t) => {
       { fetchImpl, now: fixedNow, stopSequenceForTrip: () => null }
     );
     assert.equal(requested.filter((url) => url.includes("trip-update")).length, 2);
+  });
+
+  // A trip that serves the configured stop twice (route 107 hits Marshall Rd
+  // & Sloan St at sequence 22, loops via Dennison/Shadeland, and returns at
+  // sequence 33). Both visits are real, boardable arrivals.
+  const loopingTrips = [
+    {
+      trip_id: "957206",
+      direction_id: 0,
+      direction_name: "Westbound",
+      status: "ON-TIME",
+      vehicle_id: "3255",
+      next_stop_sequence: 20,
+      trip_headsign: "Lawrence Park",
+    },
+  ];
+  const loopingUpdate = {
+    trip: { "real-time": true },
+    stop_times: [
+      { stop_id: 22187, stop_name: "Marshall Rd & Long Ln", stop_sequence: 10, eta: 1783312000, departed: false, delay: 0 },
+      { stop_id: 19116, stop_name: "Marshall Rd & Sloan St", stop_sequence: 22, eta: 1783312400, departed: false, delay: 0 },
+      { stop_id: 19116, stop_name: "Marshall Rd & Sloan St", stop_sequence: 33, eta: 1783312800, departed: false, delay: 0 },
+      { stop_id: 19127, stop_name: "Garrett Rd & Burmont Rd", stop_sequence: 34, eta: 1783313000, departed: false, delay: 0 },
+    ],
+  };
+  const loopingFetch = () =>
+    stubFetch([
+      ["detours/?route=107", []],
+      ["trips/?route_id=107", loopingTrips],
+      ["trip-update/?trip_id=957206", loopingUpdate],
+    ]);
+
+  await t.test("a trip serving the stop twice yields two arrivals, both tagged with the same trip", async () => {
+    const result = await pollRoute(
+      { routeId: "107", stopId: 19116, direction: "Westbound" },
+      { fetchImpl: loopingFetch(), now: fixedNow, structuralDirectionId: "0" }
+    );
+    assert.equal(result.etas.length, 2);
+    assert.deepEqual(result.etas.map((e) => e.eta), [1783312400, 1783312800]);
+    // The display slash-joins arrivals sharing a trip, so this equality is
+    // what makes "8m/15m" render instead of "8m, 15m".
+    assert.equal(result.etas[0].tripId, result.etas[1].tripId);
+  });
+
+  // Josh's LUCYGR case: a secondary stop the bus already passed is no use to
+  // someone boarding at the primary stop, even though the trip does serve it.
+  await t.test("a secondary stop already passed does not count as reached", async () => {
+    const result = await pollRoute(
+      { routeId: "107", stopId: 19116, direction: "Westbound", secondaryStopId: 22187 },
+      { fetchImpl: loopingFetch(), now: fixedNow, structuralDirectionId: "0" }
+    );
+    assert.deepEqual(result.etas.map((e) => e.reachesSecondaryStop), [false, false]);
+  });
+
+  await t.test("a secondary stop still ahead counts as reached", async () => {
+    const result = await pollRoute(
+      { routeId: "107", stopId: 19116, direction: "Westbound", secondaryStopId: 19127 },
+      { fetchImpl: loopingFetch(), now: fixedNow, structuralDirectionId: "0" }
+    );
+    assert.deepEqual(result.etas.map((e) => e.reachesSecondaryStop), [true, true]);
+  });
+
+  // Per-arrival, not per-trip: a secondary stop between the two visits is
+  // ahead of the first boarding and behind the second.
+  await t.test("reachesSecondaryStop is decided per arrival, not once per trip", async () => {
+    const update = {
+      trip: { "real-time": true },
+      stop_times: [
+        ...loopingUpdate.stop_times,
+        { stop_id: 29767, stop_name: "Shadeland Av & Bryn Mawr Av", stop_sequence: 29, eta: 1783312600, departed: false, delay: 0 },
+      ],
+    };
+    const result = await pollRoute(
+      { routeId: "107", stopId: 19116, direction: "Westbound", secondaryStopId: 29767 },
+      {
+        fetchImpl: stubFetch([
+          ["detours/?route=107", []],
+          ["trips/?route_id=107", loopingTrips],
+          ["trip-update/?trip_id=957206", update],
+        ]),
+        now: fixedNow,
+        structuralDirectionId: "0",
+      }
+    );
+    assert.deepEqual(result.etas.map((e) => e.reachesSecondaryStop), [true, false]);
   });
 
   // End-to-end replay of the real live payloads captured 2026-07-14 ~00:08

@@ -722,6 +722,48 @@ test("feedHasServiceOn", async (t) => {
   });
 });
 
+test("getHeadsignsSkippingStop ordering", async (t) => {
+  // Two patterns through the same primary stop (21441, sequence 18):
+  //   "Green Loop"    -- serves 28325 at sequence 1 AND again at 21
+  //   "Green Detour"  -- serves 28325 only at sequence 1, then terminates
+  // Only the first genuinely gets a rider from 21441 to 28325.
+  const fileTexts = {
+    "trips.txt":
+      "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed\n" +
+      "LUCYGR,weekday,7001,Green Loop,,0,1,1,1,1\n" +
+      "LUCYGR,weekday,7002,Green Detour,,0,2,2,1,1\n",
+    "stop_times.txt":
+      "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n" +
+      "7001,07:00:00,07:00:00,28325,1,,0,0,,1\n" +
+      "7001,07:26:00,07:26:00,21441,18,,0,0,,1\n" +
+      "7001,07:34:00,07:34:00,28325,21,,0,0,,1\n" +
+      "7002,08:00:00,08:00:00,28325,1,,0,0,,1\n" +
+      "7002,08:26:00,08:26:00,21441,18,,0,0,,1\n",
+    "calendar.txt":
+      "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\n" +
+      "weekday,1,1,1,1,1,0,0,20260101,20261231\n",
+    "calendar_dates.txt": "service_id,date,exception_type\n",
+  };
+  const cache = buildScheduleCache(fileTexts, ["LUCYGR"], [21441, 28325]);
+
+  await t.test("a pattern serving the secondary stop only beforehand counts as skipping it", () => {
+    assert.deepEqual(getHeadsignsSkippingStop(cache, "LUCYGR", 21441, 28325, "0"), ["Green Detour"]);
+  });
+
+  await t.test("a pattern that returns to it afterwards does not", () => {
+    assert.ok(!getHeadsignsSkippingStop(cache, "LUCYGR", 21441, 28325, "0").includes("Green Loop"));
+  });
+
+  await t.test("agrees with the live per-trip check in septa-client", () => {
+    // tripReachesStopAfter(stop_times, 28325, 18) is true for Green Loop and
+    // false for Green Detour -- the static and live checks must not disagree,
+    // since schedule-supplement arrivals are judged by this one alone.
+    const skipping = getHeadsignsSkippingStop(cache, "LUCYGR", 21441, 28325, "0");
+    assert.equal(skipping.includes("Green Loop"), false);
+    assert.equal(skipping.includes("Green Detour"), true);
+  });
+});
+
 test("getLastStopSequence", async (t) => {
   // Shapes taken from the real 2026-09-02 feed: trip 8001 is an ordinary
   // single-visit trip; 8002 mirrors route 95's Metroplex spur (stop 5909 at

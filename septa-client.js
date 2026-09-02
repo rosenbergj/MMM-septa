@@ -308,21 +308,37 @@ function findStopName(stopTimes, stopId) {
   return (match && match.stop_name) || null;
 }
 
-// Ground-truth check for whether a specific trip's own stop_times includes a
-// given stop, anywhere in its sequence (past or future) -- unlike the
-// static-schedule headsign check in gtfs-schedule.js's
-// getHeadsignsSkippingStop, this is per-trip, not per-headsign. That matters
-// because SEPTA doesn't always give a distinct headsign to a distinct
-// pattern: route 17's "Broad-Pattison" headsign, for example, covers both a
-// normal-length trip and a much longer weekend Navy Yard extension, so the
-// headsign-level check alone can't tell them apart. Returns null (not
-// false) when stopTimes isn't available at all (e.g. this trip's
-// trip-update fetch failed) -- callers should treat that as "unknown, fall
-// back to the headsign check" rather than "confirmed skip".
-function tripReachesStop(stopTimes, stopId) {
+// Ground-truth check for whether a specific trip serves a given stop *after*
+// the point the rider would board -- unlike the static-schedule headsign
+// check in gtfs-schedule.js's getHeadsignsSkippingStop, this is per-trip, not
+// per-headsign. That matters because SEPTA doesn't always give a distinct
+// headsign to a distinct pattern: route 17's "Broad-Pattison" headsign, for
+// example, covers both a normal-length trip and a much longer weekend Navy
+// Yard extension, so the headsign-level check alone can't tell them apart.
+//
+// Only visits later in the trip count. A secondary stop the bus already
+// passed before reaching the configured stop is no use to someone boarding
+// there, and on a looping route the same stop_id legitimately appears on
+// both sides: LUCYGR's "Green Loop" serves stop 28325 at sequence 1 and again
+// at sequence 21. If a detour stops it looping back, the trip still lists
+// 28325 at sequence 1, and counting that would report a secondary stop the
+// rider cannot actually reach.
+//
+// Returns null (not false) when stopTimes isn't available at all (e.g. this
+// trip's trip-update fetch failed, or the fetch was skipped) -- callers
+// should treat that as "unknown, fall back to the headsign check" rather than
+// "confirmed skip". A non-numeric afterSequence falls back to counting any
+// visit, since with no position to compare against the safer answer is the
+// permissive one.
+function tripReachesStopAfter(stopTimes, stopId, afterSequence) {
   if (!Array.isArray(stopTimes)) return null;
   const targetStopId = Number(stopId);
-  return stopTimes.some((stopTime) => stopTime && Number(stopTime.stop_id) === targetStopId);
+  const from = Number(afterSequence);
+  return stopTimes.some((stopTime) => {
+    if (!stopTime || Number(stopTime.stop_id) !== targetStopId) return false;
+    if (!Number.isFinite(from)) return true;
+    return Number(stopTime.stop_sequence) > from;
+  });
 }
 
 // Wraps a fetch implementation so that identical URLs requested inside the
@@ -562,14 +578,24 @@ async function pollRoute(routeConfig, options = {}) {
     const tracked = isTripTracked(tripEntry, result.value && result.value.trip);
     const noGpsSource = isNoGpsSource(tripEntry);
     const tripId = (tripEntry && tripEntry.trip_id) || null;
-    // Only computed when a secondary stop is configured, and only added to
-    // the eta object in that case -- see tripReachesStop's doc comment for
-    // why this per-trip check exists alongside (and takes priority over)
-    // node_helper.js's headsign-level static-schedule check.
-    const secondaryStopFields = routeConfig.secondaryStopId
-      ? { reachesSecondaryStop: tripReachesStop(stopTimes, routeConfig.secondaryStopId) }
-      : {};
     for (const stopTime of filterStopTimes(stopTimes, stopId, nowSeconds)) {
+      // Computed per *arrival*, not per trip: a trip can serve the configured
+      // stop more than once (route 107 hits Marshall Rd & Sloan St at
+      // sequences 22 and 33), and whether the secondary stop is still ahead
+      // depends on which of those visits the rider boards at. Only added to
+      // the eta object when a secondary stop is configured at all -- see
+      // tripReachesStopAfter's doc comment for why this per-trip check exists
+      // alongside (and takes priority over) node_helper.js's headsign-level
+      // static-schedule check.
+      const secondaryStopFields = routeConfig.secondaryStopId
+        ? {
+            reachesSecondaryStop: tripReachesStopAfter(
+              stopTimes,
+              routeConfig.secondaryStopId,
+              stopTime.stop_sequence
+            ),
+          }
+        : {};
       etas.push({ eta: Number(stopTime.eta), headsign, tracked, tripId, noGpsSource, ...secondaryStopFields });
     }
   });
@@ -638,7 +664,7 @@ module.exports = {
   isTripPastStop,
   filterStopTimes,
   findStopName,
-  tripReachesStop,
+  tripReachesStopAfter,
   computeIsFresh,
   alignedDelayMs,
   makeCachingFetch,

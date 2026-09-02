@@ -823,10 +823,55 @@ function getTerminusExclusionDirectionId(cache, routeId, stopId) {
 // on. Used to flag "this headsign doesn't stop at the secondary stop"
 // regardless of which specific trip happens to be next. directionId is
 // applied to both lookups -- see getScheduledArrivals's doc comment.
+// Headsigns that reach `secondaryStopId` *later in the trip* than
+// `primaryStopId` -- the static-schedule counterpart to septa-client.js's
+// tripReachesStopAfter, and order-aware for the same reason. A pattern that
+// serves the secondary stop only before the primary one is no use to someone
+// boarding at the primary stop, and on a looping route the same stop_id
+// appears on both sides of it (LUCYGR's "Green Loop" serves stop 28325 at
+// sequence 1 and again at sequence 21). Comparing headsign *sets*, as this
+// used to, counted the earlier visit and reported such a pattern as reaching
+// a stop the rider can't actually get to.
+//
+// A headsign qualifies if *any* of its trips manages it, and each trip is
+// judged on its own earliest primary visit against its own latest secondary
+// visit -- the most permissive reading, so a genuine connection is never
+// flagged as a skip.
+function getHeadsignsReachingStopAfter(cache, routeId, primaryStopId, secondaryStopId, directionId) {
+  const targetRouteId = String(routeId);
+  const primary = Number(primaryStopId);
+  const secondary = Number(secondaryStopId);
+  const targetDirectionId = directionId == null ? null : String(directionId);
+
+  const primaryByTrip = new Map(); // tripId -> { headsign, stopSequence } (earliest visit)
+  const secondaryByTrip = new Map(); // tripId -> latest stopSequence
+  for (const entry of cache.entries) {
+    if (entry.routeId !== targetRouteId) continue;
+    if (targetDirectionId != null && entry.directionId !== targetDirectionId) continue;
+    if (entry.stopId === primary) {
+      const seen = primaryByTrip.get(entry.tripId);
+      if (!seen || entry.stopSequence < seen.stopSequence) {
+        primaryByTrip.set(entry.tripId, { headsign: entry.headsign, stopSequence: entry.stopSequence });
+      }
+    }
+    if (entry.stopId === secondary) {
+      const seen = secondaryByTrip.get(entry.tripId);
+      if (seen == null || entry.stopSequence > seen) secondaryByTrip.set(entry.tripId, entry.stopSequence);
+    }
+  }
+
+  const reaching = new Set();
+  for (const [tripId, visit] of primaryByTrip) {
+    const secondarySequence = secondaryByTrip.get(tripId);
+    if (secondarySequence != null && secondarySequence > visit.stopSequence) reaching.add(visit.headsign);
+  }
+  return reaching;
+}
+
 function getHeadsignsSkippingStop(cache, routeId, primaryStopId, secondaryStopId, directionId) {
   const primaryHeadsigns = getAllHeadsignsForStop(cache, routeId, primaryStopId, directionId);
-  const secondaryHeadsigns = new Set(getAllHeadsignsForStop(cache, routeId, secondaryStopId, directionId));
-  return primaryHeadsigns.filter((headsign) => !secondaryHeadsigns.has(headsign));
+  const reaching = getHeadsignsReachingStopAfter(cache, routeId, primaryStopId, secondaryStopId, directionId);
+  return primaryHeadsigns.filter((headsign) => !reaching.has(headsign));
 }
 
 // Downloads the live feed and extracts just the requested files as text.
@@ -1195,6 +1240,7 @@ module.exports = {
   FEEDS_DIR,
   getAllHeadsignsForStop,
   getHeadsignsSkippingStop,
+  getHeadsignsReachingStopAfter,
   fetchScheduleCache,
   fetchRouteStopPatterns,
   loadCacheFromDisk,

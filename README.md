@@ -169,6 +169,13 @@ two directions usually get two different stop_ids), arrivals still show up
 even when SEPTA's live feed can't confirm a name at all, and a mismatched
 `direction` just logs a warning instead of hiding arrivals.
 
+Only stops **later in the trip** count for `secondaryStopId`. If a route
+passes your secondary stop before reaching your configured stop and then
+again afterwards, only the later visit matters -- and if a detour removes
+that later visit, the trip is flagged as skipping the secondary stop even
+though it technically served it earlier. A stop the bus has already passed
+is no use to you when you board.
+
 A `routeId` that doesn't match any real SEPTA route (a typo, a
 discontinued route, etc) fails silently — it just never has any arrivals,
 indistinguishable from a real route that legitimately has nothing running
@@ -462,6 +469,13 @@ rather than one per route.
   rotate through. Set `showHeadsigns: false` to hide both the destination
   line(s) and the footnote markers for a more compact display — see
   "Secondary stop" above for how it also changes secondary-stop handling.
+  Two arrival times joined by a slash (e.g. "8m/15m") are the **same
+  vehicle** serving your stop twice on one trip -- a mid-route loop or an
+  out-and-back spur, which a handful of SEPTA routes really do (route 107
+  serves Marshall Rd & Sloan St twice, about six minutes apart). A note
+  saying so appears below the row whenever that happens. Two visits are
+  only joined when they're next to each other in the list; if a different
+  bus falls between them they're shown normally.
   The nearest arrival is shown larger/brighter than the
   rest. Countdowns round **down**, so "3m" means at least three minutes
   away and a bus under a minute out shows "0m" -- the display would
