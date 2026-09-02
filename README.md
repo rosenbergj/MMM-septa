@@ -156,7 +156,8 @@ MagicMirror module option, outside `config`) to override it.
 | `retryIntervalSeconds`    | `30`    | Backoff before retrying after a failed poll                              |
 | `warnMinutes`             | `5`     | Arrivals at or under this many minutes are styled as "urgent" (global default; can be overridden per route) |
 | `countdownWithinMinutes`  | `30`    | Arrivals at or under this many minutes show as "Nm"; farther out shows a clock time (e.g. "5:47 PM"), honoring the mirror's global `timeFormat` (12/24h) |
-| `countdownTickSeconds`    | `15`    | How often the displayed "Nm" countdown re-renders client-side            |
+| `countdownTickSeconds`    | `15`    | How often the displayed "Nm" countdown re-renders client-side. These re-renders are instant (no fade) -- see "How often the display fades" below |
+| `animationSpeed`          | `1000`  | Length in ms of the fade shown when a poll brings genuinely new data. Set `0` for no fade at all |
 | `useScheduleSupplement`   | `true`  | Include arrivals SEPTA hasn't fully GPS-confirmed yet, plus static-schedule arrivals up to `scheduleHorizonMinutes` out that live tracking doesn't cover yet (both shown as "~Nm", italic/muted). Set `false` to show only GPS-confirmed arrivals. |
 | `scheduleHorizonMinutes`  | `60`    | How many minutes ahead the static-schedule supplement reaches. How far SEPTA's own live feed reaches varies a lot (largely with how near the stop is to the start of a route or variant); this fills in the rest. Raise to show arrivals farther out, lower for a shorter-term view; still capped by `maxArrivals`, and it only adds arrivals *past* the furthest live-tracked one. Only applies when `useScheduleSupplement` is `true`. Capped at 12 hours (720). `0`/`-1` mean unlimited and resolve to the cap, as does anything above it; a non-numeric value falls back to `60`. To switch the supplement off, use `useScheduleSupplement: false`. |
 | `showHeadsigns`           | `true`  | Show each trip's headsign (see below) below the route, and footnote markers when several are mixed together. Global default, overridable per route. Set `false` to hide both and compact the display -- see "Secondary stop" below for how this interacts with `secondaryStopId`. |
@@ -366,6 +367,26 @@ don't copy that into your real `config.js`.
 
 ## How it works
 
+### How often the display fades
+
+The module fades out and back in **only when a poll actually brings something
+new to show** -- roughly once per `refreshIntervalSeconds`, and not even then
+if SEPTA returned the same arrivals as last time. The fade is meant to read as
+"this data just changed", so it's worth keeping rare.
+
+Two things it deliberately does *not* fade for:
+
+- **Countdown ticks.** The "Nm" values re-render every
+  `countdownTickSeconds`, but instantly, with no fade. With several arrivals
+  on screen at once at least one digit changes on most ticks, so fading these
+  would blink the module roughly every 15-20 seconds.
+- **Polls that changed nothing.** If a refresh produces a display identical to
+  what's already on screen, nothing is re-rendered at all.
+
+Configured routes are also polled on a shared schedule, spread across a few
+seconds, so one refresh cycle arrives as a single batch and produces one fade
+rather than one per route.
+
 - `septa-client.js` — pure SEPTA API client + filtering logic (detours,
   trip filtering, stop-time filtering, staleness), fully unit tested.
 - `node_helper.js` — runs one polling loop per configured route on the
@@ -373,7 +394,7 @@ don't copy that into your real `config.js`.
   notifications.
 - `MMM-septa.js` — renders the last known state per route, and re-renders
   the "Nm" countdowns every `countdownTickSeconds` without needing a
-  fresh backend fetch. When a detour affects the configured stop, shows
+  fresh backend fetch (see "How often the display fades"). When a detour affects the configured stop, shows
   "DETOUR" (with SEPTA's stated reason, e.g. "DETOUR: Sinkhole", if one
   was provided) instead of arrival times. The route label is followed by
   a small direction abbreviation (e.g. "17 NB"). The route number itself is

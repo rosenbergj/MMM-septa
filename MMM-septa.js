@@ -20,6 +20,17 @@ function septaMinutesUntil(etaSeconds, nowMs) {
   return Math.max(0, Math.round((etaSeconds * 1000 - nowMs) / 60000));
 }
 
+// How long a burst of SEPTA_UPDATEs must go quiet before it's rendered, and
+// the hard ceiling on how long that wait can be extended. See
+// scheduleDataRender for why a burst happens at all.
+//
+// Coupled to node_helper.js's ROUTE_STAGGER_MAX_GAP_MS (1500ms), which is
+// what keeps successive routes in one cycle closer together than this window
+// -- that's the condition for the whole cycle collapsing into a single fade.
+// Lowering this below that constant means a cycle fades once per route again.
+const DATA_RENDER_QUIET_MS = 2000;
+const DATA_RENDER_MAX_WAIT_MS = 10000;
+
 // detourReason/stopName/headsign come from SEPTA's API, not our own config,
 // so escape them before dropping them into innerHTML.
 function septaEscapeHtml(text) {
@@ -235,6 +246,14 @@ Module.register("MMM-septa", {
 
   start() {
     this.routeStates = {}; // routeKey -> latest SEPTA_UPDATE payload
+    // outerHTML of the DOM we last handed to updateDom, so a re-render that
+    // would produce byte-identical markup can be skipped -- see
+    // renderIfChanged.
+    this.lastRenderSignature = null;
+    // Debounce state for coalescing a burst of SEPTA_UPDATEs into a single
+    // animated render -- see scheduleDataRender.
+    this.pendingRenderTimer = null;
+    this.pendingRenderSince = null;
 
     this.sendSocketNotification("SEPTA_CONFIG", {
       instanceId: this.identifier,
@@ -245,8 +264,21 @@ Module.register("MMM-septa", {
       scheduleHorizonMinutes: this.config.scheduleHorizonMinutes,
     });
 
+    // Client-side countdown tick -- re-renders the "Nm" values between polls,
+    // no network traffic. Deliberately *unanimated* (speed 0, an instant
+    // swap). With several arrivals on screen at once, at least one countdown
+    // digit changes on roughly 4 out of 5 ticks, so animating this would fade
+    // the whole module about every 18 seconds -- which is what made the
+    // display look like it was constantly refreshing. The fade is reserved
+    // for genuinely new data arriving from node_helper (see
+    // scheduleDataRender), so it means "SEPTA told us something new" rather
+    // than "a clock ticked".
     setInterval(() => {
-      this.updateDom(this.config.animationSpeed);
+      // A pending data render owns the next paint. Without this, the tick
+      // would swap new arrivals in unanimated first, and the debounced render
+      // would then find nothing changed and skip the fade entirely.
+      if (this.pendingRenderTimer) return;
+      this.renderIfChanged(0);
     }, this.config.countdownTickSeconds * 1000);
   },
 
@@ -269,7 +301,42 @@ Module.register("MMM-septa", {
     if (notification !== "SEPTA_UPDATE") return;
     if (payload.instanceId !== this.identifier) return;
     this.routeStates[payload.routeKey] = payload;
-    this.updateDom(this.config.animationSpeed);
+    this.scheduleDataRender();
+  },
+
+  // Renders only when doing so would actually change the screen. getDom() has
+  // no side effects (it reads this.routeStates/this.config and builds a fresh
+  // table), so building it twice -- once here to compare, once again inside
+  // updateDom -- is safe, and trivial for a table this size.
+  //
+  // Worth it even on the data path: a poll cycle that returns the same
+  // arrivals as the last one is common (SEPTA's own data doesn't necessarily
+  // move in 120 seconds), and there's no reason to fade the module for it.
+  renderIfChanged(speed) {
+    const signature = this.getDom().outerHTML;
+    if (signature === this.lastRenderSignature) return;
+    this.lastRenderSignature = signature;
+    this.updateDom(speed);
+  },
+
+  // Each configured row polls on its own timer, and node_helper deliberately
+  // spreads those across a few seconds within each cycle (see its
+  // ROUTE_STAGGER_SPREAD_MS), so one refresh arrives as a short burst of
+  // SEPTA_UPDATEs rather than a single event. Rendering each one separately
+  // would fade the module once per row per cycle, so instead wait for the
+  // burst to go quiet (DATA_RENDER_QUIET_MS with no further updates) and fade
+  // once for the whole batch. DATA_RENDER_MAX_WAIT_MS caps the total wait, so
+  // routes updating in a steady trickle can't defer the render indefinitely.
+  scheduleDataRender() {
+    const now = Date.now();
+    if (this.pendingRenderSince == null) this.pendingRenderSince = now;
+    clearTimeout(this.pendingRenderTimer);
+    const remainingCap = DATA_RENDER_MAX_WAIT_MS - (now - this.pendingRenderSince);
+    this.pendingRenderTimer = setTimeout(() => {
+      this.pendingRenderTimer = null;
+      this.pendingRenderSince = null;
+      this.renderIfChanged(this.config.animationSpeed);
+    }, Math.max(0, Math.min(DATA_RENDER_QUIET_MS, remainingCap)));
   },
 
   getDom() {

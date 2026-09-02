@@ -294,6 +294,36 @@ function tripReachesStop(stopTimes, stopId) {
   return stopTimes.some((stopTime) => stopTime && Number(stopTime.stop_id) === targetStopId);
 }
 
+// How long until the next poll, if polls are to land on a shared wall-clock
+// grid of intervalSeconds rather than "intervalSeconds after whenever this
+// cycle happened to finish".
+//
+// Two reasons to align. First, each configured row self-reschedules
+// independently, so rows drift to wherever their own first cycle started and
+// their updates trickle into the display at unrelated moments; aligning them
+// makes one cycle arrive as a single batch the frontend can render with one
+// fade (see MMM-septa.js's scheduleDataRender). Second, it removes the
+// cycle's own duration from the wait -- the old scheme spaced polls at
+// interval + duration (121s for a 1s cycle on a 120s interval), this spaces
+// them at exactly interval.
+//
+// offsetMs shifts this route's grid off the shared one by a fixed amount, so
+// that aligning every row doesn't turn each tick into a thundering herd of
+// simultaneous requests against an undocumented API -- node_helper derives a
+// stable per-route offset (see routeStaggerMs).
+//
+// Returns a delay in (0, intervalMs]: a cycle finishing exactly on a grid
+// point waits a full interval rather than firing again immediately. A
+// non-positive or non-finite interval is passed straight through, preserving
+// whatever setTimeout already did with a nonsense configured value.
+function alignedDelayMs(nowMs, intervalSeconds, offsetMs = 0) {
+  const intervalMs = intervalSeconds * 1000;
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) return intervalMs;
+  const normalizedOffset = (((offsetMs % intervalMs) + intervalMs) % intervalMs) || 0;
+  const sinceGridPoint = (((nowMs - normalizedOffset) % intervalMs) + intervalMs) % intervalMs;
+  return intervalMs - sinceGridPoint;
+}
+
 // Data is "fresh" until it ages past 3x the refresh interval, matching
 // lightpi's get_data() staleness window (fetchers.py:212-226).
 function computeIsFresh(lastFetchTime, refreshIntervalSeconds, now = Date.now()) {
@@ -507,6 +537,7 @@ module.exports = {
   findStopName,
   tripReachesStop,
   computeIsFresh,
+  alignedDelayMs,
   pollRoute,
   mergeScheduledArrivals,
 };

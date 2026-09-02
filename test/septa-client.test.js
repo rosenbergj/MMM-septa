@@ -14,6 +14,7 @@ const {
   findStopName,
   tripReachesStop,
   computeIsFresh,
+  alignedDelayMs,
   pollRoute,
   mergeScheduledArrivals,
   resolveRouteLabelColor,
@@ -365,6 +366,77 @@ test("computeIsFresh", async (t) => {
   await t.test("age just over 3x refresh interval -> false", () => {
     const now = 1_000_000;
     assert.equal(computeIsFresh(now - (120_000 * 3 + 1), 120, now), false);
+  });
+});
+
+test("alignedDelayMs", async (t) => {
+  const INTERVAL = 120;
+  const INTERVAL_MS = INTERVAL * 1000;
+
+  await t.test("a cycle finishing 1s past a grid point waits out the rest of the interval", () => {
+    assert.equal(alignedDelayMs(INTERVAL_MS + 1000, INTERVAL), 119_000);
+  });
+
+  await t.test("finishing exactly on a grid point waits a full interval, never 0", () => {
+    assert.equal(alignedDelayMs(0, INTERVAL), INTERVAL_MS);
+    assert.equal(alignedDelayMs(INTERVAL_MS, INTERVAL), INTERVAL_MS);
+    assert.equal(alignedDelayMs(INTERVAL_MS * 7, INTERVAL), INTERVAL_MS);
+  });
+
+  // The property Josh asked about: aligning must never stretch the effective
+  // refresh rate. Whatever a cycle costs, the *next* start lands exactly one
+  // interval after the previous start -- unlike the old
+  // "interval after this one finished" scheme, which spaced them at
+  // interval + duration.
+  await t.test("steady-state spacing is exactly one interval, whatever the cycle duration", () => {
+    for (const durationMs of [0, 1, 1000, 4500, 60_000, 119_999]) {
+      const startedAt = INTERVAL_MS * 10;
+      const finishedAt = startedAt + durationMs;
+      const nextStart = finishedAt + alignedDelayMs(finishedAt, INTERVAL);
+      assert.equal(nextStart - startedAt, INTERVAL_MS, `duration ${durationMs}ms`);
+    }
+  });
+
+  await t.test("a cycle overrunning its interval aligns to the next grid point, still no worse than unaligned", () => {
+    const startedAt = INTERVAL_MS * 10;
+    const finishedAt = startedAt + 130_000; // overran a 120s interval
+    const nextStart = finishedAt + alignedDelayMs(finishedAt, INTERVAL);
+    assert.equal(nextStart - startedAt, INTERVAL_MS * 2); // 240s, vs 250s unaligned
+  });
+
+  await t.test("result always lands in (0, intervalMs]", () => {
+    for (let nowMs = 0; nowMs < INTERVAL_MS * 2; nowMs += 997) {
+      const delay = alignedDelayMs(nowMs, INTERVAL);
+      assert.ok(delay > 0 && delay <= INTERVAL_MS, `nowMs ${nowMs} -> ${delay}`);
+    }
+  });
+
+  await t.test("offset shifts this route's grid off the shared one", () => {
+    assert.equal(alignedDelayMs(0, INTERVAL, 5000), 5000);
+    assert.equal(alignedDelayMs(5000, INTERVAL, 5000), INTERVAL_MS);
+    assert.equal(alignedDelayMs(6000, INTERVAL, 5000), INTERVAL_MS - 1000);
+  });
+
+  await t.test("two routes with different offsets stay that far apart on every tick", () => {
+    const a = 1000;
+    const b = 4000;
+    for (let nowMs = 0; nowMs < INTERVAL_MS * 2; nowMs += 1013) {
+      const nextA = nowMs + alignedDelayMs(nowMs, INTERVAL, a);
+      const nextB = nowMs + alignedDelayMs(nowMs, INTERVAL, b);
+      assert.notEqual(nextA, nextB, `nowMs ${nowMs}`);
+    }
+  });
+
+  await t.test("offsets at or beyond one interval normalize instead of overshooting", () => {
+    assert.equal(alignedDelayMs(0, INTERVAL, INTERVAL_MS), INTERVAL_MS);
+    assert.equal(alignedDelayMs(0, INTERVAL, INTERVAL_MS + 5000), 5000);
+    assert.equal(alignedDelayMs(0, INTERVAL, -5000), INTERVAL_MS - 5000);
+  });
+
+  await t.test("a nonsense interval passes straight through, preserving old setTimeout behavior", () => {
+    assert.equal(alignedDelayMs(1000, 0), 0);
+    assert.equal(alignedDelayMs(1000, -5), -5000);
+    assert.ok(Number.isNaN(alignedDelayMs(1000, NaN)));
   });
 });
 

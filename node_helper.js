@@ -2,7 +2,7 @@
 
 const path = require("path");
 const NodeHelper = require("node_helper");
-const { pollRoute, mergeScheduledArrivals, fetchRoutes, resolveRouteLabelColor } = require("./septa-client.js");
+const { pollRoute, mergeScheduledArrivals, fetchRoutes, resolveRouteLabelColor, alignedDelayMs } = require("./septa-client.js");
 const {
   fetchScheduleCache,
   getScheduledArrivals,
@@ -29,9 +29,42 @@ const ROUTE_COLORS_CACHE_PATH = path.join(__dirname, "route-colors-cache.json");
 // display's "!" indicator lights up -- avoids flickering it on for an
 // isolated one-cycle blip (e.g. during a flaky-but-recovering SEPTA outage).
 const TRIP_ERROR_DISPLAY_THRESHOLD = 3;
+// Routes are spread across this window within each aligned polling tick.
+// Aligning every route onto the same grid (see septa-client.js's
+// alignedDelayMs) is what lets the display batch a whole cycle into one fade,
+// but aligning them *exactly* would fire every route's requests at the same
+// instant -- for a four-row config that's a burst of ~29 requests, including
+// up to ~20 concurrent /trip-update/ calls, at one undocumented API.
+const ROUTE_STAGGER_SPREAD_MS = 5000;
+// ...but no two adjacent routes may be further apart than this. The frontend
+// coalesces a cycle's updates by waiting for the burst to go quiet
+// (MMM-septa.js's DATA_RENDER_QUIET_MS, 2000ms), and that's a *trailing*
+// debounce: it collapses the whole burst into one fade only while each
+// successive update lands within the quiet window of the one before it. So
+// what has to stay under 2000ms is the gap between adjacent slots, not the
+// total spread. Without this cap a two-route config would sit 2500ms apart
+// (ROUTE_STAGGER_SPREAD_MS / 2) and fade twice per cycle. Keep it comfortably
+// below DATA_RENDER_QUIET_MS; the two constants are coupled across the
+// frontend/backend split, so changing either means rechecking the other.
+const ROUTE_STAGGER_MAX_GAP_MS = 1500;
 
 function routeKey(route) {
   return `${route.routeId}:${route.stopId}:${route.direction}`;
+}
+
+// This route's offset within the stagger window: slot `index` of `total`,
+// evenly spaced, with the per-slot gap capped so the frontend can still
+// coalesce the burst (see ROUTE_STAGGER_MAX_GAP_MS). Assigned by position in
+// the configured route list rather than by hashing the route's key -- a hash
+// is stable across config changes but clusters (measured on a real four-row
+// config, one plausible instanceId put three rows inside the same second),
+// and even spacing is the whole point of staggering. Deterministic either
+// way: the same config produces the same slots on every restart, and only
+// adding or removing a configured route reshuffles them, which costs nothing.
+function routeStaggerMs(index, total) {
+  if (!(total > 1)) return 0;
+  const gapMs = Math.min(ROUTE_STAGGER_MAX_GAP_MS, ROUTE_STAGGER_SPREAD_MS / total);
+  return Math.round(index * gapMs);
 }
 
 module.exports = NodeHelper.create({
@@ -270,6 +303,11 @@ module.exports = NodeHelper.create({
     // Clamped/defaulted in route-config.js -- see resolveScheduleHorizonMinutes
     // for which bad values land on the ceiling and which on the default.
     const resolvedHorizon = resolveScheduleHorizonMinutes(scheduleHorizonMinutes);
+    // Flattened first, before any state is created, purely so routeStaggerMs
+    // knows how many routes it's spreading across. Already-registered routes
+    // stay in this list (they're skipped below, not re-registered) so that
+    // re-receiving the same SEPTA_CONFIG assigns the same slots.
+    const registrations = [];
     for (const route of routes || []) {
       // A merged route entry ("T2,T3,T4,T5") fans out here into N fully
       // independent single-route registrations -- same polling, same
@@ -290,53 +328,57 @@ module.exports = NodeHelper.create({
         // every sub-route's own direction is known).
         const direction = resolveDirectionForRoute(route.direction, subRouteId);
         const subRoute = { routeId: subRouteId, stopId: route.stopId, direction };
-        const fullKey = `${instanceId}::${routeKey(subRoute)}`;
-        if (this.routes.has(fullKey)) continue; // already polling this route
-
-        const state = {
-          config: {
-            routeId: subRouteId,
-            stopId: route.stopId,
-            direction,
-            secondaryStopId: route.secondaryStopId,
-          },
-          merged,
-          useScheduleSupplement: useScheduleSupplement !== false,
-          scheduleHorizonMinutes: resolvedHorizon,
-          instanceId,
-          routeKey: routeKey(subRoute),
-          refreshIntervalSeconds: refreshIntervalSeconds || 120,
-          retryIntervalSeconds: retryIntervalSeconds || 30,
-          etas: [],
-          detour: false,
-          detourReason: null,
-          stopName: null,
-          directionId: null,
-          // null until validateSecondaryStopIds runs (once the schedule cache
-          // is available); treated as valid/unconfirmed until then so the
-          // feature works as before during that window -- see runCycle.
-          secondaryStopIdValid: null,
-          // Likewise null until validateStopIds runs -- the display only
-          // flags an invalid stopId on a definite false, so the row looks
-          // completely normal during the startup window rather than
-          // flashing a config error at every restart.
-          stopIdValid: null,
-          secondaryStopDetour: false,
-          secondaryStopName: null,
-          direction,
-          hasTripError: false,
-          // Raw per-cycle failure count, reset to 0 on any success -- hasTripError
-          // (sent to the display) only flips on once this hits the threshold below,
-          // so an isolated one-cycle blip during a flaky API doesn't flicker the
-          // indicator on and off every refresh.
-          consecutiveTripErrorCycles: 0,
-          lastFetchTime: null,
-          timer: null,
-        };
-        this.routes.set(fullKey, state);
-        this.runCycle(fullKey); // kick off the first fetch immediately
+        registrations.push({ route, subRouteId, direction, subRoute, merged, fullKey: `${instanceId}::${routeKey(subRoute)}` });
       }
     }
+
+    registrations.forEach(({ route, subRouteId, direction, subRoute, merged, fullKey }, index) => {
+      if (this.routes.has(fullKey)) return; // already polling this route
+
+      const state = {
+        config: {
+          routeId: subRouteId,
+          stopId: route.stopId,
+          direction,
+          secondaryStopId: route.secondaryStopId,
+        },
+        merged,
+        useScheduleSupplement: useScheduleSupplement !== false,
+        scheduleHorizonMinutes: resolvedHorizon,
+        instanceId,
+        routeKey: routeKey(subRoute),
+        refreshIntervalSeconds: refreshIntervalSeconds || 120,
+        retryIntervalSeconds: retryIntervalSeconds || 30,
+        etas: [],
+        detour: false,
+        detourReason: null,
+        stopName: null,
+        directionId: null,
+        // null until validateSecondaryStopIds runs (once the schedule cache
+        // is available); treated as valid/unconfirmed until then so the
+        // feature works as before during that window -- see runCycle.
+        secondaryStopIdValid: null,
+        // Likewise null until validateStopIds runs -- the display only
+        // flags an invalid stopId on a definite false, so the row looks
+        // completely normal during the startup window rather than
+        // flashing a config error at every restart.
+        stopIdValid: null,
+        secondaryStopDetour: false,
+        secondaryStopName: null,
+        direction,
+        hasTripError: false,
+        // Raw per-cycle failure count, reset to 0 on any success -- hasTripError
+        // (sent to the display) only flips on once this hits the threshold below,
+        // so an isolated one-cycle blip during a flaky API doesn't flicker the
+        // indicator on and off every refresh.
+        consecutiveTripErrorCycles: 0,
+        lastFetchTime: null,
+        timer: null,
+        staggerMs: routeStaggerMs(index, registrations.length),
+      };
+      this.routes.set(fullKey, state);
+      this.runCycle(fullKey); // kick off the first fetch immediately
+    });
     // No eager routeId validation here. It used to be safe because SEPTA's
     // /routes/ list didn't depend on what was configured, but the GTFS cache
     // that replaced it is scoped to the currently configured routes -- so
@@ -499,11 +541,22 @@ module.exports = NodeHelper.create({
         scheduleUnavailable,
       });
 
-      state.timer = setTimeout(() => this.runCycle(fullKey), state.refreshIntervalSeconds * 1000);
+      // Success re-schedules onto the shared grid (offset by this route's own
+      // stagger slot); the very first cycle after registration runs
+      // immediately and off-grid, so this is where a route snaps into place --
+      // always by shortening its next wait, never lengthening it.
+      state.timer = setTimeout(
+        () => this.runCycle(fullKey),
+        alignedDelayMs(Date.now(), state.refreshIntervalSeconds, state.staggerMs)
+      );
     } catch (err) {
       console.error(
         `MMM-septa: route ${state.routeKey} fetch failed: ${err.message}; retrying in ${state.retryIntervalSeconds}s`
       );
+      // Deliberately *not* grid-aligned: a failing route should retry on its
+      // own short backoff and recover as soon as it can, rather than waiting
+      // out the rest of a slot it isn't currently earning. It rejoins the grid
+      // on its next success, via the aligned path above.
       state.timer = setTimeout(() => this.runCycle(fullKey), state.retryIntervalSeconds * 1000);
     }
   },
