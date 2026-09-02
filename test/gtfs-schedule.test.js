@@ -617,13 +617,46 @@ test("planFeedRetention", async (t) => {
     assert.deepEqual(versions(evict), ["v202609060"]);
   });
 
-  // Josh's identified failure mode, accepted rather than defended against --
-  // asserted here so the behavior is deliberate and visible rather than a
-  // surprise if it ever happens.
-  await t.test("a third distinct day evicts the oldest, reopening the coverage gap (known, accepted)", () => {
+  await t.test("a third distinct day evicts the oldest when nothing needs protecting", () => {
     const { keep, evict } = planFeedRetention([aug, sep6], sep7);
     assert.deepEqual(versions(keep), ["v202609060", "v202609070"]);
     assert.deepEqual(versions(evict), ["v202608233"]);
+  });
+
+  // Two forward-dated feeds arriving back to back is what would otherwise
+  // evict the only feed answering for today and reopen the gap the whole
+  // feature exists to close. The age rule yields to coverage here.
+  await t.test("the last feed covering today is held back rather than aged out", () => {
+    const { keep, evict } = planFeedRetention([aug, sep6], sep7, { coveringVersions: ["v202608233"] });
+    assert.deepEqual(versions(keep), ["v202608233", "v202609060", "v202609070"]);
+    assert.deepEqual(evict, []);
+  });
+
+  await t.test("no protection needed once a feed inside the window covers today", () => {
+    const { keep, evict } = planFeedRetention([aug, sep6], sep7, { coveringVersions: ["v202609060"] });
+    assert.deepEqual(versions(keep), ["v202609060", "v202609070"]);
+    assert.deepEqual(versions(evict), ["v202608233"]);
+  });
+
+  await t.test("the store shrinks back to two days once the protected feed stops being the only one", () => {
+    const sep8 = { version: "v202609080", day: "20260908" };
+    const { keep } = planFeedRetention([aug, sep6, sep7], sep8, { coveringVersions: ["v202609070", "v202609080"] });
+    assert.deepEqual(versions(keep), ["v202609070", "v202609080"]);
+  });
+
+  await t.test("rescues the NEWEST covering feed, so the store doesn't hoard the oldest", () => {
+    const { keep } = planFeedRetention([aug, sep6], sep7, {
+      coveringVersions: ["v202608233", "v202609060"],
+    });
+    // sep6 is inside the age window anyway, so nothing is rescued at all.
+    assert.deepEqual(versions(keep), ["v202609060", "v202609070"]);
+
+    const older = { version: "v202608010", day: "20260801" };
+    const rescued = planFeedRetention([older, aug, sep6], sep7, {
+      coveringVersions: ["v202608010", "v202608233"],
+    });
+    assert.deepEqual(versions(rescued.keep), ["v202608233", "v202609060", "v202609070"]);
+    assert.deepEqual(versions(rescued.evict), ["v202608010"]);
   });
 
   await t.test("a feed older than everything retained is not kept, and evicts nothing", () => {

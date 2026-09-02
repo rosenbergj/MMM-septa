@@ -37,24 +37,19 @@ const FEED_INFO_FILE = "feed_info.txt";
 const FEED_SELECTION_FILES = [FEED_INFO_FILE, "calendar.txt", "calendar_dates.txt"];
 const FEEDS_DIR = path.join(__dirname, "feeds");
 const FEED_INDEX_PATH = path.join(FEEDS_DIR, "index.json");
-// How many distinct feed *days* to retain -- see feedDayFromVersion. Two is
-// the minimum that survives SEPTA's habit of publishing the next service
-// period's feed days early: the incoming one, plus the outgoing one that's
-// still the only thing covering today. SEPTA serves no feed history, so an
-// evicted feed is gone for good.
+// How many distinct feed *days* to retain by age -- see feedDayFromVersion.
+// Two is the minimum that survives SEPTA's habit of publishing the next
+// service period's feed days early: the incoming one, plus the outgoing one
+// that's still the only thing covering today. SEPTA serves no feed history,
+// so an evicted feed is gone for good.
 //
-// KNOWN RISK, accepted deliberately (Josh, 2026-09-02). Two days is not
-// enough if SEPTA publishes a *second* forward-dated feed before the first
-// one's start date arrives: e.g. holding 20260823 (covering Sept 2-5) and
-// 20260906, then receiving 20260907 on Sept 3 would evict 20260823 and
-// reopen exactly the gap this feature exists to close. Considered unlikely --
-// SEPTA has published one forward-dated feed at a time in both observed
-// changeovers -- and not defended against.
-//
-// If it ever bites, the cheap fix is to make eviction refuse to drop the only
-// retained feed that covers today, letting the store grow to three
-// temporarily, rather than raising FEED_RETENTION_DAYS (which spends disk
-// every day to insure against a rare week).
+// This is a floor, not a cap. planFeedRetention will hold a third feed rather
+// than evict the last one covering the current date -- without that, two
+// forward-dated feeds arriving back to back (holding 20260823 and 20260906,
+// then receiving 20260907 on Sept 3) would evict the only feed answering for
+// today and reopen the exact gap this exists to close. The store falls back
+// to two days on its own once a retained feed within the window covers the
+// date again.
 const FEED_RETENTION_DAYS = 2;
 const DOW_KEYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]; // index by Date#getDay()
 
@@ -869,18 +864,37 @@ function parseFeedInfo(text) {
   };
 }
 
-// Which retained feeds survive once `incoming` arrives. Same day replaces
-// (a revision supersedes what it revises); otherwise the oldest days fall off
-// once more than maxDays remain. `evict` lists only *previously stored*
-// entries whose zips should be deleted -- if `incoming` itself is older than
-// everything retained it simply won't appear in `keep`, and the caller should
-// not store it.
-function planFeedRetention(entries, incoming, maxDays = FEED_RETENTION_DAYS) {
+// Which retained feeds survive once `incoming` arrives. Same day replaces (a
+// revision supersedes what it revises); otherwise the oldest days fall off
+// once more than maxDays remain.
+//
+// One feed is exempt from ageing out: if applying the age rule would leave
+// nothing that covers the current date, the newest feed that *does* cover it
+// is held back, and the store carries a third feed until it isn't needed.
+// Pass the versions known to cover the date as `options.coveringVersions`
+// (the caller reads that from each feed's calendars -- see feedHasServiceOn);
+// omitting it disables the protection, which is only correct when the caller
+// genuinely has no date in mind.
+//
+// `evict` lists only *previously stored* entries whose zips should be
+// deleted -- if `incoming` itself is older than everything retained it simply
+// won't appear in `keep`, and the caller should not store it.
+function planFeedRetention(entries, incoming, options = {}) {
+  const maxDays = options.maxDays || FEED_RETENTION_DAYS;
+  const covering = new Set(options.coveringVersions || []);
   const withoutSameDay = entries.filter((entry) => entry.day !== incoming.day);
   const merged = [...withoutSameDay, incoming];
   const days = [...new Set(merged.map((entry) => entry.day))].sort();
   const keepDays = new Set(days.slice(-maxDays));
-  const keep = merged.filter((entry) => keepDays.has(entry.day)).sort((a, b) => (a.day < b.day ? -1 : 1));
+
+  let keep = merged.filter((entry) => keepDays.has(entry.day));
+  if (covering.size && !keep.some((entry) => covering.has(entry.version))) {
+    // Newest, so the store doesn't end up hoarding the oldest feed it has.
+    const rescued = orderFeedsNewestFirst(merged.filter((entry) => covering.has(entry.version)))[0];
+    if (rescued) keep = [...keep, rescued];
+  }
+
+  keep.sort((a, b) => (a.day < b.day ? -1 : 1));
   const keptVersions = new Set(keep.map((entry) => entry.version));
   return { keep, evict: entries.filter((entry) => !keptVersions.has(entry.version)) };
 }
@@ -975,17 +989,35 @@ async function downloadFeed(fetchImpl = fetch, etag = null) {
 // retention (there's nothing to key a day on), so it's used for this refresh
 // but not stored -- rather than being stored under a synthetic id that would
 // later masquerade as a real feed day.
-async function refreshFeedStore(fetchImpl = fetch, feedsDir = FEEDS_DIR) {
+async function refreshFeedStore(fetchImpl = fetch, feedsDir = FEEDS_DIR, date = new Date()) {
   const entries = loadFeedIndex(feedsDir);
   const newest = orderFeedsNewestFirst(entries)[0] || null;
   const { unchanged, buffer, etag } = await downloadFeed(fetchImpl, newest ? newest.etag : null);
   if (unchanged) return { entries, downloaded: false, transientBuffer: null };
 
-  const meta = parseFeedInfo(readSelectionTexts(buffer)[FEED_INFO_FILE]);
+  const incomingTexts = readSelectionTexts(buffer);
+  const meta = parseFeedInfo(incomingTexts[FEED_INFO_FILE]);
   if (!meta || !meta.day) return { entries, downloaded: true, transientBuffer: buffer };
 
   const incoming = { ...meta, etag: etag || null, downloadedAt: Date.now() };
-  const { keep, evict } = planFeedRetention(entries, incoming);
+
+  // Which feeds can answer for `date`, so retention knows what it must not
+  // throw away. Only calendars are read (see feedHasServiceOn), and only on a
+  // cycle that actually downloaded something, so this costs nothing on the
+  // common unchanged-feed path.
+  const coveringVersions = [];
+  for (const entry of entries) {
+    try {
+      if (feedHasServiceOn(readSelectionTexts(fs.readFileSync(feedZipPath(entry.version, feedsDir))), date)) {
+        coveringVersions.push(entry.version);
+      }
+    } catch {
+      // indexed but unreadable -- it can't be the feed we protect
+    }
+  }
+  if (feedHasServiceOn(incomingTexts, date)) coveringVersions.push(incoming.version);
+
+  const { keep, evict } = planFeedRetention(entries, incoming, { coveringVersions });
   if (!keep.some((entry) => entry.version === incoming.version)) {
     // Older than everything already retained -- don't displace newer feeds.
     return { entries, downloaded: true, transientBuffer: buffer };
@@ -1046,7 +1078,7 @@ function buildCacheFromBuffer(buffer, routeIds, stopIds) {
 async function fetchScheduleCache(routeIds, stopIds, fetchImpl = fetch, options = {}) {
   const feedsDir = options.feedsDir || FEEDS_DIR;
   const date = options.now || new Date();
-  const { entries, transientBuffer } = await refreshFeedStore(fetchImpl, feedsDir);
+  const { entries, transientBuffer } = await refreshFeedStore(fetchImpl, feedsDir, date);
 
   if (transientBuffer) return buildCacheFromBuffer(transientBuffer, routeIds, stopIds);
 
