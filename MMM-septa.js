@@ -48,7 +48,14 @@ function septaJoinArrivalTimes(rendered) {
       const previous = rendered[index - 1];
       const sameTrip = Boolean(item.tripId) && item.tripId === previous.tripId;
       if (sameTrip) sameTripJoined = true;
-      return (sameTrip ? "/" : ", ") + item.html;
+      // A comma separates two independent buses, so it stays unstyled --
+      // punctuation between entries. A slash means the opposite: the two
+      // times are one vehicle, so it belongs to that entry and wears the
+      // preceding time's styling (urgency color, the "first bus" bold, and
+      // the untracked treatment). Left plain, it renders in the row's
+      // default color and reads as a stray glyph dropped between them.
+      const separator = sameTrip ? `<span class="${previous.className}">/</span>` : ", ";
+      return separator + item.html;
     })
     .join("");
   return { html, sameTripJoined };
@@ -638,9 +645,13 @@ Module.register("MMM-septa", {
                 destinationInfo.mixed && destinationInfo.markerFor.has(arrival.headsign)
                   ? destinationInfo.markerFor.get(arrival.headsign)
                   : "";
+              // className is also what a following same-trip slash copies;
+              // see septaJoinArrivalTimes.
+              const className = `${urgencyClass} ${tierClass}${untrackedClass}`;
               return {
                 tripId: arrival.tripId,
-                html: `<span class="${urgencyClass} ${tierClass}${untrackedClass}">${prefix}${text}${marker}</span>`,
+                className,
+                html: `<span class="${className}">${prefix}${text}${marker}</span>`,
               };
             });
           const joined = septaJoinArrivalTimes(renderedArrivals);
@@ -866,9 +877,11 @@ Module.register("MMM-septa", {
           const prefix = arrival.tracked === false ? "~" : "";
           const text =
             minutes <= this.config.countdownWithinMinutes ? `${minutes}m` : septaFormatClockTime(arrival.eta);
+          const className = `${urgencyClass} ${tierClass}${untrackedClass}`;
           return {
             tripId: arrival.tripId,
-            html: `<span class="${urgencyClass} ${tierClass}${untrackedClass}">${prefix}${text}${arrival.marker}</span>`,
+            className,
+            html: `<span class="${className}">${prefix}${text}${arrival.marker}</span>`,
           };
         });
       const joined = septaJoinArrivalTimes(renderedArrivals);
