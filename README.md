@@ -86,16 +86,13 @@ pattern runs — so a well-served stop can appear as an `alt` row while the
 main sequence runs a once-a-day variant. The counts are what tell the two
 apart. (`--full` output is unaffected; it has no `trips` column.)
 
-Live `/trips/` data is still fetched, but only to label each direction with
-its real `direction_name` string (the static feed only has a bare 0/1
-direction_id, not a name). If no live trip is running in a direction right
-now, it's labeled `direction_id N (name unconfirmed -- no live trip running
-this direction right now)` instead — unless the route has exactly two
-directions and the other one *is* confirmed live, in which case the missing
-one is inferred as its cardinal opposite (Northbound↔Southbound,
-Eastbound↔Westbound) and flagged as such rather than presented as certain:
-`Southbound (inferred as the opposite of Northbound -- not live-confirmed,
-double-check)`.
+Direction names come straight from SEPTA's static feed too — an
+undocumented `directions.txt` extension maps each route's direction_id to
+its real name (e.g. `"Northbound"`) directly, so no live data is involved
+and the result is exactly as deterministic as everything else this prints.
+The rare route with no scheduled trips at all (so `directions.txt` has
+nothing to say about it either) shows `Unknown Direction (direction_id N --
+not listed in SEPTA's directions.txt)` instead.
 
 Add `--full` to get ready-to-paste `routes[]` entries instead of the table
 — same merged stop list and grouping, each stop's name followed by the
@@ -416,14 +413,17 @@ re-downloaded when SEPTA's copy actually changes.
 
 A feed is never discarded while it's the only retained one covering today, so
 if SEPTA publishes two future-dated feeds in a row the module holds three
-until it no longer needs the oldest.
+until it no longer needs the oldest. The same protection separately applies
+to `directions.txt` (see "Finding your route and stop IDs" above): the
+newest feed that has one is held back indefinitely if SEPTA ever ships a feed
+without it, rather than aging out on the usual two-day schedule.
 
 If both retained feeds are newer than today, the display drops to live-only
 data as before, and logs why.
 
 `node scripts/compare-feeds.js <old.zip> <new.zip>` prints what changed
 between two feeds -- service coverage per day, routes added/removed, trip
-counts, and with `--headsigns`/`--stops`, those too.
+counts, direction name changes, and with `--headsigns`/`--stops`, those too.
 
 ### How often the display fades
 
