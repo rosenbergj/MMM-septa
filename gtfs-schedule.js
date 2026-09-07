@@ -32,9 +32,10 @@ const NEEDED_FILES = ["trips.txt", "stop_times.txt", "calendar.txt", "calendar_d
 // feed rather than describing service, and a feed without it is still usable
 // for everything except retention.
 const FEED_INFO_FILE = "feed_info.txt";
-// Enough of a feed to decide whether to keep it and whether it covers a given
-// date, without the 100MB stop_times.txt scan a full parse needs.
-const FEED_SELECTION_FILES = [FEED_INFO_FILE, "calendar.txt", "calendar_dates.txt"];
+// Enough of a feed to decide whether to keep it, whether it covers a given
+// date, and whether it has directions.txt, without the 100MB stop_times.txt
+// scan a full parse needs. directions.txt itself is tiny (tens of KB).
+const FEED_SELECTION_FILES = [FEED_INFO_FILE, "calendar.txt", "calendar_dates.txt", "directions.txt"];
 const FEEDS_DIR = path.join(__dirname, "feeds");
 const FEED_INDEX_PATH = path.join(FEEDS_DIR, "index.json");
 // How many distinct feed *days* to retain by age -- see feedDayFromVersion.
@@ -1087,31 +1088,47 @@ function parseFeedInfo(text) {
 // revision supersedes what it revises); otherwise the oldest days fall off
 // once more than maxDays remain.
 //
-// One feed is exempt from ageing out: if applying the age rule would leave
-// nothing that covers the current date, the newest feed that *does* cover it
-// is held back, and the store carries a third feed until it isn't needed.
-// Pass the versions known to cover the date as `options.coveringVersions`
-// (the caller reads that from each feed's calendars -- see feedHasServiceOn);
-// omitting it disables the protection, which is only correct when the caller
-// genuinely has no date in mind.
+// Up to two feeds are exempt from ageing out, one per protection reason
+// below -- each independently rescues at most the single newest feed
+// matching its own reason, so a feed protected for one reason doesn't count
+// toward the other (a version present in both sets only ever needs rescuing
+// once, since rescueBy is a no-op once that version is already in `keep`):
+//   - `options.coveringVersions`: if applying the age rule would leave
+//     nothing that covers the current date, the newest feed that *does*
+//     cover it is held back, and the store carries an extra feed until it
+//     isn't needed. The caller reads this from each feed's calendars -- see
+//     feedHasServiceOn.
+//   - `options.hasDirectionsVersions`: if applying the age rule would leave
+//     nothing with a directions.txt, the newest feed that has one is held
+//     back permanently (not just until the age rule would otherwise cover
+//     it, unlike the date-coverage case -- a feed's directions.txt never
+//     "becomes covered" by a newer feed the way a date does, so once this
+//     triggers it keeps triggering for as long as every newer feed keeps
+//     lacking directions.txt). See gtfs-schedule.js's FEED_SELECTION_FILES.
+// Omitting either disables that protection, which is only correct when the
+// caller genuinely has no date/directions.txt signal to protect.
 //
 // `evict` lists only *previously stored* entries whose zips should be
 // deleted -- if `incoming` itself is older than everything retained it simply
 // won't appear in `keep`, and the caller should not store it.
 function planFeedRetention(entries, incoming, options = {}) {
   const maxDays = options.maxDays || FEED_RETENTION_DAYS;
-  const covering = new Set(options.coveringVersions || []);
   const withoutSameDay = entries.filter((entry) => entry.day !== incoming.day);
   const merged = [...withoutSameDay, incoming];
   const days = [...new Set(merged.map((entry) => entry.day))].sort();
   const keepDays = new Set(days.slice(-maxDays));
 
   let keep = merged.filter((entry) => keepDays.has(entry.day));
-  if (covering.size && !keep.some((entry) => covering.has(entry.version))) {
+
+  const rescueBy = (matchingVersions) => {
+    const matching = new Set(matchingVersions || []);
+    if (!matching.size || keep.some((entry) => matching.has(entry.version))) return;
     // Newest, so the store doesn't end up hoarding the oldest feed it has.
-    const rescued = orderFeedsNewestFirst(merged.filter((entry) => covering.has(entry.version)))[0];
+    const rescued = orderFeedsNewestFirst(merged.filter((entry) => matching.has(entry.version)))[0];
     if (rescued) keep = [...keep, rescued];
-  }
+  };
+  rescueBy(options.coveringVersions);
+  rescueBy(options.hasDirectionsVersions);
 
   keep.sort((a, b) => (a.day < b.day ? -1 : 1));
   const keptVersions = new Set(keep.map((entry) => entry.version));
@@ -1233,23 +1250,27 @@ async function refreshFeedStore(fetchImpl = fetch, feedsDir = FEEDS_DIR, date = 
 
   const incoming = { ...meta, etag: etag || null, downloadedAt: Date.now() };
 
-  // Which feeds can answer for `date`, so retention knows what it must not
-  // throw away. Only calendars are read (see feedHasServiceOn), and only on a
-  // cycle that actually downloaded something, so this costs nothing on the
-  // common unchanged-feed path.
+  // Which feeds can answer for `date`, and which have a directions.txt, so
+  // retention knows what it must not throw away. Both are read straight from
+  // each entry's own already-small selection texts (see FEED_SELECTION_FILES
+  // and readSelectionTexts) -- no extra zip read beyond what the date check
+  // already required -- and only on a cycle that actually downloaded
+  // something, so this costs nothing on the common unchanged-feed path.
   const coveringVersions = [];
+  const hasDirectionsVersions = [];
   for (const entry of entries) {
     try {
-      if (feedHasServiceOn(readSelectionTexts(fs.readFileSync(feedZipPath(entry.version, feedsDir))), date)) {
-        coveringVersions.push(entry.version);
-      }
+      const texts = readSelectionTexts(fs.readFileSync(feedZipPath(entry.version, feedsDir)));
+      if (feedHasServiceOn(texts, date)) coveringVersions.push(entry.version);
+      if (texts["directions.txt"]) hasDirectionsVersions.push(entry.version);
     } catch {
       // indexed but unreadable -- it can't be the feed we protect
     }
   }
   if (feedHasServiceOn(incomingTexts, date)) coveringVersions.push(incoming.version);
+  if (incomingTexts["directions.txt"]) hasDirectionsVersions.push(incoming.version);
 
-  const { keep, evict } = planFeedRetention(entries, incoming, { coveringVersions });
+  const { keep, evict } = planFeedRetention(entries, incoming, { coveringVersions, hasDirectionsVersions });
   if (!keep.some((entry) => entry.version === incoming.version)) {
     // Older than everything already retained -- don't displace newer feeds.
     return { entries, downloaded: true, transientBuffer: buffer };

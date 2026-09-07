@@ -19,7 +19,7 @@ const fs = require("fs");
 const path = require("path");
 const { readZipEntries, parseFeedInfo } = require("../gtfs-schedule.js");
 
-const FILES = ["feed_info.txt", "routes.txt", "trips.txt", "calendar.txt", "calendar_dates.txt", "stops.txt"];
+const FILES = ["feed_info.txt", "routes.txt", "trips.txt", "calendar.txt", "calendar_dates.txt", "stops.txt", "directions.txt"];
 
 function printHelp() {
   console.log(`Usage: node scripts/compare-feeds.js <old.zip> <new.zip> [options]
@@ -95,6 +95,14 @@ function loadFeed(zipPath) {
   for (const row of parseCsv(texts["calendar_dates.txt"] || "")) {
     (exceptions[row.service_id] = exceptions[row.service_id] || {})[row.date] = row.exception_type;
   }
+  // directionsPresent is tracked separately from an empty Map -- SEPTA
+  // dropping the file entirely (undefined) is the thing worth a loud
+  // warning about, distinct from a feed that has the file but happens to
+  // list nothing (empty string, still present).
+  const directionsPresent = texts["directions.txt"] != null;
+  const directions = new Map(
+    parseCsv(texts["directions.txt"] || "").map((d) => [`${d.route_id}|${d.direction_id}`, d.direction])
+  );
   return {
     label: path.basename(zipPath),
     info: parseFeedInfo(texts["feed_info.txt"]),
@@ -104,7 +112,15 @@ function loadFeed(zipPath) {
     stops: new Map(stops.map((s) => [s.stop_id, s.stop_name])),
     calendar,
     exceptions,
+    directionsPresent,
+    directions,
   };
+}
+
+// "17|0" -> "route 17 dir 0", for direction-diff output below.
+function formatDirectionKey(key) {
+  const [routeId, directionId] = key.split("|");
+  return `route ${routeId} dir ${directionId}`;
 }
 
 const DOW = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
@@ -199,6 +215,37 @@ function main() {
       `    ${c.route.padEnd(8)} ${String(c.from).padStart(5)} -> ${String(c.to).padStart(5)} ` +
         `(${c.delta > 0 ? "+" : ""}${c.delta})  ${newFeed.routeNames.get(c.route) || ""}`
     );
+  }
+
+  // directions.txt is what find-stop.js's direction names and
+  // gtfs-schedule.js's permanent-retention rescue (see planFeedRetention's
+  // hasDirectionsVersions) both depend on -- a feed that drops it entirely
+  // is the exact scenario that rescue exists for, so that's called out as a
+  // warning rather than folded silently into the added/removed lists below.
+  console.log("\n" + "-".repeat(72) + "\nDIRECTIONS.txt");
+  if (!oldFeed.directionsPresent && !newFeed.directionsPresent) {
+    console.log("  not present in either feed");
+  } else if (oldFeed.directionsPresent !== newFeed.directionsPresent) {
+    console.log(
+      `  WARNING: directions.txt is ${
+        newFeed.directionsPresent ? "present in the NEW feed but missing from the OLD one" : "MISSING from the NEW feed (present in the OLD one)"
+      } -- direction names for find-stop.js depend on this file.`
+    );
+  } else {
+    const oldKeys = new Set(oldFeed.directions.keys());
+    const newKeys = new Set(newFeed.directions.keys());
+    const added = [...newKeys].filter((k) => !oldKeys.has(k)).sort();
+    const removed = [...oldKeys].filter((k) => !newKeys.has(k)).sort();
+    const changed = [...newKeys].filter((k) => oldKeys.has(k) && oldFeed.directions.get(k) !== newFeed.directions.get(k)).sort();
+    if (!added.length && !removed.length && !changed.length) {
+      console.log("  no direction_id/name changes");
+    } else {
+      for (const k of changed) {
+        console.log(`  ~ ${formatDirectionKey(k)}: "${oldFeed.directions.get(k)}" -> "${newFeed.directions.get(k)}"`);
+      }
+      for (const k of added) console.log(`  + ${formatDirectionKey(k)}: "${newFeed.directions.get(k)}"`);
+      for (const k of removed) console.log(`  - ${formatDirectionKey(k)}: "${oldFeed.directions.get(k)}"`);
+    }
   }
 
   if (opts.headsigns) {

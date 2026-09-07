@@ -33,6 +33,9 @@ const {
   planFeedRetention,
   feedHasServiceOn,
   orderFeedsNewestFirst,
+  refreshFeedStore,
+  loadFeedIndex,
+  feedZipPath,
   getScheduledRouteIds,
   resolveTerminusExclusion,
   getTerminusExclusionDirectionId,
@@ -674,6 +677,50 @@ test("planFeedRetention", async (t) => {
     assert.deepEqual(versions(keep), ["v202608233", "v202609060"]);
     assert.deepEqual(evict, []);
   });
+
+  // hasDirectionsVersions is the same rescue mechanism as coveringVersions,
+  // applied independently for a different reason: keeping the newest feed
+  // that has directions.txt (see find-stop.js) around even once a newer
+  // feed's day would otherwise age it out.
+  await t.test("the only feed with directions.txt is held back rather than aged out", () => {
+    const { keep, evict } = planFeedRetention([aug, sep6], sep7, { hasDirectionsVersions: ["v202608233"] });
+    assert.deepEqual(versions(keep), ["v202608233", "v202609060", "v202609070"]);
+    assert.deepEqual(evict, []);
+  });
+
+  await t.test("no protection needed once a feed inside the window has directions.txt", () => {
+    const { keep, evict } = planFeedRetention([aug, sep6], sep7, { hasDirectionsVersions: ["v202609060"] });
+    assert.deepEqual(versions(keep), ["v202609060", "v202609070"]);
+    assert.deepEqual(versions(evict), ["v202608233"]);
+  });
+
+  // Unlike coveringVersions (which stops protecting once a newer feed covers
+  // the date), a feed rescued for directions.txt has no such "superseded by
+  // a newer one" moment as long as every newer feed keeps lacking one -- it
+  // keeps getting rescued cycle after cycle for as long as `entries` still
+  // contains it and hasDirectionsVersions still names it as the newest with
+  // one. This confirms it isn't limited to a single rescue.
+  await t.test("stays held back across a second cycle where the newest feed still lacks directions.txt", () => {
+    const sep8 = { version: "v202609080", day: "20260908" };
+    const first = planFeedRetention([aug, sep6], sep7, { hasDirectionsVersions: ["v202608233"] });
+    // sep6 has no protection reason of its own in either cycle, so it ages
+    // out normally on the second cycle -- only aug (the rescued feed) rides
+    // along indefinitely.
+    const second = planFeedRetention(first.keep, sep8, { hasDirectionsVersions: ["v202608233"] });
+    assert.deepEqual(versions(second.keep), ["v202608233", "v202609070", "v202609080"]);
+    assert.deepEqual(versions(second.evict), ["v202609060"]);
+  });
+
+  await t.test("a feed protected for date coverage and a feed protected for directions.txt are rescued independently", () => {
+    const { keep, evict } = planFeedRetention([aug, sep6], sep7, {
+      coveringVersions: ["v202608233"],
+      hasDirectionsVersions: ["v202609060"],
+    });
+    // Both aug (date coverage) and sep6 (directions.txt) are outside the
+    // 2-day window on their own, but each has its own reason to survive.
+    assert.deepEqual(versions(keep), ["v202608233", "v202609060", "v202609070"]);
+    assert.deepEqual(evict, []);
+  });
 });
 
 test("orderFeedsNewestFirst", async (t) => {
@@ -694,6 +741,93 @@ test("orderFeedsNewestFirst", async (t) => {
     const entries = [{ version: "a", day: "20260823" }, { version: "b", day: "20260906" }];
     orderFeedsNewestFirst(entries);
     assert.deepEqual(entries.map((e) => e.version), ["a", "b"]);
+  });
+});
+
+test("refreshFeedStore -- directions.txt retention, end-to-end against real disk I/O", async (t) => {
+  // A dedicated temp feeds directory per sub-test, so this never touches the
+  // real project feeds/ directory (which fetchScheduleCache's own tests
+  // avoid by omitting feed_info.txt, sidestepping retention entirely -- this
+  // suite tests retention itself, so it needs a real directory to read/write).
+  const feedDirs = [];
+  function freshFeedsDir(name) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `mmm-septa-feeds-test-${process.pid}-${name}-`));
+    feedDirs.push(dir);
+    return dir;
+  }
+  t.after(() => {
+    for (const dir of feedDirs) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // already gone -- fine
+      }
+    }
+  });
+
+  // No calendar.txt/calendar_dates.txt in any of these -- feedHasServiceOn
+  // then reads them as empty and coveringVersions stays empty throughout, so
+  // only the directions.txt rescue is exercised, not the date-coverage one.
+  function feedZip({ version, day, hasDirections }) {
+    const files = [
+      { name: "feed_info.txt", content: `feed_version,feed_start_date,feed_end_date\n${version},${day},${day}\n` },
+    ];
+    if (hasDirections) {
+      files.push({ name: "directions.txt", content: "route_id,direction_id,direction,direction_destination\n17,0,Northbound,2nd-Market\n" });
+    }
+    return buildTestZip(files);
+  }
+  function fetchImplFor(zip) {
+    return async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: { get: () => null },
+      arrayBuffer: async () => zip.buffer.slice(zip.byteOffset, zip.byteOffset + zip.byteLength),
+    });
+  }
+
+  await t.test("the newest feed with directions.txt survives being aged out once newer feeds stop having one", async () => {
+    const feedsDir = freshFeedsDir("survives");
+    const date = new Date(2026, 8, 7);
+
+    const feedA = { version: "v202609060", day: "20260906" };
+    await refreshFeedStore(fetchImplFor(feedZip({ ...feedA, hasDirections: true })), feedsDir, date);
+
+    const feedB = { version: "v202609070", day: "20260907" };
+    await refreshFeedStore(fetchImplFor(feedZip({ ...feedB, hasDirections: false })), feedsDir, date);
+
+    // Both still fit in the 2-day window here -- confirms nothing was
+    // dropped prematurely before the rescue is even needed.
+    assert.deepEqual(
+      loadFeedIndex(feedsDir).map((e) => e.version).sort(),
+      [feedA.version, feedB.version]
+    );
+
+    // A third distinct day would normally age feedA out (only the newest 2
+    // days survive) -- but it's the only feed that ever had directions.txt,
+    // so it should be rescued instead of evicted.
+    const feedC = { version: "v202609080", day: "20260908" };
+    await refreshFeedStore(fetchImplFor(feedZip({ ...feedC, hasDirections: false })), feedsDir, date);
+
+    const finalVersions = loadFeedIndex(feedsDir).map((e) => e.version).sort();
+    assert.deepEqual(finalVersions, [feedA.version, feedB.version, feedC.version].sort());
+    // The rescue only matters if the zip itself actually survives on disk --
+    // an index entry pointing at a deleted file would be useless.
+    assert.equal(fs.existsSync(feedZipPath(feedA.version, feedsDir)), true);
+  });
+
+  await t.test("no rescue needed when the newest feed itself has directions.txt", async () => {
+    const feedsDir = freshFeedsDir("no-rescue-needed");
+    const date = new Date(2026, 8, 8);
+
+    await refreshFeedStore(fetchImplFor(feedZip({ version: "v202608233", day: "20260823", hasDirections: true })), feedsDir, date);
+    await refreshFeedStore(fetchImplFor(feedZip({ version: "v202609060", day: "20260906", hasDirections: true })), feedsDir, date);
+    await refreshFeedStore(fetchImplFor(feedZip({ version: "v202609070", day: "20260907", hasDirections: true })), feedsDir, date);
+
+    // Every feed here has directions.txt, so the normal 2-day window applies
+    // with no rescue -- the oldest (v202608233) ages out on schedule.
+    assert.deepEqual(loadFeedIndex(feedsDir).map((e) => e.version).sort(), ["v202609060", "v202609070"]);
   });
 });
 
