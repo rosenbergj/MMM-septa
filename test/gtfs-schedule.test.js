@@ -18,6 +18,7 @@ const {
   hasActiveServiceOn,
   buildScheduleCache,
   buildRouteStopPatterns,
+  parseDirectionNames,
   mergeDirectionPatterns,
   getScheduledArrivals,
   getAllHeadsignsForStop,
@@ -1179,8 +1180,8 @@ test("buildRouteStopPatterns", async (t) => {
       headsign: "Front-Market",
       directionId: "0",
       stops: [
-        { stopId: 21289, stopSequence: 1, stopName: "20th St & Oregon Av", stopLat: null, stopLon: null },
-        { stopId: 99000, stopSequence: 2, stopName: "Broad St & Pattison Av", stopLat: null, stopLon: null },
+        { stopId: 21289, stopSequence: 1, stopName: "20th St & Oregon Av" },
+        { stopId: 99000, stopSequence: 2, stopName: "Broad St & Pattison Av" },
       ],
     });
   });
@@ -1209,6 +1210,61 @@ test("buildRouteStopPatterns", async (t) => {
     const patterns = buildRouteStopPatterns(missingStopName, "17");
     const full = patterns.find((p) => p.tripId === "9001");
     assert.equal(full.stops[1].stopName, null);
+  });
+});
+
+test("parseDirectionNames", async (t) => {
+  const text =
+    "route_id,direction_id,direction,direction_destination\n" +
+    "17,0,Northbound,2nd-Market\n" +
+    "17,1,Southbound,20th-Johnston\n" +
+    "44,0,Westbound,54th-City\n";
+
+  await t.test("returns a directionId -> name map for the requested route", () => {
+    const names = parseDirectionNames(text, "17");
+    assert.equal(names.get("0"), "Northbound");
+    assert.equal(names.get("1"), "Southbound");
+  });
+
+  await t.test("excludes other routes", () => {
+    const names = parseDirectionNames(text, "17");
+    assert.equal(names.has("44"), false);
+    assert.equal(parseDirectionNames(text, "44").size, 1);
+  });
+
+  await t.test("a route with no rows -> empty map", () => {
+    assert.equal(parseDirectionNames(text, "999").size, 0);
+  });
+
+  // Routes 63 and 135 are specifically why find-stop.js used to lean on live
+  // /trips/ data plus a geometry sanity check instead of trusting a name
+  // outright (see the git history around applyGeographySanityCheck/
+  // computeDirectionTrend): 63's longest pattern detours far enough west to
+  // read as east-west by raw geometry even though it's a north-south route,
+  // and some non-GTFS sources have reported reversed names for both routes
+  // (63's southbound trips as "Northbound"; 135's eastbound/westbound
+  // swapped). directions.txt is SEPTA's own designation, not inferred from
+  // geometry or subject to those other sources' mixups, so these confirm
+  // real rows for those two routes (copied verbatim from the live feed,
+  // leading space in 135's destination included) parse to the right names.
+  await t.test("route 63 -- geometry-misleading spur, still just Northbound/Southbound", () => {
+    const real =
+      "route_id,direction_id,direction,direction_destination\n" +
+      "63,0,Northbound,Overbrook & Lankenau Medical Center\n" +
+      "63,1,Southbound,Columbus Commons or Food Distribution Center\n";
+    const names = parseDirectionNames(real, "63");
+    assert.equal(names.get("0"), "Northbound");
+    assert.equal(names.get("1"), "Southbound");
+  });
+
+  await t.test("route 135 -- Coatesville is genuinely west of West Chester, despite other sources reversing E/W", () => {
+    const real =
+      "route_id,direction_id,direction,direction_destination\n" +
+      "135,0,Westbound, Coatesville\n" +
+      "135,1,Eastbound,West Chester Transit Center\n";
+    const names = parseDirectionNames(real, "135");
+    assert.equal(names.get("0"), "Westbound");
+    assert.equal(names.get("1"), "Eastbound");
   });
 });
 
@@ -1502,6 +1558,7 @@ test("fetchRouteStopPatterns", async (t) => {
           "9001,08:15:00,08:15:00,21289,1,,0,0,,1\n",
       },
       { name: "stops.txt", content: "stop_id,stop_name\n21289,20th St & Oregon Av\n" },
+      { name: "directions.txt", content: "route_id,direction_id,direction,direction_destination\n17,0,Northbound,2nd-Market\n" },
     ]);
     const fetchImpl = async () => ({
       ok: true,
@@ -1510,9 +1567,10 @@ test("fetchRouteStopPatterns", async (t) => {
       arrayBuffer: async () => zip.buffer.slice(zip.byteOffset, zip.byteOffset + zip.byteLength),
     });
 
-    const patterns = await fetchRouteStopPatterns("17", fetchImpl, freshCachePath("basic"));
+    const { patterns, directionNames } = await fetchRouteStopPatterns("17", fetchImpl, freshCachePath("basic"));
     assert.equal(patterns.length, 1);
     assert.equal(patterns[0].stops[0].stopName, "20th St & Oregon Av");
+    assert.equal(directionNames.get("0"), "Northbound");
   });
 
   await t.test("throws on a failed download", async () => {
@@ -1525,6 +1583,7 @@ test("fetchRouteStopPatterns", async (t) => {
       { name: "trips.txt", content: "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed\n17,weekday,9001,Front-Market,,0,1,1,1,1\n" },
       { name: "stop_times.txt", content: "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n9001,08:15:00,08:15:00,21289,1,,0,0,,1\n" },
       { name: "stops.txt", content: "stop_id,stop_name\n21289,20th St & Oregon Av\n" },
+      { name: "directions.txt", content: "route_id,direction_id,direction,direction_destination\n17,0,Northbound,2nd-Market\n" },
     ]);
     let fetchCount = 0;
     const fetchImpl = async () => {
@@ -1544,7 +1603,7 @@ test("fetchRouteStopPatterns", async (t) => {
     // Second call, same (now-populated) cache path: should reuse the cached
     // download rather than calling fetchImpl again, even for a different
     // routeId -- the cache isn't filtered by route, see fetchRouteStopPatterns.
-    const patterns = await fetchRouteStopPatterns("17", fetchImpl, cachePath);
+    const { patterns } = await fetchRouteStopPatterns("17", fetchImpl, cachePath);
     assert.equal(fetchCount, 1);
     assert.equal(patterns.length, 1);
 
@@ -1563,15 +1622,17 @@ test("fetchRouteStopPatterns", async (t) => {
         "stop_times.txt":
           "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n9001,08:15:00,08:15:00,21289,1,,0,0,,1\n",
         "stops.txt": "stop_id,stop_name\n21289,20th St & Oregon Av\n",
+        "directions.txt": "route_id,direction_id,direction,direction_destination\n17,0,Northbound,2nd-Market\n",
       },
     };
     // Deliberately a path with nothing on disk -- proves the result came
     // from preloadedCache, not a fallback disk read.
     const nonexistentPath = path.join(os.tmpdir(), `mmm-septa-feed-cache-test-${process.pid}-does-not-exist.json`);
 
-    const patterns = await fetchRouteStopPatterns("17", fetchImpl, nonexistentPath, preloadedCache);
+    const { patterns, directionNames } = await fetchRouteStopPatterns("17", fetchImpl, nonexistentPath, preloadedCache);
     assert.equal(patterns.length, 1);
     assert.equal(patterns[0].stops[0].stopName, "20th St & Oregon Av");
+    assert.equal(directionNames.get("0"), "Northbound");
   });
 });
 

@@ -466,7 +466,6 @@ function buildScheduleCache(fileTexts, routeIds, stopIds) {
 function buildRouteStopPatterns(fileTexts, routeId) {
   const trips = parseTripsForRoutes(fileTexts["trips.txt"], [routeId]);
   const stopNames = parseStops(fileTexts["stops.txt"]);
-  const stopLatLon = parseStopLatLon(fileTexts["stops.txt"]);
   const allStopTimes = parseStopTimesForTrips(fileTexts["stop_times.txt"], trips);
 
   const stopTimesByTrip = new Map();
@@ -485,12 +484,20 @@ function buildRouteStopPatterns(fileTexts, routeId) {
         stopId: s.stopId,
         stopSequence: s.stopSequence,
         stopName: stopNames.get(String(s.stopId)) || null,
-        stopLat: stopLatLon.get(String(s.stopId))?.lat ?? null,
-        stopLon: stopLatLon.get(String(s.stopId))?.lon ?? null,
       }));
     patterns.push({ tripId, headsign: trip.headsign, directionId: trip.directionId, stops });
   }
   return patterns;
+}
+
+// directions.txt filtered to one route -> Map<direction_id, direction name>.
+function parseDirectionNames(text, routeId) {
+  const names = new Map();
+  for (const row of parseCsv(text, splitCsvLineSimple)) {
+    if (row.route_id !== String(routeId)) continue;
+    names.set(row.direction_id, (row.direction || "").trim());
+  }
+  return names;
 }
 
 // Merges same-direction stop patterns (one per headsign -- see
@@ -1325,19 +1332,20 @@ function rebuildScheduleCacheForDate(routeIds, stopIds, date, feedsDir = FEEDS_D
   return buildCacheFromBuffer(selected.buffer, routeIds, stopIds);
 }
 
-const ROUTE_STOP_PATTERN_FILES = ["trips.txt", "stop_times.txt", "stops.txt"];
+const ROUTE_STOP_PATTERN_FILES = ["trips.txt", "stop_times.txt", "stops.txt", "directions.txt"];
 
 // Downloads just enough of the feed to list every scheduled stop pattern for
-// one route (see buildRouteStopPatterns) -- used only by
-// scripts/find-stop.js. The raw downloaded files are cached to disk
-// (unfiltered by routeId, so a later run for a *different* route within the
-// cache window benefits too, not just a repeat of the same one) for
-// FEED_CACHE_MAX_AGE_MS -- only the actual network download/decompress is
-// skipped on a cache hit. buildRouteStopPatterns' per-route filtering still
-// runs every time regardless of cache status, and isn't free -- measured
-// ~800ms against a real feed (stop_times.txt alone is over 100MB) -- so
-// callers that want to show a "this may take a moment" message should print
-// it before calling this, not after.
+// one route, plus that route's direction names (see buildRouteStopPatterns
+// and parseDirectionNames) -- used only by scripts/find-stop.js. The raw
+// downloaded files are cached to disk (unfiltered by routeId, so a later run
+// for a *different* route within the cache window benefits too, not just a
+// repeat of the same one) for FEED_CACHE_MAX_AGE_MS -- only the actual
+// network download/decompress is skipped on a cache hit.
+// buildRouteStopPatterns' per-route filtering still runs every time
+// regardless of cache status, and isn't free -- measured ~800ms against a
+// real feed (stop_times.txt alone is over 100MB) -- so callers that want to
+// show a "this may take a moment" message should print it before calling
+// this, not after.
 //
 // preloadedCache lets a caller that already called loadCacheFromDisk itself
 // (e.g. find-stop.js, to decide what status message to print before this
@@ -1349,7 +1357,10 @@ async function fetchRouteStopPatterns(routeId, fetchImpl = fetch, cachePath = FE
   const cacheFresh = Boolean(cached && Date.now() - cached.downloadedAt < FEED_CACHE_MAX_AGE_MS);
   const fileTexts = cacheFresh ? cached.fileTexts : await downloadGtfsFiles(ROUTE_STOP_PATTERN_FILES, fetchImpl);
   if (!cacheFresh) saveCacheToDisk({ downloadedAt: Date.now(), fileTexts }, cachePath);
-  return buildRouteStopPatterns(fileTexts, routeId);
+  return {
+    patterns: buildRouteStopPatterns(fileTexts, routeId),
+    directionNames: parseDirectionNames(fileTexts["directions.txt"], routeId),
+  };
 }
 
 // Lets the cache survive a MagicMirror restart without redownloading the
@@ -1378,6 +1389,7 @@ module.exports = {
   parseTripsForRoutes,
   parseStops,
   parseStopLatLon,
+  parseDirectionNames,
   parseStopTimesForTrips,
   parseCalendar,
   parseCalendarDates,
