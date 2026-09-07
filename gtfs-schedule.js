@@ -32,10 +32,18 @@ const NEEDED_FILES = ["trips.txt", "stop_times.txt", "calendar.txt", "calendar_d
 // feed rather than describing service, and a feed without it is still usable
 // for everything except retention.
 const FEED_INFO_FILE = "feed_info.txt";
+// Also read separately from NEEDED_FILES and tolerated as missing, same as
+// FEED_INFO_FILE -- a feed without it is still fully usable, just with no
+// direction names resolvable (see buildScheduleCache's directionNames). Never
+// add this to NEEDED_FILES: that would turn a currently-optional extension
+// into a hard requirement, and a future feed dropping it (the exact scenario
+// planFeedRetention's hasDirectionsVersions rescue exists for) would then
+// fail the *entire* schedule cache build instead of just direction names.
+const DIRECTIONS_FILE = "directions.txt";
 // Enough of a feed to decide whether to keep it, whether it covers a given
 // date, and whether it has directions.txt, without the 100MB stop_times.txt
 // scan a full parse needs. directions.txt itself is tiny (tens of KB).
-const FEED_SELECTION_FILES = [FEED_INFO_FILE, "calendar.txt", "calendar_dates.txt", "directions.txt"];
+const FEED_SELECTION_FILES = [FEED_INFO_FILE, "calendar.txt", "calendar_dates.txt", DIRECTIONS_FILE];
 const FEEDS_DIR = path.join(__dirname, "feeds");
 const FEED_INDEX_PATH = path.join(FEEDS_DIR, "index.json");
 // How many distinct feed *days* to retain by age -- see feedDayFromVersion.
@@ -444,6 +452,11 @@ function buildScheduleCache(fileTexts, routeIds, stopIds) {
   // incident hard to read off the Pi: the cache on disk gave no clue which
   // feed had produced it.
   const feedInfo = parseFeedInfo(fileTexts[FEED_INFO_FILE]);
+  // Optional, like feedInfo -- a feed without directions.txt (an older feed,
+  // or SEPTA dropping the extension entirely) still builds a normal cache,
+  // just with every getDirectionName lookup returning null. See
+  // buildCacheFromBuffer for why this is never in NEEDED_FILES.
+  const directionNames = fileTexts[DIRECTIONS_FILE] ? parseDirectionNamesForRoutes(fileTexts[DIRECTIONS_FILE], routeIds) : {};
   return {
     builtAt: Date.now(),
     feedVersion: feedInfo ? feedInfo.version : null,
@@ -455,6 +468,7 @@ function buildScheduleCache(fileTexts, routeIds, stopIds) {
     terminusExclusions,
     routeIdsWithTrips,
     routeStopPaths,
+    directionNames,
   };
 }
 
@@ -499,6 +513,30 @@ function parseDirectionNames(text, routeId) {
     names.set(row.direction_id, (row.direction || "").trim());
   }
   return names;
+}
+
+// directions.txt filtered to a set of route_ids -> {"routeId|directionId":
+// direction name}. A plain object, not a Map, so it survives buildScheduleCache's
+// round trip through saveCacheToDisk/loadCacheFromDisk (JSON.stringify drops
+// a Map's entries silently). The composite key matches how
+// scripts/compare-feeds.js already keys its own directions.txt diff.
+function parseDirectionNamesForRoutes(text, routeIds) {
+  const targetRoutes = new Set(routeIds.map(String));
+  const names = {};
+  for (const row of parseCsv(text, splitCsvLineSimple)) {
+    if (!targetRoutes.has(row.route_id)) continue;
+    names[`${row.route_id}|${row.direction_id}`] = (row.direction || "").trim();
+  }
+  return names;
+}
+
+// null when the cache has no directions.txt data at all (an older/future
+// feed without the extension, or a route/direction_id it doesn't list) --
+// callers must treat that the same as "unresolved", never as an error, since
+// directions.txt is deliberately optional (see buildCacheFromBuffer).
+function getDirectionName(cache, routeId, directionId) {
+  if (!cache || !cache.directionNames) return null;
+  return cache.directionNames[`${routeId}|${directionId}`] || null;
 }
 
 // Merges same-direction stop patterns (one per headsign -- see
@@ -990,6 +1028,26 @@ function getTerminusExclusionDirectionId(cache, routeId, stopId) {
   return (cache.terminusExclusions && cache.terminusExclusions[key]) ?? null;
 }
 
+// Among a stop's ambiguous candidate direction_ids (see
+// getDirectionIdsForStop), the one directions.txt calls exactly `direction`
+// -- or null when zero or more than one candidate matches (a config typo, a
+// route directions.txt has no data for, or -- vanishingly unlikely -- two
+// direction_ids sharing one name all leave this unresolved rather than
+// guessing).
+//
+// Unlike getTerminusExclusionDirectionId, this depends on what the caller
+// configured, not on the stop's own pattern shape -- so node_helper.js's
+// validateDirections must never use it to validate the very same
+// `direction` string it resolves from, which would make the check
+// tautological. It exists for node_helper.js's runCycle instead, where the
+// property that actually matters is resolving structuralDirectionId with no
+// live trip needed, regardless of which signal supplied it.
+function resolveDirectionIdByName(cache, routeId, directionIds, direction) {
+  if (typeof direction !== "string" || !direction) return null;
+  const matches = directionIds.filter((id) => getDirectionName(cache, routeId, id) === direction);
+  return matches.length === 1 ? matches[0] : null;
+}
+
 // Headsigns scheduled at (routeId, primaryStopId) that are never scheduled at
 // (routeId, secondaryStopId) -- i.e. destinations whose pattern structurally
 // never stops at the secondary stop (a short-turn trip, a trip that starts
@@ -1167,7 +1225,11 @@ function saveFeedIndex(entries, feedsDir = FEEDS_DIR) {
   fs.writeFileSync(path.join(feedsDir, "index.json"), JSON.stringify(entries, null, 2));
 }
 
-async function downloadGtfsFiles(fileNames, fetchImpl = fetch) {
+// `options.optional` lists names that are simply left out of the returned
+// fileTexts (rather than throwing) when the feed doesn't have them -- see
+// fetchRouteStopPatterns's use for DIRECTIONS_FILE.
+async function downloadGtfsFiles(fileNames, fetchImpl = fetch, options = {}) {
+  const optional = new Set(options.optional || []);
   const response = await fetchImpl(GTFS_URL);
   if (!response.ok) {
     throw new Error(`gtfs-schedule: failed to download feed: ${response.status} ${response.statusText}`);
@@ -1178,7 +1240,10 @@ async function downloadGtfsFiles(fileNames, fetchImpl = fetch) {
   const fileTexts = {};
   for (const name of fileNames) {
     const data = zipEntries.get(name);
-    if (!data) throw new Error(`gtfs-schedule: ${name} not found in feed`);
+    if (!data) {
+      if (optional.has(name)) continue;
+      throw new Error(`gtfs-schedule: ${name} not found in feed`);
+    }
     fileTexts[name] = data.toString("utf8");
   }
   return fileTexts;
@@ -1262,13 +1327,13 @@ async function refreshFeedStore(fetchImpl = fetch, feedsDir = FEEDS_DIR, date = 
     try {
       const texts = readSelectionTexts(fs.readFileSync(feedZipPath(entry.version, feedsDir)));
       if (feedHasServiceOn(texts, date)) coveringVersions.push(entry.version);
-      if (texts["directions.txt"]) hasDirectionsVersions.push(entry.version);
+      if (texts[DIRECTIONS_FILE]) hasDirectionsVersions.push(entry.version);
     } catch {
       // indexed but unreadable -- it can't be the feed we protect
     }
   }
   if (feedHasServiceOn(incomingTexts, date)) coveringVersions.push(incoming.version);
-  if (incomingTexts["directions.txt"]) hasDirectionsVersions.push(incoming.version);
+  if (incomingTexts[DIRECTIONS_FILE]) hasDirectionsVersions.push(incoming.version);
 
   const { keep, evict } = planFeedRetention(entries, incoming, { coveringVersions, hasDirectionsVersions });
   if (!keep.some((entry) => entry.version === incoming.version)) {
@@ -1307,7 +1372,7 @@ function selectFeedForDate(entries, date, feedsDir = FEEDS_DIR) {
 }
 
 function buildCacheFromBuffer(buffer, routeIds, stopIds) {
-  const zipEntries = readZipEntries(buffer, [...NEEDED_FILES, FEED_INFO_FILE]);
+  const zipEntries = readZipEntries(buffer, [...NEEDED_FILES, FEED_INFO_FILE, DIRECTIONS_FILE]);
   const fileTexts = {};
   for (const name of NEEDED_FILES) {
     const data = zipEntries.get(name);
@@ -1316,6 +1381,10 @@ function buildCacheFromBuffer(buffer, routeIds, stopIds) {
   }
   const feedInfo = zipEntries.get(FEED_INFO_FILE);
   if (feedInfo) fileTexts[FEED_INFO_FILE] = feedInfo.toString("utf8");
+  // Optional, same as feedInfo -- see DIRECTIONS_FILE's own comment for why
+  // this must never join the NEEDED_FILES throw-if-missing loop above.
+  const directions = zipEntries.get(DIRECTIONS_FILE);
+  if (directions) fileTexts[DIRECTIONS_FILE] = directions.toString("utf8");
   return buildScheduleCache(fileTexts, routeIds, stopIds);
 }
 
@@ -1353,7 +1422,7 @@ function rebuildScheduleCacheForDate(routeIds, stopIds, date, feedsDir = FEEDS_D
   return buildCacheFromBuffer(selected.buffer, routeIds, stopIds);
 }
 
-const ROUTE_STOP_PATTERN_FILES = ["trips.txt", "stop_times.txt", "stops.txt", "directions.txt"];
+const ROUTE_STOP_PATTERN_FILES = ["trips.txt", "stop_times.txt", "stops.txt"];
 
 // Downloads just enough of the feed to list every scheduled stop pattern for
 // one route, plus that route's direction names (see buildRouteStopPatterns
@@ -1368,6 +1437,11 @@ const ROUTE_STOP_PATTERN_FILES = ["trips.txt", "stop_times.txt", "stops.txt", "d
 // show a "this may take a moment" message should print it before calling
 // this, not after.
 //
+// DIRECTIONS_FILE is requested alongside ROUTE_STOP_PATTERN_FILES but marked
+// optional -- a feed without it still returns every stop pattern, just with
+// an empty directionNames map (find-stop.js's existing "Unknown Direction"
+// fallback already covers that), rather than the whole command failing.
+//
 // preloadedCache lets a caller that already called loadCacheFromDisk itself
 // (e.g. find-stop.js, to decide what status message to print before this
 // runs) pass that result straight through, instead of this function reading
@@ -1376,11 +1450,13 @@ const ROUTE_STOP_PATTERN_FILES = ["trips.txt", "stop_times.txt", "stops.txt", "d
 async function fetchRouteStopPatterns(routeId, fetchImpl = fetch, cachePath = FEED_CACHE_PATH, preloadedCache) {
   const cached = preloadedCache !== undefined ? preloadedCache : loadCacheFromDisk(cachePath);
   const cacheFresh = Boolean(cached && Date.now() - cached.downloadedAt < FEED_CACHE_MAX_AGE_MS);
-  const fileTexts = cacheFresh ? cached.fileTexts : await downloadGtfsFiles(ROUTE_STOP_PATTERN_FILES, fetchImpl);
+  const fileTexts = cacheFresh
+    ? cached.fileTexts
+    : await downloadGtfsFiles([...ROUTE_STOP_PATTERN_FILES, DIRECTIONS_FILE], fetchImpl, { optional: [DIRECTIONS_FILE] });
   if (!cacheFresh) saveCacheToDisk({ downloadedAt: Date.now(), fileTexts }, cachePath);
   return {
     patterns: buildRouteStopPatterns(fileTexts, routeId),
-    directionNames: parseDirectionNames(fileTexts["directions.txt"], routeId),
+    directionNames: fileTexts[DIRECTIONS_FILE] ? parseDirectionNames(fileTexts[DIRECTIONS_FILE], routeId) : new Map(),
   };
 }
 
@@ -1411,6 +1487,9 @@ module.exports = {
   parseStops,
   parseStopLatLon,
   parseDirectionNames,
+  parseDirectionNamesForRoutes,
+  getDirectionName,
+  resolveDirectionIdByName,
   parseStopTimesForTrips,
   parseCalendar,
   parseCalendarDates,

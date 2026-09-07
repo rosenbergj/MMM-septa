@@ -160,11 +160,15 @@ MagicMirror module option, outside `config`) to override it.
 | `showHeadsigns`           | `true`  | Show each trip's headsign (see below) below the route, and footnote markers when several are mixed together. Global default, overridable per route. Set `false` to hide both and compact the display -- see "Secondary stop" below for how this interacts with `secondaryStopId`. |
 
 Each route's `direction` should match SEPTA's `direction_name` for that route
-exactly (case-sensitive) — use `find-stop.js` to confirm it. If your
-`stop_id` is itself exclusive to one direction (true for most stops — the
-two directions usually get two different stop_ids), arrivals still show up
-even when SEPTA's live feed can't confirm a name at all, and a mismatched
-`direction` just logs a warning instead of hiding arrivals.
+exactly (case-sensitive) — use `find-stop.js` to confirm it. A mismatch is
+checked against SEPTA's static `directions.txt` once per daily schedule
+refresh and logged as a console warning if found, regardless of whether a
+live trip happens to be running (unlike the live-only check this
+supplements — see "Known limitations" below). If your `stop_id` is itself
+exclusive to one direction (true for most stops — the two directions
+usually get two different stop_ids), arrivals still show up even with a
+mismatched `direction` — the warning is informational, not something that
+hides arrivals.
 
 Only stops **later in the trip** count for `secondaryStopId`. If a route
 passes your secondary stop before reaching your configured stop and then
@@ -376,23 +380,26 @@ don't copy that into your real `config.js`.
 - Two identical route/stop/direction entries within the same module instance
   will collide (they share one internal state slot) — use distinct entries.
 - A stop genuinely served by both directions of a route (rare, but real —
-  e.g. route 2 stop 40, or T1-T5's shared 13th St tunnel terminus) normally
-  resolves via a live trip's `direction_name`. Routes whose live feed never
-  gives a usable one at all (confirmed: the trolleys, route 63, and
-  `B1`/`B2`/`B3`/`L1` always report `"N/A"`) get an automatic fallback
-  instead: if every one of one direction's patterns reaches the stop only as
-  that pattern's own last stop (a dead end — no rider could board there and
-  continue), that direction is excluded automatically and the other is used,
-  no config needed. Two shapes still aren't handled, and won't guess:
-  - Wanting the excluded (terminal/arriving) side on purpose instead of the
-    kept (departing) side — there's no way to ask for it.
-  - Neither direction is uniformly terminal (both have at least one pattern
-    where the stop is a real, continuing stop) — there's no direction safe
-    to rule out, and no name to pick between them with.
+  e.g. route 2 stop 40, or T1-T5's shared 13th St tunnel terminus) is
+  resolved in order, no config needed either way:
+  1. If every one of one direction's patterns reaches the stop only as that
+     pattern's own last stop (a dead end — no rider could board there and
+     continue), that direction is excluded automatically and the other used.
+  2. Otherwise, if SEPTA's static `directions.txt` calls exactly one of the
+     stop's two direction_ids the same thing the configured `direction`
+     says, that one is used — resolved with no live trip needed, unlike (3).
+  3. Otherwise, falls back to a live trip's `direction_name`, which needs an
+     actual trip running right now with a usable name. Routes whose live
+     feed never gives one at all (confirmed: the trolleys, route 63, and
+     `B1`/`B2`/`B3`/`L1` always report `"N/A"`) can never resolve this way.
 
-  Both require the stop to be direction-ambiguous *and* the route to be one
-  of the "always N/A" ones, so in practice this has only actually come up
-  for T1-T5 at 13th St, which lands in the handled case.
+  Genuinely unresolvable only when none of the three apply: neither
+  direction is uniformly terminal, *and* `directions.txt` has no data for
+  the route or the configured `direction` doesn't exactly match one of its
+  two names, *and* no live trip with a usable name happens to be running.
+  Wanting the excluded (terminal/arriving) side from (1) on purpose instead
+  of the kept (departing) side also isn't handled — there's no way to ask
+  for it.
 
 ## How it works
 

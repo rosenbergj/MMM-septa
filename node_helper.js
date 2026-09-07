@@ -22,6 +22,8 @@ const {
   rebuildScheduleCacheForDate,
   getScheduledRouteIds,
   getTerminusExclusionDirectionId,
+  resolveDirectionIdByName,
+  getDirectionName,
   // Both fully generic (path-parameterized, no GTFS-specific structure
   // assumed) despite living in gtfs-schedule.js -- reused as-is for the
   // route-colors cache below instead of duplicating the same trivial
@@ -233,6 +235,7 @@ module.exports = NodeHelper.create({
       this.validateRouteIds();
       this.validateSecondaryStopIds();
       this.validateStopIds();
+      this.validateDirections();
       this.scheduleTimer = setTimeout(() => this.refreshScheduleCache(), SCHEDULE_REFRESH_MS);
     } catch (err) {
       console.error(`MMM-septa: GTFS schedule refresh failed: ${err.message}; retrying in ${SCHEDULE_RETRY_MS / 1000}s`);
@@ -350,6 +353,67 @@ module.exports = NodeHelper.create({
             `show "Invalid stop ID configured" until it's fixed.`
         );
       }
+    }
+  },
+
+  // A configured `direction` string that doesn't match SEPTA's own name for
+  // the stop's resolved direction_id otherwise fails silently: filterGoodTrips
+  // (septa-client.js) just filters out every trip, so the row always shows
+  // no arrivals, indistinguishable from a route with nothing currently
+  // running.
+  //
+  // Checked against directions.txt (via gtfs-schedule.js's getDirectionName)
+  // rather than a live trip's direction_name, unlike the runtime check this
+  // supplements (septa-client.js's pollRoute, which only ever fires when a
+  // live trip happens to be running with a usable name) -- so this fires
+  // once per refresh, for every route, including the ones whose live feed
+  // never gives a usable direction_name at all (T1-T5, route 63,
+  // B1/B2/B3/L1 -- see the README's Known limitations).
+  //
+  // Deliberately uses only the same two *structural* tiers runCycle's
+  // structuralDirectionId starts with (a stop exclusive to one direction_id,
+  // or getTerminusExclusionDirectionId's terminal-shape heuristic) -- never
+  // its third, name-matching tier (gtfs-schedule.js's resolveDirectionIdByName),
+  // which resolves *from* the configured direction and so can't also be used
+  // to validate it without becoming circular. When neither structural tier
+  // resolves (a genuinely ambiguous stop), checked instead against every
+  // name the route has, so a flat typo or wrong route is still caught even
+  // though "right route, wrong direction for this specific stop" isn't
+  // distinguishable in that case.
+  //
+  // Skips a route directions.txt has no data for at all (a feed without the
+  // extension, or a route/direction it doesn't list) -- unresolvable is not
+  // the same as wrong, and this must never warn about a route it simply has
+  // no data for. Also skips routes that opted out of the schedule
+  // supplement, same as the other validators.
+  validateDirections() {
+    for (const state of this.routes.values()) {
+      if (state.useScheduleSupplement === false) continue;
+      const { routeId, stopId, direction } = state.config;
+      if (typeof direction !== "string" || !direction) continue; // nothing to check
+
+      const directionIds = getDirectionIdsForStop(this.scheduleCache, routeId, stopId);
+      const structuralId =
+        directionIds.length === 1 ? directionIds[0] : getTerminusExclusionDirectionId(this.scheduleCache, routeId, stopId);
+
+      if (structuralId != null) {
+        const realName = getDirectionName(this.scheduleCache, routeId, structuralId);
+        if (!realName || realName === direction) continue;
+        console.warn(
+          `MMM-septa: configured direction "${direction}" for route ${state.routeKey} doesn't match SEPTA's name ` +
+            `for direction_id ${structuralId} ("${realName}") -- check for a typo or the wrong direction; this ` +
+            `row will otherwise just show no arrivals, indistinguishable from nothing currently running.`
+        );
+        continue;
+      }
+
+      const knownNames = directionIds.map((id) => getDirectionName(this.scheduleCache, routeId, id)).filter(Boolean);
+      if (!knownNames.length || knownNames.includes(direction)) continue;
+      console.warn(
+        `MMM-septa: configured direction "${direction}" for route ${state.routeKey} doesn't match any of SEPTA's ` +
+          `known direction names for route ${routeId} (${knownNames.join(", ")}) -- check for a typo; this row ` +
+          `will otherwise just show no arrivals, indistinguishable from nothing currently running.`
+      );
     }
   },
 
@@ -478,16 +542,24 @@ module.exports = NodeHelper.create({
         : [];
       // A stop genuinely served by both direction_ids (e.g. T1-T5's 13th St
       // tunnel terminus) can still resolve structurally without any live
-      // direction_name -- see gtfs-schedule.js's resolveTerminusExclusion --
-      // when one direction is uniformly a dead end there (every trip ends,
-      // never continues) and the other isn't; falls back to null (the
-      // existing direction_name-based matching in septa-client.js) when it
-      // doesn't fit that shape, same as before this existed.
+      // direction_name, in two ways tried in order:
+      //   1. gtfs-schedule.js's resolveTerminusExclusion -- one direction is
+      //      uniformly a dead end there (every trip ends, never continues)
+      //      and the other isn't.
+      //   2. gtfs-schedule.js's resolveDirectionIdByName -- directions.txt
+      //      calls exactly one of the stop's candidate direction_ids the
+      //      same thing the user configured. Tried second (not first)
+      //      because it depends on what was configured being right, where
+      //      the terminus-exclusion shape is independent of it.
+      // Falls back to null (the live direction_name-based matching in
+      // septa-client.js, which needs an actual trip running right now) only
+      // when neither resolves -- same as before either of these existed.
       const structuralDirectionId =
         stopDirectionIds.length === 1
           ? stopDirectionIds[0]
           : this.scheduleCache
-            ? getTerminusExclusionDirectionId(this.scheduleCache, state.config.routeId, state.config.stopId)
+            ? (getTerminusExclusionDirectionId(this.scheduleCache, state.config.routeId, state.config.stopId) ??
+              resolveDirectionIdByName(this.scheduleCache, state.config.routeId, stopDirectionIds, state.config.direction))
             : null;
       // Lets pollRoute skip a /trip-update/ for any bus SEPTA already reports
       // as past our stop -- see septa-client.js's isTripPastStop. Returns null

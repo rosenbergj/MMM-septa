@@ -19,6 +19,9 @@ const {
   buildScheduleCache,
   buildRouteStopPatterns,
   parseDirectionNames,
+  parseDirectionNamesForRoutes,
+  getDirectionName,
+  resolveDirectionIdByName,
   mergeDirectionPatterns,
   getScheduledArrivals,
   getAllHeadsignsForStop,
@@ -397,6 +400,27 @@ test("buildScheduleCache + getScheduledArrivals", async (t) => {
     };
     const cache = buildScheduleCache(withStops, ["17"], [21289]);
     assert.deepEqual(cache.stopNames, { 21289: "20th St & Oregon Av" });
+  });
+
+  await t.test("buildScheduleCache: no directions.txt in fileTexts -> directionNames is an empty object, not a crash", () => {
+    const cache = buildScheduleCache(fileTexts, ["17"], [21289]);
+    assert.deepEqual(cache.directionNames, {});
+    assert.equal(getDirectionName(cache, "17", "0"), null);
+  });
+
+  await t.test("buildScheduleCache: directions.txt present -> directionNames filtered to just routeIds", () => {
+    const withDirections = {
+      ...fileTexts,
+      "directions.txt":
+        "route_id,direction_id,direction,direction_destination\n" +
+        "17,0,Northbound,2nd-Market\n" +
+        "17,1,Southbound,20th-Johnston\n" +
+        "64,0,Westbound,54th-City\n",
+    };
+    const cache = buildScheduleCache(withDirections, ["17"], [21289]);
+    assert.deepEqual(cache.directionNames, { "17|0": "Northbound", "17|1": "Southbound" });
+    assert.equal(getDirectionName(cache, "17", "0"), "Northbound");
+    assert.equal(getDirectionName(cache, "64", "0"), null); // not a requested routeId
   });
 
   await t.test("getScheduledArrivals returns the trip when within horizon and service is active", () => {
@@ -1402,6 +1426,67 @@ test("parseDirectionNames", async (t) => {
   });
 });
 
+test("parseDirectionNamesForRoutes", async (t) => {
+  const text =
+    "route_id,direction_id,direction,direction_destination\n" +
+    "17,0,Northbound,2nd-Market\n" +
+    "17,1,Southbound,20th-Johnston\n" +
+    "44,0,Westbound,54th-City\n";
+
+  await t.test("keys by \"routeId|directionId\", filtered to the requested routeIds", () => {
+    const names = parseDirectionNamesForRoutes(text, ["17"]);
+    assert.deepEqual(names, { "17|0": "Northbound", "17|1": "Southbound" });
+  });
+
+  await t.test("multiple requested routeIds are all included", () => {
+    const names = parseDirectionNamesForRoutes(text, ["17", "44"]);
+    assert.deepEqual(names, { "17|0": "Northbound", "17|1": "Southbound", "44|0": "Westbound" });
+  });
+
+  await t.test("no requested routeIds have any rows -> empty object", () => {
+    assert.deepEqual(parseDirectionNamesForRoutes(text, ["999"]), {});
+  });
+});
+
+test("getDirectionName", async (t) => {
+  const cache = { directionNames: { "17|0": "Northbound", "17|1": "Southbound" } };
+
+  await t.test("a known routeId/directionId -> its name", () => {
+    assert.equal(getDirectionName(cache, "17", "0"), "Northbound");
+  });
+
+  await t.test("an unknown directionId for a known route -> null", () => {
+    assert.equal(getDirectionName(cache, "17", "2"), null);
+  });
+
+  await t.test("a cache with no directionNames at all -> null, not a crash", () => {
+    assert.equal(getDirectionName({}, "17", "0"), null);
+    assert.equal(getDirectionName(null, "17", "0"), null);
+  });
+});
+
+test("resolveDirectionIdByName", async (t) => {
+  const cache = { directionNames: { "17|0": "Northbound", "17|1": "Southbound" } };
+
+  await t.test("exactly one candidate matches the configured direction -> that directionId", () => {
+    assert.equal(resolveDirectionIdByName(cache, "17", ["0", "1"], "Southbound"), "1");
+  });
+
+  await t.test("no candidate matches -> null (a typo, or directions.txt has nothing for this route)", () => {
+    assert.equal(resolveDirectionIdByName(cache, "17", ["0", "1"], "Eastbound"), null);
+  });
+
+  await t.test("direction isn't a non-empty string -> null, never appears to match by accident", () => {
+    assert.equal(resolveDirectionIdByName(cache, "17", ["0", "1"], undefined), null);
+    assert.equal(resolveDirectionIdByName(cache, "17", ["0", "1"], ""), null);
+  });
+
+  await t.test("more than one candidate matches -> null rather than guessing", () => {
+    const ambiguousCache = { directionNames: { "17|0": "Loop", "17|1": "Loop" } };
+    assert.equal(resolveDirectionIdByName(ambiguousCache, "17", ["0", "1"], "Loop"), null);
+  });
+});
+
 test("mergeDirectionPatterns", async (t) => {
   // Small helper: a pattern with the given headsign and a stop list built
   // from bare stop_ids (name/sequence follow the id, matching the fixtures'
@@ -1707,6 +1792,37 @@ test("fetchRouteStopPatterns", async (t) => {
     assert.equal(directionNames.get("0"), "Northbound");
   });
 
+  await t.test("a feed without directions.txt still resolves patterns, with an empty directionNames map", async () => {
+    const zip = buildTestZip([
+      {
+        name: "trips.txt",
+        content:
+          "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed\n" +
+          "17,weekday,9001,Front-Market,,0,1,1,1,1\n",
+      },
+      {
+        name: "stop_times.txt",
+        content:
+          "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n" +
+          "9001,08:15:00,08:15:00,21289,1,,0,0,,1\n",
+      },
+      { name: "stops.txt", content: "stop_id,stop_name\n21289,20th St & Oregon Av\n" },
+      // No directions.txt at all -- must not throw (unlike a genuinely
+      // NEEDED file), same tolerance buildCacheFromBuffer gives the runtime
+      // schedule cache.
+    ]);
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      arrayBuffer: async () => zip.buffer.slice(zip.byteOffset, zip.byteOffset + zip.byteLength),
+    });
+
+    const { patterns, directionNames } = await fetchRouteStopPatterns("17", fetchImpl, freshCachePath("no-directions"));
+    assert.equal(patterns.length, 1);
+    assert.equal(directionNames.size, 0);
+  });
+
   await t.test("throws on a failed download", async () => {
     const fetchImpl = async () => ({ ok: false, status: 500, statusText: "Internal Server Error" });
     await assert.rejects(() => fetchRouteStopPatterns("17", fetchImpl, freshCachePath("failure")), /500/);
@@ -1805,6 +1921,41 @@ test("fetchScheduleCache", async (t) => {
     assert.equal(cache.entries.length, 1);
     assert.equal(cache.entries[0].tripId, "9001");
     assert.equal(cache.stopNames["21289"], "20th St & Oregon Av");
+  });
+
+  await t.test("directions.txt present in the feed -> directionNames resolves end-to-end", async () => {
+    const zip = buildTestZip([
+      {
+        name: "trips.txt",
+        content:
+          "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed\n" +
+          "17,weekday,9001,Front-Market,,0,1,1,1,1\n",
+      },
+      {
+        name: "stop_times.txt",
+        content:
+          "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint\n" +
+          "9001,08:15:00,08:15:00,21289,2,,0,0,,1\n",
+      },
+      {
+        name: "calendar.txt",
+        content:
+          "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\n" +
+          "weekday,1,1,1,1,1,0,0,20260101,20261231\n",
+      },
+      { name: "calendar_dates.txt", content: "service_id,date,exception_type\n" },
+      { name: "stops.txt", content: "stop_id,stop_name\n21289,20th St & Oregon Av\n" },
+      { name: "directions.txt", content: "route_id,direction_id,direction,direction_destination\n17,0,Northbound,2nd-Market\n" },
+    ]);
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      arrayBuffer: async () => zip.buffer.slice(zip.byteOffset, zip.byteOffset + zip.byteLength),
+    });
+
+    const cache = await fetchScheduleCache(["17"], [21289], fetchImpl);
+    assert.equal(getDirectionName(cache, "17", "0"), "Northbound");
   });
 
   await t.test("throws on a failed download", async () => {
