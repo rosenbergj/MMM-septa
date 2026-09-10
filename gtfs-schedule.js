@@ -466,11 +466,10 @@ function parseDirectionNames(text, routeId) {
   return names;
 }
 
-// directions.txt filtered to a set of route_ids -> {"routeId|directionId":
-// direction name}. A plain object, not a Map, so it survives buildScheduleCache's
-// round trip through saveCacheToDisk/loadCacheFromDisk (JSON.stringify drops
-// a Map's entries silently). The composite key matches how
-// scripts/compare-feeds.js already keys its own directions.txt diff.
+// directions.txt filtered to a set of route_ids -> {"routeId|directionId": direction name}.
+// A plain object, not a Map, so it survives buildScheduleCache's round trip through saveCacheToDisk/loadCacheFromDisk
+// (JSON.stringify drops a Map's entries silently).
+// The composite key matches how scripts/compare-feeds.js keys its own directions.txt diff.
 function parseDirectionNamesForRoutes(text, routeIds) {
   const targetRoutes = new Set(routeIds.map(String));
   const names = {};
@@ -568,9 +567,8 @@ function getRouteLabelColor(cache, routeId) {
 // Patterns are processed in alphabetical-headsign order, not arrival order,
 // so a stop two patterns both claim is credited to the same one on every run and the output stays stable.
 //
-// Returns { headsigns, rows: [{ type: "stop"|"alt", stopId, stopSequence,
-// stopName }] }. An "alt" row carries breakBefore: true when it doesn't follow
-// the alt row above it on any trip; the field is absent otherwise.
+// Returns { headsigns, rows: [{ type: "stop"|"alt", stopId, stopSequence, stopName }] }.
+// An "alt" row carries breakBefore: true when it doesn't follow the alt row above it on any trip; the field is absent otherwise.
 function mergeDirectionPatterns(directionPatterns) {
   const headsigns = [...new Set(directionPatterns.map((p) => p.headsign).filter(Boolean))].sort();
   if (directionPatterns.length === 0) return { headsigns, rows: [] };
