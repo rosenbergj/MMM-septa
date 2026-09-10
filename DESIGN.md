@@ -21,23 +21,25 @@ re-downloaded when SEPTA's copy actually changes.
 A feed is never discarded while it's the only retained one covering today, so
 if SEPTA publishes two future-dated feeds in a row the module holds three
 until it no longer needs the oldest. The same protection separately applies
-to `directions.txt` (see "Finding your route and stop IDs" above): the
-newest feed that has one is held back indefinitely if SEPTA ever ships a feed
-without it, rather than aging out on the usual two-day schedule.
+to `directions.txt`, which supplies direction names everywhere the module needs
+them (see "Resolving direction at a two-direction stop" below): the newest feed
+that has one is held back indefinitely if SEPTA ever ships a feed without it,
+rather than aging out on the usual two-day schedule.
 
 If both retained feeds are newer than today, the display drops to live-only
-data as before, and logs why.
+data and logs why.
 
 `node scripts/compare-feeds.js <old.zip> <new.zip>` prints what changed
-between two feeds -- service coverage per day, routes added/removed, trip
-counts, direction name changes, and with `--headsigns`/`--stops`, those too.
+between two feeds -- service coverage per day, routes added or removed, trip
+counts, direction names, route colors (frequent-network membership first),
+and with `--headsigns`/`--stops`, those too.
 
 ## How often the display fades
 
-The module fades out and back in **only when a poll actually brings something
-new to show** -- roughly once per `refreshIntervalSeconds`, and not even then
-if SEPTA returned the same arrivals as last time. The fade is meant to read as
-"this data just changed", so it's worth keeping rare.
+The module fades out and back in **only when a live poll actually brings
+something new to show** -- roughly once per `refreshIntervalSeconds`, and not
+even then if SEPTA returned the same arrivals as last time. The fade is meant
+to read as "this data just changed", so it's worth keeping rare.
 
 Two things it deliberately does *not* fade for:
 
@@ -45,12 +47,77 @@ Two things it deliberately does *not* fade for:
   `countdownTickSeconds`, but instantly, with no fade. With several arrivals
   on screen at once at least one digit changes on most ticks, so fading these
   would blink the module roughly every 15-20 seconds.
-- **Polls that changed nothing.** If a refresh produces a display identical to
-  what's already on screen, nothing is re-rendered at all.
+- **Live polls that changed nothing.** If a live poll produces a display
+  identical to what's already on screen, nothing is re-rendered at all.
 
 Configured routes are also polled on a shared schedule, spread across a few
-seconds, so one refresh cycle arrives as a single batch and produces one fade
-rather than one per route.
+seconds, so one round of live polls arrives as a single batch and produces one
+fade rather than one per route.
+
+## What the display shows
+
+- **Detours.** When a detour skips the configured stop, the row shows
+  "DETOUR" instead of arrival times, with SEPTA's stated reason if it gave one
+  (e.g. "DETOUR: Sinkhole").
+- **The route label** is followed by a small direction abbreviation (e.g.
+  "17 NB").
+- **Route colors** come from SEPTA's own colors in the static feed's
+  `routes.txt`, and every real color in it is used. Metro and trolley routes
+  get their brand color (Market-Frankford Line blue, Broad St Line orange); a
+  route in SEPTA's frequent bus network gets the same red SEPTA puts on its
+  stop signage (25 routes as of the Sept 2026 feed -- 3, 6, 17, 18, 21, 23, 25,
+  33, 46, 47, 48, 51, 52, 56, 57, 58, 60, 63, 64, 66, 70, 79, 82, 108, 113);
+  and the buses that stand in for a Metro line or run their own branded loop
+  get theirs (`L1_OWL` and `B1_OWL` in their parent line's color, `T_BUS`,
+  `D1_BUS`/`D2_BUS`, `M1_BUS`, the two LUCY loops, `BLVDDIR`, and the
+  `FXCB`/`NOR_BUS`/`WTR_BUS` shuttles). Some deliberately match the line they
+  replace -- `M1_BUS` is drawn in M1's purple because SEPTA means it to read as
+  M1. Ordinary bus routes are the exception: they carry a near-black in
+  `routes.txt` that would be invisible on a mirror, so they keep the default
+  label color. The colors ride along in the schedule cache, so they need no
+  separate fetch and a restart shows them immediately.
+- **The stop-name header** (e.g. "20th St & Oregon Av") is discovered from
+  SEPTA's live data, with no config needed, and cached once known, so it
+  doesn't disappear during a live poll with no active trips. If two routes
+  configured back-to-back share the same `stopId`, the header prints once
+  rather than repeating; a route with a different stop in between resets that,
+  so the header reprints rather than grouping routes out of the order you
+  configured them in.
+- **Destinations.** Each arrival carries its own trip's destination. When
+  every shown arrival agrees, it's a full-width line below the route (e.g.
+  "→ Front-Market") -- not squeezed into the label column, which would stretch
+  it for every route once a longer note is involved (see README's "Secondary
+  stop"). When they don't agree, each distinct destination gets a footnote
+  marker (\*, †, ‡, ...) on its times (e.g. "14m* 22m†"), with every destination
+  listed on its own line below (e.g. "→ 20th-Johnston(*)" / "→ Broad-Pattison(†)").
+  Marker assignment is stable across live polls: node_helper derives it from
+  every headsign the route and stop is ever scheduled to see, not just
+  whichever trip happens to be next, so a destination keeps its marker as
+  different trips rotate through. `showHeadsigns: false` hides both the
+  destination lines and the markers for a more compact display -- see README's
+  "Secondary stop" for how it also changes secondary-stop handling.
+- **A slash between two times** (e.g. "8m/15m") means the **same vehicle**
+  serves your stop twice on one trip -- a mid-route loop or an out-and-back
+  spur, which a handful of SEPTA routes really do (route 107 serves Marshall Rd
+  & Sloan St twice, about six minutes apart). A note saying so appears below
+  the row. Two visits are joined only when they're next to each other in the
+  list; if a different bus falls between them they're shown normally.
+- **The nearest arrival** is shown larger and brighter than the rest.
+- **Countdowns round down**, so "3m" means at least three minutes away and a bus
+  under a minute out shows "0m" -- the display would rather send you to the
+  stop early than tell you a 2m30s bus is 3m off. For the same reason
+  `warnMinutes` and `countdownWithinMinutes` can trigger up to a minute earlier
+  than the exact arithmetic would suggest.
+- **Untracked arrivals.** With `useScheduleSupplement` on (the default),
+  arrivals SEPTA hasn't started GPS-tracking yet -- still at their first stop,
+  no vehicle assigned, or otherwise not "real-time" -- are shown too, styled
+  "~Nm" (italic, muted). The one exception: a trip with no vehicle assigned at
+  all ("NO GPS") has no real delay data behind its ETA (these can sit unchanged
+  for most of an hour, or vanish, without ever getting a vehicle), so if a
+  later, fully confirmed arrival already exists, the "NO GPS" one is dropped
+  rather than shown ahead of it. A trip still at its first stop but with a real
+  assigned vehicle is unaffected -- its GPS and delay data are trustworthy,
+  just not yet "in progress".
 
 ## Resolving direction at a two-direction stop
 
@@ -69,8 +136,9 @@ this order, without any config:
    name as the configured `direction`, that one wins. No live trip needed.
 3. **Live `direction_name`.** Otherwise, fall back to a running trip's own
    direction name — which requires a trip to be running *and* to report a
-   usable name. The trolleys, route 63 and `B1`/`B2`/`B3`/`L1` always report
-   `"N/A"`, so those can never resolve this way.
+   usable name. Live names are unusable on a number of routes -- `"N/A"` on
+   route 63 and `B1`/`B2`/`B3`/`L1`, `"N/A"` or wrong on T1-T5, and G1 calls
+   both its directions "Northbound" -- so those can't resolve this way.
 
 Unresolvable only when all three fail at once: neither direction is uniformly
 terminal, `directions.txt` has no data for the route or the configured
@@ -103,100 +171,59 @@ rewrapping the block.
 
 ## File by file
 
-- `septa-client.js` — pure SEPTA API client + filtering logic (detours,
-  trip filtering, stop-time filtering, staleness), fully unit tested.
-- `node_helper.js` — runs one polling loop per configured route on the
-  backend, pushes results to the frontend over MagicMirror's socket
-  notifications. Polls are kept as light as they can be: routes share a
-  single aligned schedule (staggered a second or so apart), rows on the
-  same route share one `/detours/` and `/trips/` response per cycle, and
-  no `/trip-update/` is requested for a bus SEPTA already reports as past
-  your stop. On a four-route setup that's roughly 23 requests per cycle
-  down to 13, with identical arrivals on screen.
-- `MMM-septa.js` — renders the last known state per route, and re-renders
-  the "Nm" countdowns every `countdownTickSeconds` without needing a
-  fresh backend fetch (see "How often the display fades"). When a detour affects the configured stop, shows
-  "DETOUR" (with SEPTA's stated reason, e.g. "DETOUR: Sinkhole", if one
-  was provided) instead of arrival times. The route label is followed by
-  a small direction abbreviation (e.g. "17 NB"). The route number itself is
-  colored using SEPTA's own colors, read from the static GTFS feed's
-  `routes.txt`. Every real color in the feed is used: Metro and trolley
-  routes get their brand color (e.g. Market-Frankford Line blue, Broad St
-  Line orange), a route in SEPTA's frequent bus network gets the same red
-  SEPTA uses for it on stop signage (25 routes as of the Sept 2026 feed —
-  3, 6, 17, 18, 21, 23, 25, 33, 46, 47, 48, 51, 52, 56, 57, 58, 60, 63, 64,
-  66, 70, 79, 82, 108, 113), and the bus services that stand in for a Metro
-  line or run their own branded loop get theirs (`L1_OWL` and `B1_OWL` in
-  their parent line's color, `T_BUS`, `D1_BUS`/`D2_BUS`, `M1_BUS`, the two
-  LUCY loops, `BLVDDIR`, and the `FXCB`/`NOR_BUS`/`WTR_BUS` shuttles). Some
-  of those deliberately match the line they replace — `M1_BUS` is drawn in
-  M1's purple because SEPTA means it to read as M1.
+- `septa-client.js` — pure client for SEPTA's live v2 API (`/detours/`,
+  `/trips/`, `/trip-update/`) plus the filtering logic: detours, trip
+  filtering, stop-time filtering, staleness. Fully unit tested.
+- `node_helper.js` — the backend. Runs one polling loop per configured route
+  and pushes results to the frontend over MagicMirror's socket notifications.
+  Live polls are kept as light as they can be: routes share a single aligned
+  schedule (staggered a second or so apart), rows on the same route share one
+  `/detours/` and `/trips/` response per round, and no `/trip-update/` is
+  requested for a bus SEPTA already reports as past your stop -- on a
+  four-route setup, roughly 23 requests per round down to 13, with identical
+  arrivals on screen. It also runs the daily schedule refresh (first run ~60
+  seconds after startup, then daily, retrying hourly on failure) and the
+  config validators, which check routeIds, stopIds, secondary stops and
+  directions against the feed and log only when they object.
+- `MMM-septa.js` (with `css/`) — renders the last known state per route, and
+  re-renders the "Nm" countdowns every `countdownTickSeconds` without needing
+  a backend fetch. See "What the display shows".
+- `gtfs-schedule.js` — everything read from SEPTA's static GTFS feed, with no
+  sqlite, no GTFS-realtime protobuf and no full-feed database. It fills in
+  arrivals up to `scheduleHorizonMinutes` out (60 by default, 720 at most) that
+  live tracking doesn't cover yet, also shown "~Nm": `node_helper.js`
+  downloads the feed and filters it down to your configured routes and stops
+  at each daily schedule refresh (never on the live-poll path), caching the
+  small result to `gtfs-cache.json` next to the module so a restart doesn't
+  require re-downloading. That file is gitignored and safe to delete anytime;
+  the next daily schedule refresh rebuilds it. A scheduled arrival is dropped
+  if it's no later than the latest live-tracked arrival (live data should
+  already cover anything that imminent) or if it's the same trip as one
+  already shown. The same pass resolves your configured stops' names as a
+  fallback for when live data hasn't, and reads SEPTA's extension files --
+  `directions.txt` for direction names, `routes.txt` for route colors,
+  `route_stops.txt` for the stop paths detour inference needs. All three are
+  optional, so a feed without them still builds a normal cache. It also owns
+  feed retention (see "Schedule feed retention") and the stop-pattern listing
+  `scripts/find-stop.js` prints.
+- `route-config.js` — pure config parsing, unit tested. Splits a merged
+  `routeId` (`"T2,T3,T4,T5"`, or an array) into its route_ids, resolves the
+  configured `direction` for each sub-route (a string, or a
+  `{ routeId: direction }` map), and resolves `scheduleHorizonMinutes`.
+- `scripts/find-stop.js` — finds route and stop IDs from the static feed
+  alone, merging each direction's patterns into one listing with trip counts;
+  `--full` prints ready-to-paste config entries.
+- `scripts/dry-run.js` — a live smoke test of the same `pollRoute` path the
+  module uses.
+- `scripts/compare-feeds.js` — diffs two banked feeds (see "Schedule feed
+  retention"). It never reads `stop_times.txt`, so a full comparison takes a
+  couple of seconds.
+- `scripts/register-feed.js` — puts a banked `google_bus.zip` back into the
+  feed store, reading its real `feed_version` from `feed_info.txt`. It never
+  deletes a zip, and refuses rather than push an existing feed out of the
+  retained set.
+- `scripts/measure-detour-inference.js` — scores detour inference against the
+  detours where SEPTA *did* list the skipped stops, reporting both containment
+  and span width, since containment alone can be gamed by a wider span.
 
-  Ordinary bus routes are the exception: they carry a near-black in
-  `routes.txt` that would be invisible on a mirror, so they keep the default
-  label color instead. The colors ride along in the GTFS schedule cache, so
-  they need no separate fetch and a restart shows them immediately. Each route also gets
-  a small header line with the stop name (e.g. "20th St & Oregon Av"),
-  discovered automatically from SEPTA's live data (no config needed) and
-  cached once known, so it doesn't disappear during a cycle with no
-  active trips. If two routes configured back-to-back share the same
-  `stopId` (e.g. two different routes that both stop at the same physical
-  corner), the header only prints once rather than repeating identically —
-  configuring a third route with a different stop in between resets this,
-  so the header intentionally reprints rather than grouping non-adjacent
-  routes out of the order you configured them in. Each arrival carries
-  its own trip's destination, shown as a full-width line below the route
-  (not squeezed into the label column, which would stretch it for every
-  route once a longer note is involved — see README's "Secondary stop")
-  when every currently-shown arrival agrees on it (e.g. "→ Front-Market").
-  When they don't, each distinct destination among the shown arrivals
-  gets a footnote marker (\*, †, ‡, ...) appended to its times (e.g.
-  "14m* 22m†"), with every destination listed on its own line below
-  (e.g. "→ 20th-Johnston(*)" / "→ Broad-Pattison(†)") instead of a vague
-  "Mixed destinations". Marker assignment is stable across polls --
-  node_helper derives it from every headsign the route/stop is ever
-  scheduled to see (not just whichever trip happens to be next), so a
-  given destination keeps the same marker even as different trips
-  rotate through. Set `showHeadsigns: false` to hide both the destination
-  line(s) and the footnote markers for a more compact display — see README's
-  "Secondary stop" for how it also changes secondary-stop handling.
-  Two arrival times joined by a slash (e.g. "8m/15m") are the **same
-  vehicle** serving your stop twice on one trip -- a mid-route loop or an
-  out-and-back spur, which a handful of SEPTA routes really do (route 107
-  serves Marshall Rd & Sloan St twice, about six minutes apart). A note
-  saying so appears below the row whenever that happens. Two visits are
-  only joined when they're next to each other in the list; if a different
-  bus falls between them they're shown normally.
-  The nearest arrival is shown larger/brighter than the
-  rest. Countdowns round **down**, so "3m" means at least three minutes
-  away and a bus under a minute out shows "0m" -- the display would
-  rather send you to the stop early than tell you a 2m30s bus is 3m off.
-  For the same reason `warnMinutes` and `countdownWithinMinutes` can
-  trigger up to a minute earlier than the exact arithmetic would suggest. With `useScheduleSupplement` on (the default), arrivals SEPTA
-  hasn't started GPS-tracking yet — still at their first stop, no
-  vehicle assigned, or otherwise not "real-time" — are shown too,
-  styled as "~Nm" (italic, muted) instead of being dropped entirely.
-  The one exception: a trip with no vehicle assigned at all ("NO GPS")
-  has no real delay data behind its ETA (confirmed live that these can
-  sit unchanged for the better part of an hour, or vanish entirely,
-  without ever getting a vehicle) — so if a later, fully-confirmed
-  arrival already exists, the "NO GPS" one is dropped rather than shown
-  ahead of it. A trip still at its first stop but with a real assigned
-  vehicle is unaffected by this — its GPS/delay data is genuinely
-  trustworthy, just not yet "in progress".
-- `gtfs-schedule.js` — fills in arrivals up to 60 minutes out that live
-  tracking doesn't cover yet, using SEPTA's static GTFS schedule as a
-  fallback (also shown "~Nm"). No sqlite, no GTFS-realtime protobuf, no
-  full-feed database: `node_helper.js` downloads and filters the feed down
-  to just your configured routes/stops once ~60 seconds after startup and
-  once daily thereafter (never on the per-poll hot path), and caches the
-  tiny result to `gtfs-cache.json` next to the module so a restart doesn't
-  require redownloading. That file is gitignored — safe to delete anytime;
-  it's rebuilt automatically on the next refresh. A scheduled arrival is
-  dropped if it's no later than the latest live-tracked arrival (live data
-  should already cover anything that imminent) or if it turns out to be
-  the same trip as one already shown. The same daily refresh also resolves
-  your configured stops' names (filtered to just those stop_ids, same as
-  everything else here) as a fallback for when live data hasn't/can't.
-- `scripts/find-stop.js` / `scripts/dry-run.js` — standalone CLI helpers,
-  runnable with plain `node`, no MagicMirror needed.
+The scripts all run with plain `node`; none needs MagicMirror.
