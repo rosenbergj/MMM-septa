@@ -4,29 +4,26 @@
 // Helper for figuring out which stop_id/direction_name to put in your config.js, without needing a separate "stops" API
 // (SEPTA doesn't document one we could verify).
 //
-// Lists every stop, for every scheduled stop pattern (headsign) on the route, straight from SEPTA's static GTFS schedule
-// -- including short-turn/express patterns with no currently-running trip,
-// which a purely live-data approach can miss entirely (you'd have to happen to run this while one of those trips was in service).
+// Lists every stop of every scheduled pattern on the route, from the static GTFS feed
+// -- including short-turn and express patterns with no trip running right now,
+// which a live-data approach only catches if you happen to run it at the right moment.
 //
-// Same-direction patterns are merged into one deduped view rather than printed as separate blocks: the longest pattern becomes the reference,
-// and any other pattern's stops the reference doesn't already have are spliced in as unlabeled "alt" rows at the point where they leave the reference
-// -- or, for a pattern that *starts* off the reference, at the point where it rejoins,
-// so that an alt block always sits next to the reference stop it really connects to on some trip
-// (a pattern with nothing extra -- SEPTA often just runs a shorter version of the same route
-// -- contributes nothing beyond its headsign name).
-// See gtfs-schedule.js's mergeDirectionPatterns for the actual algorithm.
+// Same-direction patterns are merged into one deduped view rather than printed as separate blocks;
+// see gtfs-schedule.js's mergeDirectionPatterns for how.
+// Stops the reference pattern lacks appear as unlabeled "alt" rows.
 //
 // Each row can carry a trip count, printed sparsely (see pickAnnotatedRows).
-// The reference is chosen by stop count alone, which is uncorrelated with how often a pattern runs,
-// so an "alt" row can easily be better served than the main sequence it's spliced into
-// -- the counts are the only thing in the output that distinguishes a genuine branch from a once-a-day variant.
+// This matters more than it looks: the reference is chosen by stop count alone, which is uncorrelated with how often a pattern runs,
+// so an "alt" row can easily be better served than the main sequence it sits in.
+// The counts are the only thing in the output separating a genuine branch from a once-a-day variant.
 // Not printed by --full, whose rows are meant to be pasted into config.js verbatim.
 //
-// Output is fully deterministic across runs: no "currently running" annotation, no calendar/day filtering
-// (a weekend-only pattern shows up even if you run this on a Tuesday), same result every time for a given GTFS feed
-// -- direction names included, since those also come straight from the static feed's directions.txt.
+// Output is fully deterministic for a given feed: no "currently running" annotation, no calendar/day filtering
+// (a weekend-only pattern shows up on a Tuesday), direction names included.
 //
-// Usage: node scripts/find-stop.js <routeId> [--full] Example: node scripts/find-stop.js 17 Example: node scripts/find-stop.js 17 --full
+// Usage:   node scripts/find-stop.js <routeId> [--full]
+// Example: node scripts/find-stop.js 17
+// Example: node scripts/find-stop.js 17 --full
 
 const {
   fetchRouteStopPatterns,

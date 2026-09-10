@@ -281,26 +281,21 @@ module.exports = NodeHelper.create({
     }
   },
 
-  // A configured `direction` string that doesn't match SEPTA's own name for the stop's resolved direction_id otherwise fails silently: filterGoodTrips
-  // (septa-client.js) just filters out every trip,
-  // so the row always shows no arrivals, indistinguishable from a route with nothing currently running.
+  // A configured `direction` that doesn't match SEPTA's name for the stop's resolved direction_id otherwise fails silently: filterGoodTrips filters out every trip,
+  // so the row shows no arrivals, indistinguishable from a route with nothing running.
   //
-  // Checked against directions.txt (via gtfs-schedule.js's getDirectionName) rather than a live trip's direction_name, unlike the runtime check this supplements
-  // (septa-client.js's pollRoute, which only ever fires when a live trip happens to be running with a usable name)
-  // -- so this fires once per refresh, for every route, including the ones whose live feed never gives a usable direction_name at all
-  // (T1-T5, route 63, B1/B2/B3/L1 -- see the README's Known limitations).
+  // Checked against directions.txt (getDirectionName), not a live trip's direction_name
+  // -- so unlike the runtime check in pollRoute it fires once per refresh for every route,
+  // including the ones whose live feed never gives a usable name at all
+  // (T1-T5, 63, B1/B2/B3/L1; see README's Known limitations).
   //
-  // Deliberately uses only the same two *structural* tiers runCycle's structuralDirectionId starts with
-  // (a stop exclusive to one direction_id, or getTerminusExclusionDirectionId's terminal-shape heuristic)
-  // -- never its third, name-matching tier (gtfs-schedule.js's resolveDirectionIdByName),
-  // which resolves *from* the configured direction and so can't also be used to validate it without becoming circular.
-  // When neither structural tier resolves (a genuinely ambiguous stop), checked instead against every name the route has,
-  // so a flat typo or wrong route is still caught even though "right route,
-  // wrong direction for this specific stop" isn't distinguishable in that case.
+  // Uses only the two *structural* tiers runCycle's structuralDirectionId starts with, never its third name-matching tier
+  // (resolveDirectionIdByName): that one resolves *from* the configured direction, so validating with it would be circular.
+  // When neither structural tier resolves, falls back to checking against every name the route has
+  // -- which still catches a typo or wrong route, though not "right route, wrong direction for this stop".
   //
-  // Skips a route directions.txt has no data for at all (a feed without the extension, or a route/direction it doesn't list)
-  // -- unresolvable is not the same as wrong, and this must never warn about a route it simply has no data for.
-  // Also skips routes that opted out of the schedule supplement, same as the other validators.
+  // Skips routes directions.txt has no data for: unresolvable is not wrong, and this must never warn about a route it can't speak to.
+  // Also skips routes that opted out of the supplement, as the other validators do.
   validateDirections() {
     for (const state of this.routes.values()) {
       if (state.useScheduleSupplement === false) continue;

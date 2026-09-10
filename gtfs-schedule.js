@@ -338,33 +338,21 @@ function hasActiveServiceOn(cache, date) {
   return false;
 }
 
-// Builds the full (unfiltered-by-date) cache object from raw zip file contents.
-// Pure given the extracted text -- no I/O, easy to unit test.
-// stopNames is filtered down to just stopIds (like entries is) so a configured stop's name is always resolvable from the daily schedule refresh,
-// not just whenever a live trip happens to pass through it (which a structurally-skipping headsign, e.g. a secondary stop, might never do)
-// -- stops.txt in fileTexts is optional so callers that don't need names
-// (or don't have it, e.g. NEEDED_FILES-less test fixtures) still work.
-// One ordered, coordinate-bearing stop list per configured (routeId, directionId)
-// -- the geometric backbone the inferred-detour span test needs (see inferDetourSpanStops).
-// Deliberately separate from `entries`, which is filtered down to the user's configured stops and so can't say what lies between them.
+// One ordered, coordinate-bearing stop list per configured (routeId, directionId) -- the geometric backbone inferDetourSpanStops needs.
+// Separate from `entries`, which is filtered to the user's configured stops and so can't say what lies between them.
 //
-// Read straight from route_stops.txt, which is SEPTA's own answer to "what stops does this route serve, in order".
-// This replaced a reconstruction that sampled 20 trips per route/direction and kept the longest: that made the path only as complete as one real trip,
-// so a branchy route lost every stop its representative trip didn't serve
-// (route 63 southbound: 102 stops reconstructed vs 121 in route_stops.txt).
-// It also cost a second full scan of the ~100MB stop_times.txt on every refresh, which this doesn't.
+// Read straight from route_stops.txt, SEPTA's own answer to "what stops does this route serve, in order".
+// It replaced a reconstruction that sampled 20 trips and kept the longest,
+// which made the path only as complete as one real trip: route 63 southbound came out 102 stops against 121 here.
+// That also cost a second full scan of the ~100MB stop_times.txt per refresh.
 //
-// One known difference, accepted: route_stops.txt lists a stop once even when a trip serves it twice,
-// so it is a deduplicated union rather than a literal traversal.
-// Measured on feed v202609060, that affects 7 of 327 route/direction pairs
-// (routes 95, 107, 114, 117, 310 and both LUCY loops), covering 0.81% of trips.
-// On those the inferred span may differ from the old reconstruction
-// -- not necessarily for the worse, since nearest-stop matching could pick either occurrence anyway.
-// Detour-stop inference is a best-effort fallback for when SEPTA omits skipped_stops at all,
-// so a different guess on a handful of loop routes doesn't warrant carrying two code paths.
+// Accepted difference: route_stops.txt lists a stop once even when a trip serves it twice,
+// so it's a deduplicated union rather than a literal traversal.
+// On feed v202609060 that affects 7 of 327 route/directions (95, 107, 114, 117, 310 and both LUCY loops), 0.81% of trips.
+// Inferred spans may differ there -- not necessarily for the worse, since nearest-stop matching could pick either occurrence anyway.
 //
-// Filtered to the configured routes, unlike parseRouteLabelColors: these entries carry coordinates,
-// so keeping all 327 would put ~1MB in the cache against ~23KB for a typical config.
+// Filtered to the configured routes, unlike parseRouteLabelColors: these carry coordinates,
+// so keeping all 327 would cost ~1MB against ~23KB.
 function parseRouteStopPaths(text, routeIds, stopLatLon) {
   const targetRoutes = new Set(routeIds.map(String));
   const ordered = new Map(); // "routeId|directionId" -> [{ stopId, sortOrder }]
@@ -387,6 +375,13 @@ function parseRouteStopPaths(text, routeIds, stopLatLon) {
   return paths;
 }
 
+// Builds the full (unfiltered-by-date) cache from raw zip file contents.
+// Pure given the extracted text -- no I/O, easy to unit test.
+//
+// stopNames is filtered to just stopIds (as `entries` is) so a configured stop's name always resolves from the daily refresh,
+// rather than only when a live trip happens through it
+// -- which a structurally-skipping headsign, such as a secondary stop,
+// might never do. stops.txt is optional so callers that don't need names, or don't have it, still work.
 function buildScheduleCache(fileTexts, routeIds, stopIds) {
   const trips = parseTripsForRoutes(fileTexts["trips.txt"], routeIds);
   const entries = parseStopTimesForTrips(fileTexts["stop_times.txt"], trips, stopIds);
@@ -566,38 +561,27 @@ function getRouteLabelColor(cache, routeId) {
   return cache.routeColors[String(routeId)] || null;
 }
 
-// Merges same-direction stop patterns (one per headsign
-// -- see scripts/find-stop.js's pickRepresentativePatterns,
-// which reduces buildRouteStopPatterns' one-per-trip output down to this first) into a single deduped,
-// ordered view instead of printing each headsign's full stop list separately.
-// Used by scripts/find-stop.js to keep its output short even for a route with many headsigns/short-turns.
+// Merges one pattern per headsign into a single deduped, ordered view,
+// so scripts/find-stop.js can print a route with many short-turns as one listing.
 //
-// The longest pattern becomes the "reference".
-// Every other pattern is walked stop-by-stop and matched against the reference via a monotonically-advancing stopId->index lookup
-// (a match must be at a later reference index than the previous match, so a repeated stop_id -- e.g. a loop -- can't match backwards).
-// Matched stops are "anchors"; stops that don't match anything in the reference are "extra",
-// grouped into contiguous runs and spliced in next to the anchor each run actually adjoins on its own trip: after the anchor it follows, or
-// -- for a run at the very start of a pattern, which has no preceding anchor -- immediately *before* the anchor it runs into.
-// Both readings describe the same adjacency; only a run with no anchor on either side
-// (a pattern sharing no stop with anything placed so far) has nowhere to go but the top of the listing.
-// Anchoring a leading run forward is what puts route 63 Northbound's short-turn origin
-// (Baltimore Av & 59th St, where a handful of Overbrook trips start) down at the Baltimore Av crossing it joins,
+// The longest pattern is the "reference"; stops no pattern shares with it are "extra",
+// grouped into contiguous runs and spliced in beside the anchor each run actually adjoins on its own trip.
+//
+// Three things here are load-bearing and not obvious from the code:
+//
+// Matching advances monotonically, so a stop_id a loop route visits twice can't match backwards.
+//
+// A run at the very start of a pattern has no preceding anchor, so it attaches *forward* to the anchor it runs into.
+// That is what puts route 63 Northbound's Overbrook short-turn origin
+// (Baltimore Av & 59th St) down at the Baltimore Av crossing it joins,
 // instead of stranding it above the route's first stop miles away in South Philly.
-// Once an extra run has been placed, its stops become anchors too,
-// so a branch that only overlaps an *earlier branch* (not the reference) still lands at the right place -- see gapIndexByStopId below.
 //
-// A pattern with zero extra stops is fully contained in the reference
-// (SEPTA often just runs a shorter/truncated version of the same route) and contributes nothing beyond its headsign name.
-// Patterns are processed in alphabetical-headsign order
-// (not whatever order they happened to arrive in) so a shared extra stop always gets credited to the same pattern on every run,
-// and no stop is ever repeated in the output even if multiple patterns would otherwise both claim it.
+// Patterns are processed in alphabetical-headsign order, not arrival order,
+// so a stop two patterns both claim is credited to the same one on every run and the output stays stable.
 //
-// Returns { headsigns: string[], rows: [{ type: "stop"|"alt", stopId,
-// stopSequence, stopName }] } -- rows is the reference's own stops in
-// order, with each pattern's extra runs spliced in at the right position.
-// An "alt" row additionally carries breakBefore: true when it does not
-// actually follow the alt row above it on any trip (see the end of this
-// function); the field is absent otherwise.
+// Returns { headsigns, rows: [{ type: "stop"|"alt", stopId, stopSequence,
+// stopName }] }. An "alt" row carries breakBefore: true when it doesn't follow
+// the alt row above it on any trip; the field is absent otherwise.
 function mergeDirectionPatterns(directionPatterns) {
   const headsigns = [...new Set(directionPatterns.map((p) => p.headsign).filter(Boolean))].sort();
   if (directionPatterns.length === 0) return { headsigns, rows: [] };
@@ -901,36 +885,24 @@ function getDirectionIdsForStop(cache, routeId, stopId) {
   return [...directionIds].sort();
 }
 
-// For a (routeId, stopId) that getDirectionIdsForStop found ambiguous
-// (2 direction_ids -- e.g. a tunnel-portal terminus like T1-T5's 13th St, stop 283,
-// where one direction's patterns all end there and the other's all start there),
-// determines whether it's safe to resolve anyway without any live direction_name
-// -- which some routes (confirmed live: T1-T5, route 63,
-// B1/B2/B3/L1) never provide a usable one for, making the normal direction_name fallback
-// (see septa-client.js's filterGoodTrips) permanently dead at a stop like this.
+// Resolves a stop that getDirectionIdsForStop found ambiguous (2 direction_ids) without needing a live direction_name
+// -- which T1-T5, route 63 and B1/B2/B3/L1 never provide a usable one for,
+// leaving the normal fallback in septa-client.js's filterGoodTrips permanently dead at such a stop.
 //
-// A direction is "uniformly terminal" at this stop if every one of its patterns that reaches stopId does so only as that pattern's own last stop
-// -- i.e. no rider could ever board here and continue somewhere on a trip from that direction
-// (patterns that don't reach the stop at all don't count against it either way).
-// When exactly one of the two directions is uniformly terminal and the other isn't,
-// the other is the one anyone waiting at this stop actually wants
-// -- returned here as a plain direction_id, usable exactly like a normal single-direction stop's structuralDirectionId (see node_helper.js's runCycle).
-// The kept direction doesn't need to itself be uniform in any way
-// -- some of its patterns can have the stop as their first stop, others as a plain mid-route stop;
-// either way every one of them is a real, boardable, continuing trip.
+// A direction is "uniformly terminal" here if every one of its patterns that reaches the stop does so as that pattern's own last stop -- nobody could board and continue anywhere.
+// When exactly one direction is uniformly terminal,
+// the other is the one people waiting here actually want, and is returned as a plain direction_id.
+// A tunnel-portal terminus is the shape this is for: T1-T5 at 13th St
+// (stop 283), where one direction's patterns all end and the other's all begin.
 //
-// Returns null when the shape doesn't hold -- neither direction is uniformly terminal,
-// so both have at least one genuinely continuing pattern and there is no direction safe to rule out.
-// See README's "Known limitations" for why that residual case
-// (and its mirror -- wanting the terminal side on purpose) is left unresolved rather than guessed at.
+// Returns null when neither direction is uniformly terminal, so both carry a genuinely continuing pattern and neither is safe to rule out.
+// See README's "Known limitations" for why that case,
+// and its mirror (wanting the terminal side on purpose), are left unresolved rather than guessed at.
 //
-// fileTexts must include an unfiltered-by-stopId "stop_times.txt"
-// -- the cache's own `entries` are pre-filtered to just the stops actually configured (see buildScheduleCache),
+// Needs an unfiltered-by-stopId "stop_times.txt": the cache's own `entries` are pre-filtered to configured stops,
 // so they can't answer "does this trip continue past here".
-// This re-parses stop_times.txt for just this one route's trips
-// (same approach as buildRouteStopPatterns/find-stop.js, just scoped to a single ambiguous route/stop instead of a whole route's listing)
-// -- only worth its cost (a full pass over the already-downloaded feed text) because it's called rarely,
-// once per daily schedule refresh, only for routeId/stopId pairs already known to be ambiguous.
+// The extra pass over the already-downloaded feed is affordable only because this runs once per daily refresh,
+// and only for pairs already known to be ambiguous.
 function resolveTerminusExclusion(fileTexts, routeId, stopId, directionIds) {
   const trips = parseTripsForRoutes(fileTexts["trips.txt"], [routeId]);
   const allStopTimes = parseStopTimesForTrips(fileTexts["stop_times.txt"], trips);
@@ -1085,30 +1057,26 @@ function parseFeedInfo(text) {
 }
 
 // Which retained feeds survive once `incoming` arrives.
-// Same day replaces (a revision supersedes what it revises); otherwise the oldest days fall off once more than maxDays remain.
+// Same day replaces; otherwise the oldest days fall off once more than maxDays remain.
 //
-// Up to two feeds are exempt from ageing out, one per protection reason
-// below -- each independently rescues at most the single newest feed
-// matching its own reason, so a feed protected for one reason doesn't count
-// toward the other (a version present in both sets only ever needs rescuing
-// once, since rescueBy is a no-op once that version is already in `keep`):
-//   - `options.coveringVersions`: if applying the age rule would leave
-//     nothing that covers the current date, the newest feed that *does*
-//     cover it is held back, and the store carries an extra feed until it
-//     isn't needed. The caller reads this from each feed's calendars -- see
-//     feedHasServiceOn.
-//   - `options.hasDirectionsVersions`: if applying the age rule would leave
-//     nothing with a directions.txt, the newest feed that has one is held
-//     back permanently (not just until the age rule would otherwise cover
-//     it, unlike the date-coverage case -- a feed's directions.txt never
-//     "becomes covered" by a newer feed the way a date does, so once this
-//     triggers it keeps triggering for as long as every newer feed keeps
-//     lacking directions.txt). See gtfs-schedule.js's FEED_SELECTION_FILES.
-// Omitting either disables that protection, which is only correct when the
-// caller genuinely has no date/directions.txt signal to protect.
+// Two feeds are exempt from ageing out, one per reason below.
+// Each rescues at most the single newest feed matching its own reason, so one feed protected for both reasons still only occupies one slot.
 //
-// `evict` lists only *previously stored* entries whose zips should be deleted
-// -- if `incoming` itself is older than everything retained it simply won't appear in `keep`, and the caller should not store it.
+//   - `options.coveringVersions`: if the age rule would leave nothing covering
+//     the current date, the newest feed that does cover it is held back, and
+//     the store carries an extra feed until it isn't needed. Callers derive
+//     this from each feed's calendars -- see feedHasServiceOn.
+//
+//   - `options.hasDirectionsVersions`: if the age rule would leave nothing
+//     carrying directions.txt, the newest feed that has one is held back
+//     *permanently*. Unlike date coverage, a feed's directions.txt never
+//     "becomes covered" by a newer feed, so once this triggers it keeps
+//     triggering for as long as newer feeds lack the file.
+//
+// Omitting either disables that protection, correct only when the caller has no such signal to protect.
+//
+// `evict` lists only previously stored entries whose zips should be deleted.
+// An `incoming` older than everything retained simply won't appear in `keep`, and the caller should not store it.
 function planFeedRetention(entries, incoming, options = {}) {
   const maxDays = options.maxDays || FEED_RETENTION_DAYS;
   const withoutSameDay = entries.filter((entry) => entry.day !== incoming.day);

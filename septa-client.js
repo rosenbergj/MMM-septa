@@ -412,8 +412,9 @@ function computeIsFresh(lastFetchTime, refreshIntervalSeconds, now = Date.now())
 
 // Runs one full poll cycle for a single route/stop/direction.
 //
-// routeConfig: { routeId, stopId, direction } options.fetchImpl: injectable fetch implementation
-// (defaults to global fetch) options.now: () => Date, injectable clock (defaults to () => new Date())
+// routeConfig: { routeId, stopId, direction }
+// options.fetchImpl: injectable fetch implementation (defaults to global fetch)
+// options.now: () => Date, injectable clock (defaults to () => new Date())
 //
 // Detour and trips fetch failures propagate (throw) so the caller can apply its own retry-interval backoff.
 // Per-trip trip-update failures are isolated (Promise.allSettled) so one bad trip only sets hasTripError — it never fails the whole cycle,
