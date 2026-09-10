@@ -17,7 +17,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { readZipEntries, parseFeedInfo } = require("../gtfs-schedule.js");
+const { readZipEntries, parseFeedInfo, resolveRouteLabelColor } = require("../gtfs-schedule.js");
 
 const FILES = ["feed_info.txt", "routes.txt", "trips.txt", "calendar.txt", "calendar_dates.txt", "stops.txt", "directions.txt"];
 
@@ -109,6 +109,14 @@ function loadFeed(zipPath) {
     sizeBytes: buffer.length,
     trips,
     routeNames: new Map(routes.map((r) => [r.route_id, r.route_long_name || r.route_short_name || ""])),
+    // Both the raw route_color and what the display would actually draw from
+    // it. The two differ on purpose: SEPTA can change a raw color that we
+    // deliberately don't draw (an ordinary bus's near-black, a dark shuttle
+    // brand color), and that's worth seeing without implying the screen
+    // changed. resolveRouteLabelColor is imported rather than reimplemented
+    // so this can never drift from what the module renders.
+    rawColors: new Map(routes.map((r) => [r.route_id, (r.route_color || "").toUpperCase()])),
+    labelColors: new Map(routes.map((r) => [r.route_id, resolveRouteLabelColor(r)])),
     stops: new Map(stops.map((s) => [s.stop_id, s.stop_name])),
     calendar,
     exceptions,
@@ -245,6 +253,73 @@ function main() {
       }
       for (const k of added) console.log(`  + ${formatDirectionKey(k)}: "${newFeed.directions.get(k)}"`);
       for (const k of removed) console.log(`  - ${formatDirectionKey(k)}: "${oldFeed.directions.get(k)}"`);
+    }
+  }
+
+  // routes.txt route_color is where SEPTA marks its frequent bus network
+  // (EF3340) and carries the Metro/trolley brand colors -- it's the source
+  // node_helper.js draws route labels from, so a change here is a change on
+  // screen. Reported in two parts: membership of the frequent network first
+  // (the thing most likely to actually move), then any other color change.
+  console.log("\n" + "-".repeat(72) + "\nROUTE COLORS (routes.txt)");
+  {
+    const FREQUENT = "EF3340";
+    const oldIds = new Set(oldFeed.rawColors.keys());
+    const newIds = new Set(newFeed.rawColors.keys());
+    const bothIds = [...newIds].filter((r) => oldIds.has(r)).sort();
+
+    const wasFrequent = (feed, r) => feed.rawColors.get(r) === FREQUENT;
+    const gainedRed = bothIds.filter((r) => !wasFrequent(oldFeed, r) && wasFrequent(newFeed, r));
+    const lostRed = bothIds.filter((r) => wasFrequent(oldFeed, r) && !wasFrequent(newFeed, r));
+    const oldRedCount = [...oldIds].filter((r) => wasFrequent(oldFeed, r)).length;
+    const newRedCount = [...newIds].filter((r) => wasFrequent(newFeed, r)).length;
+
+    console.log(`  frequent network (${FREQUENT}): old ${oldRedCount}, new ${newRedCount}`);
+    if (gainedRed.length) {
+      console.log(`    + now frequent: ${gainedRed.map((r) => `${r} (${newFeed.routeNames.get(r) || "?"})`).join(", ")}`);
+    }
+    if (lostRed.length) {
+      console.log(`    - no longer frequent: ${lostRed.map((r) => `${r} (${oldFeed.routeNames.get(r) || "?"})`).join(", ")}`);
+    }
+    if (!gainedRed.length && !lostRed.length) console.log("    no change in frequent-network membership");
+
+    // Everything else: a brand color actually changing value. Split by
+    // whether the display draws it, so a cosmetic feed-side change to a
+    // color we ignore doesn't read as a display change.
+    const otherChanges = bothIds
+      .filter((r) => oldFeed.rawColors.get(r) !== newFeed.rawColors.get(r))
+      .filter((r) => !gainedRed.includes(r) && !lostRed.includes(r));
+    const visible = otherChanges.filter((r) => oldFeed.labelColors.get(r) !== newFeed.labelColors.get(r));
+    const invisible = otherChanges.filter((r) => oldFeed.labelColors.get(r) === newFeed.labelColors.get(r));
+
+    if (visible.length) {
+      console.log("  other color changes the display DOES draw:");
+      for (const r of visible) {
+        console.log(
+          `    ~ ${r.padEnd(8)} ${oldFeed.rawColors.get(r)} -> ${newFeed.rawColors.get(r)}  ` +
+            `(drawn: ${oldFeed.labelColors.get(r) || "default"} -> ${newFeed.labelColors.get(r) || "default"})  ` +
+            `${newFeed.routeNames.get(r) || ""}`
+        );
+      }
+    }
+    if (invisible.length) {
+      console.log("  other color changes the display ignores (not drawn either way):");
+      for (const r of invisible) {
+        console.log(`    ~ ${r.padEnd(8)} ${oldFeed.rawColors.get(r)} -> ${newFeed.rawColors.get(r)}  ${newFeed.routeNames.get(r) || ""}`);
+      }
+    }
+    if (!visible.length && !invisible.length) console.log("  no other route_color changes");
+
+    // A route appearing/disappearing is already covered by the ROUTES
+    // section above; only its color is worth noting here, and only when it
+    // is one the display would draw.
+    const addedDrawn = [...newIds].filter((r) => !oldIds.has(r) && newFeed.labelColors.get(r)).sort();
+    const removedDrawn = [...oldIds].filter((r) => !newIds.has(r) && oldFeed.labelColors.get(r)).sort();
+    if (addedDrawn.length) {
+      console.log(`  new routes arriving with a drawn color: ${addedDrawn.map((r) => `${r} ${newFeed.labelColors.get(r)}`).join(", ")}`);
+    }
+    if (removedDrawn.length) {
+      console.log(`  routes gone that had a drawn color: ${removedDrawn.map((r) => `${r} ${oldFeed.labelColors.get(r)}`).join(", ")}`);
     }
   }
 
