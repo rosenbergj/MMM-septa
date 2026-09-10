@@ -896,8 +896,8 @@ function getDirectionIdsForStop(cache, routeId, stopId) {
 // (stop 283), where one direction's patterns all end and the other's all begin.
 //
 // Returns null when neither direction is uniformly terminal, so both carry a genuinely continuing pattern and neither is safe to rule out.
-// See README's "Known limitations" for why that case,
-// and its mirror (wanting the terminal side on purpose), are left unresolved rather than guessed at.
+// That case, and its mirror (wanting the terminal side on purpose), are left unresolved rather than guessed at;
+// see DESIGN.md's "Resolving direction at a two-direction stop".
 //
 // Needs an unfiltered-by-stopId "stop_times.txt": the cache's own `entries` are pre-filtered to configured stops,
 // so they can't answer "does this trip continue past here".

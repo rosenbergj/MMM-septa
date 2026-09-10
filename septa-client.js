@@ -465,36 +465,14 @@ async function pollRoute(routeConfig, options = {}) {
 
   const trips = await fetchTrips(routeId, fetchImpl);
 
-  // Direction resolution: prefer structuralDirectionId over a live direction_name match, for the same reason filterGoodTrips does
-  // -- the stop_id the user actually configured is more trustworthy than a direction_name that can be unusable or wrong.
-  // Falls back to resolving from *any* trip matching the configured direction
-  // (regardless of canceled/tracked status -- this is purely about learning the direction_id<->direction_name pairing) when the stop is itself ambiguous or the schedule cache isn't available
-  // -- some stop_ids are, rarely but really, served by both directions of the same route (confirmed live: route 2 stop 40),
-  // and the static schedule alone has no direction_name, only a bare direction_id,
-  // so a live match is the only way to connect the two in that case.
-  //
-  // Even when structuralDirectionId is used, still check for a live trip that names this same direction_id something other than the configured direction
-  // -- not to override anything (the configured stop_id remains the more trustworthy signal),
-  // just to warn: it's either a stale/typo'd config, or a SEPTA-side reversal like route 135's.
+  // Direction resolution.
+  // structuralDirectionId arrives already resolved from the schedule (see node_helper.js's runCycle) and is used as-is.
+  // A live direction_name never overrides it: live names are "N/A" on some routes and simply wrong on others (G1 calls both of its directions "Northbound").
+  // Without one -- no schedule cache yet, or an ambiguous stop none of the structural tiers could resolve -- learn the direction_id from any live trip whose direction_name matches the configured direction.
+  // Canceled and untracked trips count too, since this only pairs a name with an id.
   let directionId;
   if (structuralDirectionId != null) {
     directionId = structuralDirectionId;
-    const conflictingMatch = trips.find(
-      (trip) =>
-        trip &&
-        trip.direction_name &&
-        trip.direction_name !== "N/A" &&
-        String(trip.direction_id) === structuralDirectionId &&
-        trip.direction_name !== direction
-    );
-    if (conflictingMatch) {
-      console.error(
-        `Warning: route ${routeId}'s configured direction "${direction}" doesn't match SEPTA's live ` +
-          `direction_name ("${conflictingMatch.direction_name}") for this stop's own direction_id ` +
-          `${structuralDirectionId} -- showing arrivals for the configured stop_id anyway, but double-check ` +
-          "your config against SEPTA's site."
-      );
-    }
   } else {
     const directionMatch = trips.find((trip) => trip && trip.direction_name === direction);
     directionId = directionMatch ? String(directionMatch.direction_id) : null;

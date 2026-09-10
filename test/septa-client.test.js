@@ -1487,11 +1487,9 @@ test("pollRoute", async (t) => {
     assert.ok(result.etas.length > 0);
   });
 
-  await t.test("structuralDirectionId still shows arrivals when a live name conflicts with the configured direction", async () => {
-    // Simulates a route-135-style reversal (or a stale config): a live trip
-    // confirms direction_id 0 is actually called "Southbound", not the
-    // configured "Northbound". The configured stop_id wins; a warning is
-    // logged (not asserted here), arrivals are still shown.
+  await t.test("structuralDirectionId wins over a conflicting live name, and nothing is logged", async () => {
+    // SEPTA's live feed mislabels directions on some routes (G1 calls both of its directions "Northbound").
+    // The structural direction is correct, so arrivals still show and there is nothing to report.
     const reversed = trips.map((trip) =>
       trip.direction_id === 0 ? { ...trip, direction_name: "Southbound" } : trip
     );
@@ -1501,11 +1499,23 @@ test("pollRoute", async (t) => {
       ["trip-update/?trip_id=787404", tripUpdate787404],
       ["trip-update/?trip_id=900002", tripUpdate900002],
     ]);
-    const result = await pollRoute(
-      { routeId: "17", stopId: 21289, direction: "Northbound" },
-      { fetchImpl, now: fixedNow, structuralDirectionId: "0" }
-    );
+    const logged = [];
+    const originalError = console.error;
+    const originalWarn = console.warn;
+    console.error = (...args) => logged.push(args.join(" "));
+    console.warn = (...args) => logged.push(args.join(" "));
+    let result;
+    try {
+      result = await pollRoute(
+        { routeId: "17", stopId: 21289, direction: "Northbound" },
+        { fetchImpl, now: fixedNow, structuralDirectionId: "0" }
+      );
+    } finally {
+      console.error = originalError;
+      console.warn = originalWarn;
+    }
     assert.equal(result.directionId, "0");
     assert.ok(result.etas.length > 0);
+    assert.deepEqual(logged, []);
   });
 });

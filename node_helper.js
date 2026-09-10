@@ -284,10 +284,8 @@ module.exports = NodeHelper.create({
   // A configured `direction` that doesn't match SEPTA's name for the stop's resolved direction_id otherwise fails silently: filterGoodTrips filters out every trip,
   // so the row shows no arrivals, indistinguishable from a route with nothing running.
   //
-  // Checked against directions.txt (getDirectionName), not a live trip's direction_name
-  // -- so unlike the runtime check in pollRoute it fires once per refresh for every route,
-  // including the ones whose live feed never gives a usable name at all
-  // (T1-T5, 63, B1/B2/B3/L1; see README's Known limitations).
+  // Checked against directions.txt (getDirectionName), not a live trip's direction_name, so it covers every route once per refresh.
+  // That includes routes whose live feed never gives a usable name (T1-T5, 63, B1/B2/B3/L1) and routes whose live names are wrong (G1, 135); see DESIGN.md.
   //
   // Uses only the two *structural* tiers runCycle's structuralDirectionId starts with, never its third name-matching tier
   // (resolveDirectionIdByName): that one resolves *from* the configured direction, so validating with it would be circular.
@@ -430,20 +428,13 @@ module.exports = NodeHelper.create({
       const stopDirectionIds = this.scheduleCache
         ? getDirectionIdsForStop(this.scheduleCache, state.config.routeId, state.config.stopId)
         : [];
-      // A stop genuinely served by both direction_ids (e.g. T1-T5's 13th St
-      // tunnel terminus) can still resolve structurally without any live
-      // direction_name, in two ways tried in order:
-      //   1. gtfs-schedule.js's resolveTerminusExclusion -- one direction is
-      //      uniformly a dead end there (every trip ends, never continues)
-      //      and the other isn't.
-      //   2. gtfs-schedule.js's resolveDirectionIdByName -- directions.txt
-      //      calls exactly one of the stop's candidate direction_ids the
-      //      same thing the user configured. Tried second (not first)
-      //      because it depends on what was configured being right, where
-      //      the terminus-exclusion shape is independent of it.
-      // Falls back to null (the live direction_name-based matching in
-      // septa-client.js, which needs an actual trip running right now) only
-      // when neither resolves -- same as before either of these existed.
+      // A stop served by both direction_ids (e.g. T1-T5's 13th St tunnel terminus) can still resolve structurally,
+      // without any live direction_name, in two ways tried in order:
+      //   1. gtfs-schedule.js's resolveTerminusExclusion -- one direction is uniformly a dead end there (every trip ends, none continue) and the other isn't.
+      //   2. gtfs-schedule.js's resolveDirectionIdByName -- directions.txt gives exactly one of the stop's direction_ids the name the user configured.
+      // The name match goes second because it depends on the configured direction being right, and the terminus shape doesn't.
+      // When neither resolves, structuralDirectionId is null.
+      // pollRoute then falls back to matching live direction_names, which needs a trip running right now.
       const structuralDirectionId =
         stopDirectionIds.length === 1
           ? stopDirectionIds[0]
