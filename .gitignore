@@ -1,6 +1,9 @@
 node_modules/
 *.log
 gtfs-cache.json
+# Written by a removed /routes/ fetch (label colors now come from the feed's
+# routes.txt). Kept so a leftover file on an existing install stays ignored;
+# it is safe to delete.
 route-colors-cache.json
 find-stop-feed-cache.json
 

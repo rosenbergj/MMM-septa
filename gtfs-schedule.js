@@ -40,6 +40,10 @@ const FEED_INFO_FILE = "feed_info.txt";
 // planFeedRetention's hasDirectionsVersions rescue exists for) would then
 // fail the *entire* schedule cache build instead of just direction names.
 const DIRECTIONS_FILE = "directions.txt";
+// Optional in exactly the same way as DIRECTIONS_FILE, and never in
+// NEEDED_FILES for the same reason: a feed without it still builds a normal
+// cache, just with every route falling back to the default label color.
+const ROUTES_FILE = "routes.txt";
 // Enough of a feed to decide whether to keep it, whether it covers a given
 // date, and whether it has directions.txt, without the 100MB stop_times.txt
 // scan a full parse needs. directions.txt itself is tiny (tens of KB).
@@ -457,6 +461,9 @@ function buildScheduleCache(fileTexts, routeIds, stopIds) {
   // just with every getDirectionName lookup returning null. See
   // buildCacheFromBuffer for why this is never in NEEDED_FILES.
   const directionNames = fileTexts[DIRECTIONS_FILE] ? parseDirectionNamesForRoutes(fileTexts[DIRECTIONS_FILE], routeIds) : {};
+  // Optional, like feedInfo and directionNames. Unfiltered by routeIds on
+  // purpose -- see parseRouteLabelColors.
+  const routeColors = fileTexts[ROUTES_FILE] ? parseRouteLabelColors(fileTexts[ROUTES_FILE]) : {};
   return {
     builtAt: Date.now(),
     feedVersion: feedInfo ? feedInfo.version : null,
@@ -469,6 +476,7 @@ function buildScheduleCache(fileTexts, routeIds, stopIds) {
     routeIdsWithTrips,
     routeStopPaths,
     directionNames,
+    routeColors,
   };
 }
 
@@ -537,6 +545,90 @@ function parseDirectionNamesForRoutes(text, routeIds) {
 function getDirectionName(cache, routeId, directionId) {
   if (!cache || !cache.directionNames) return null;
   return cache.directionNames[`${routeId}|${directionId}`] || null;
+}
+
+// GTFS route_type: 0 = trolley/streetcar/light rail, 1 = subway/metro. Their
+// route_color values are SEPTA's real brand colors (Market-Frankford Line
+// blue 0097D6, Broad St Line orange F26100, the T's green 5A960A) and are
+// worth showing as-is.
+const RAIL_TROLLEY_ROUTE_TYPES = new Set(["0", "1"]);
+
+// The red SEPTA marks its frequent bus network with -- the same red that's
+// now on the physical signage at those stops. Carried in routes.txt as a
+// literal route_color on exactly the frequent routes (25 of them as of feed
+// v202609060: 3, 6, 17, 18, 21, 23, 25, 33, 46, 47, 48, 51, 52, 56, 57, 58,
+// 60, 63, 64, 66, 70, 79, 82, 108, 113), so this is a value we *recognize*
+// rather than one we substitute -- the display shows SEPTA's own hex.
+//
+// This replaced the /api/v2/routes/ endpoint's is_frequent_bus flag, which
+// looked authoritative and wasn't: every entry it serves is stamped
+// release_name "20240318", a frozen March 2024 snapshot. Measured against
+// feed v202609060 on 2026-09-09, and after accounting for the New Bus
+// Network's relettering (G -> 63, L -> 51, R -> 82), it missed three routes
+// SEPTA now marks frequent (25, 57, 64) and still flagged one it doesn't
+// (45). Route 64 reading as an ordinary route on the mirror is what surfaced
+// this.
+const FREQUENT_BUS_COLOR = "EF3340";
+
+// The generic near-black routes.txt hands every ordinary bus route (116 of
+// them in v202609060). It is not a brand color of any kind, and drawing it on
+// the mirror's black background would render the route number invisible, so
+// it always resolves to "no override".
+const ORDINARY_BUS_COLOR = "1A1818";
+
+const HEX_COLOR_RE = /^[0-9a-fA-F]{6}$/;
+
+// One routes.txt row -> the "#rrggbb" its route number should be drawn in, or
+// null for "no override, use the default label color".
+//
+// Deliberately narrower than "whatever route_color says". Beyond the
+// rail/trolley brand colors and the frequent-bus red, routes.txt also carries
+// a scattering of real-but-dark brand colors for Metro-adjacent shuttles
+// (BLVDDIR 003E53, M1_BUS 5F249F, the Regional Rail shuttles 4F758B). Those
+// keep the default label color they have always had here: several are too
+// dark to read on a black background, and widening the colored set isn't
+// what switching data sources was for.
+function resolveRouteLabelColor(routeMeta) {
+  if (!routeMeta) return null;
+  const color = String(routeMeta.route_color || "").trim();
+  if (!HEX_COLOR_RE.test(color)) return null;
+  if (color.toUpperCase() === ORDINARY_BUS_COLOR) return null;
+  // Rail/trolley take priority: a real distinct brand color is a stronger
+  // signal than the frequent-network marker if a route ever carries both.
+  if (RAIL_TROLLEY_ROUTE_TYPES.has(String(routeMeta.route_type))) return `#${color.toLowerCase()}`;
+  if (color.toUpperCase() === FREQUENT_BUS_COLOR) return `#${color.toLowerCase()}`;
+  return null;
+}
+
+// routes.txt -> {routeId: "#rrggbb"} for every route that gets a non-default
+// label color. Routes resolving to null are omitted rather than stored as
+// null, which keeps this to a few dozen entries.
+//
+// Unlike parseDirectionNamesForRoutes, this is deliberately NOT filtered to
+// the configured routeIds. The whole file is 168 rows and the kept result is
+// a couple of KB, and staying unfiltered preserves the one genuinely nice
+// property the /routes/ endpoint had: a route added to config gets its color
+// on the very first render, rather than defaulting to white until the next
+// schedule refresh has pulled it into a config-scoped cache.
+function parseRouteLabelColors(text) {
+  const colors = {};
+  // Quote-aware, per the rule at the top of the CSV section: route_long_name
+  // is free text and could gain a comma in a future feed, which a plain split
+  // would silently shift into the route_color column. The file is 168 rows,
+  // so the slower parser costs nothing here.
+  for (const row of parseCsv(text, splitCsvLineQuoted)) {
+    const color = resolveRouteLabelColor(row);
+    if (color) colors[row.route_id] = color;
+  }
+  return colors;
+}
+
+// null when the cache predates routeColors, came from a feed without
+// routes.txt, or simply has no override for this route -- all three mean the
+// same thing to a caller: use the default label color.
+function getRouteLabelColor(cache, routeId) {
+  if (!cache || !cache.routeColors) return null;
+  return cache.routeColors[String(routeId)] || null;
 }
 
 // Merges same-direction stop patterns (one per headsign -- see
@@ -1372,7 +1464,7 @@ function selectFeedForDate(entries, date, feedsDir = FEEDS_DIR) {
 }
 
 function buildCacheFromBuffer(buffer, routeIds, stopIds) {
-  const zipEntries = readZipEntries(buffer, [...NEEDED_FILES, FEED_INFO_FILE, DIRECTIONS_FILE]);
+  const zipEntries = readZipEntries(buffer, [...NEEDED_FILES, FEED_INFO_FILE, DIRECTIONS_FILE, ROUTES_FILE]);
   const fileTexts = {};
   for (const name of NEEDED_FILES) {
     const data = zipEntries.get(name);
@@ -1385,6 +1477,9 @@ function buildCacheFromBuffer(buffer, routeIds, stopIds) {
   // this must never join the NEEDED_FILES throw-if-missing loop above.
   const directions = zipEntries.get(DIRECTIONS_FILE);
   if (directions) fileTexts[DIRECTIONS_FILE] = directions.toString("utf8");
+  // Optional for the same reason as directions.txt above.
+  const routes = zipEntries.get(ROUTES_FILE);
+  if (routes) fileTexts[ROUTES_FILE] = routes.toString("utf8");
   return buildScheduleCache(fileTexts, routeIds, stopIds);
 }
 
@@ -1489,6 +1584,9 @@ module.exports = {
   parseDirectionNames,
   parseDirectionNamesForRoutes,
   getDirectionName,
+  resolveRouteLabelColor,
+  parseRouteLabelColors,
+  getRouteLabelColor,
   resolveDirectionIdByName,
   parseStopTimesForTrips,
   parseCalendar,

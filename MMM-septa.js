@@ -192,9 +192,9 @@ function septaResolveDirectionForRoute(direction, routeId) {
 // known IDs -- SEPTA already adds new IDs within a lettered line (e.g. a
 // future T6) without any code change needed here; a hardcoded list would
 // silently miss those. Not derived from a route's color: an ordinary
-// trolley also gets a real brand color from SEPTA's /routes/ metadata, so
-// color alone can't tell a Metro line apart from a bus that happens to be
-// flagged frequent-service (see septa-client.js's resolveRouteLabelColor).
+// trolley also gets a real brand color from the feed's routes.txt, so color
+// alone can't tell a Metro line apart from a bus SEPTA marks as part of its
+// frequent network (see gtfs-schedule.js's resolveRouteLabelColor).
 const METRO_ROUTE_ID_PATTERN = /^[LGBTDM]\d+$/i;
 function septaMergedRouteTypeLabel(subRouteIds) {
   return subRouteIds.some((id) => METRO_ROUTE_ID_PATTERN.test(id)) ? "METRO" : "BUS";
@@ -249,8 +249,8 @@ function septaAssignMergedMarkers(allArrivals, headsignOrder) {
 }
 
 // Wraps a merged row's sub-route id in the same color-only styling hook the
-// single-route label uses (routeColor, from SEPTA's /routes/ metadata --
-// see septa-client.js's resolveRouteLabelColor) -- no font-size/weight of
+// single-route label uses (routeColor, from the feed's routes.txt -- see
+// gtfs-schedule.js's resolveRouteLabelColor) -- no font-size/weight of
 // its own, so it picks up whatever the surrounding context (the label cell
 // up top, or a muted .septa-full-width row below) already provides and only
 // ever changes color.
@@ -513,10 +513,11 @@ Module.register("MMM-septa", {
       const labelMain = document.createElement("div");
       labelMain.className = "septa-label-main";
       const abbrev = septaAbbreviateDirection(route.direction);
-      // routeColor (node_helper.js, from SEPTA's /routes/ endpoint): a real
-      // brand color for Metro/trolley routes, red for a bus route SEPTA
-      // flags as frequent-service, or null (default label color) for an
-      // ordinary bus route -- see septa-client.js's resolveRouteLabelColor.
+      // routeColor (node_helper.js, from the static feed's routes.txt): a
+      // real brand color for Metro/trolley routes, SEPTA's own frequent-
+      // network red (EF3340) for a frequent bus route, or null (default
+      // label color) for an ordinary bus route -- see gtfs-schedule.js's
+      // resolveRouteLabelColor.
       // Scoped to just the route number span, not the direction abbreviation
       // next to it, which keeps its own muted styling regardless.
       const routeColor = state && state.routeColor;

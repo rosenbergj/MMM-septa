@@ -1,12 +1,9 @@
 "use strict";
 
-const path = require("path");
 const NodeHelper = require("node_helper");
 const {
   pollRoute,
   mergeScheduledArrivals,
-  fetchRoutes,
-  resolveRouteLabelColor,
   alignedDelayMs,
   makeCachingFetch,
 } = require("./septa-client.js");
@@ -24,10 +21,7 @@ const {
   getTerminusExclusionDirectionId,
   resolveDirectionIdByName,
   getDirectionName,
-  // Both fully generic (path-parameterized, no GTFS-specific structure
-  // assumed) despite living in gtfs-schedule.js -- reused as-is for the
-  // route-colors cache below instead of duplicating the same trivial
-  // read/write-with-error-handling logic.
+  getRouteLabelColor,
   loadCacheFromDisk,
   saveCacheToDisk,
 } = require("./gtfs-schedule.js");
@@ -36,7 +30,6 @@ const { parseRouteIds, resolveDirectionForRoute, resolveScheduleHorizonMinutes }
 const SCHEDULE_INITIAL_DELAY_MS = 60 * 1000; // wait until well after MagicMirror's own startup
 const SCHEDULE_REFRESH_MS = 24 * 60 * 60 * 1000; // once daily thereafter
 const SCHEDULE_RETRY_MS = 60 * 60 * 1000; // retry sooner than a full day if a refresh fails
-const ROUTE_COLORS_CACHE_PATH = path.join(__dirname, "route-colors-cache.json");
 // Consecutive cycles a route's trip-update fetches must fail before the
 // display's "!" indicator lights up -- avoids flickering it on for an
 // isolated one-cycle blip (e.g. during a flaky-but-recovering SEPTA outage).
@@ -100,21 +93,22 @@ module.exports = NodeHelper.create({
     // first 60+ seconds while a fresh download is pending.
     this.scheduleCache = loadCacheFromDisk();
     this.scheduleTimer = setTimeout(() => this.refreshScheduleCache(), SCHEDULE_INITIAL_DELAY_MS);
-    // routeId -> hex color string, or null for "no override". Persisted to
-    // disk (unlike the reasoning that originally justified *not* doing so --
-    // measured 2026-07-08: SEPTA's /routes/ endpoint fails ~55% of the time,
-    // so a restart landing on a failed first fetch would otherwise show
-    // every route's default color until a retry succeeds, up to an hour
-    // later) -- loaded here so a restart has the last known-good colors
-    // immediately, same principle as the GTFS schedule cache just above,
-    // just without that one's SCHEDULE_INITIAL_DELAY_MS (this is one small
-    // JSON request, not worth deferring).
-    const cachedRouteColors = loadCacheFromDisk(ROUTE_COLORS_CACHE_PATH);
-    this.routeColors = cachedRouteColors || {};
+    // Route label colors ride along in the schedule cache (from the feed's
+    // routes.txt -- see gtfs-schedule.js's parseRouteLabelColors), so they
+    // need no fetch, timer or cache file of their own. Loading the schedule
+    // cache from disk above is what gives a restart its last known-good
+    // colors immediately.
+    //
+    // Two consequences of that coupling, both accepted: a genuinely fresh
+    // install shows default colors until the first feed download finishes
+    // (an install with a cache on disk does not), and a config where *every*
+    // route sets useScheduleSupplement:false never builds a cache at all, so
+    // no route gets a color. Downloading a 20MB feed purely for label colors
+    // is exactly what that opt-out is asking us not to do, and colors are
+    // cosmetic -- so it stays a documented gap rather than a special case.
     // Shared by every route's cycle -- that sharing is the entire point, so
     // it must not be per-route.
     this.cachingFetch = makeCachingFetch(REQUEST_CACHE_TTL_MS);
-    this.refreshRouteColors();
   },
 
   stop() {
@@ -123,36 +117,6 @@ module.exports = NodeHelper.create({
     }
     this.routes.clear();
     if (this.scheduleTimer) clearTimeout(this.scheduleTimer);
-    if (this.routeColorTimer) clearTimeout(this.routeColorTimer);
-  },
-
-  // Fetches SEPTA's /routes/ endpoint (every route's metadata in one
-  // response -- rail/trolley brand colors and each bus route's
-  // is_frequent_bus flag, see septa-client.js's resolveRouteLabelColor) and
-  // indexes it by routeId for runCycle to look up. Runs once at startup,
-  // then once every 24h like the GTFS schedule refresh -- this metadata
-  // essentially never changes, so a retry-on-failure/once-daily cadence is
-  // plenty.
-  async refreshRouteColors() {
-    try {
-      const routes = await fetchRoutes();
-      this.routeColors = Object.fromEntries(routes.map((r) => [String(r.route_id), resolveRouteLabelColor(r)]));
-      saveCacheToDisk(this.routeColors, ROUTE_COLORS_CACHE_PATH);
-      console.log(`MMM-septa: refreshed route color metadata (${routes.length} routes)`);
-      this.routeColorTimer = setTimeout(() => this.refreshRouteColors(), SCHEDULE_REFRESH_MS);
-    } catch (err) {
-      // warn, not error: /routes/ 404s intermittently and always has (~55%
-      // of requests, measured 2026-07-08 and still ~7-in-12 on 2026-08-25),
-      // so a failure here is the expected case rather than a fault. Nothing
-      // is lost when it happens -- label colors are cosmetic, the last
-      // known-good set is already loaded from disk, and the retry below
-      // picks up the next success.
-      console.warn(
-        `MMM-septa: route color metadata refresh failed: ${err.message}; this endpoint is known to fail ` +
-          `intermittently -- keeping the cached label colors and retrying in ${SCHEDULE_RETRY_MS / 1000}s.`
-      );
-      this.routeColorTimer = setTimeout(() => this.refreshRouteColors(), SCHEDULE_RETRY_MS);
-    }
   },
 
   // A configured routeId that doesn't exist (typo, discontinued route, etc)
@@ -170,8 +134,9 @@ module.exports = NodeHelper.create({
   // omitted 13 routes that were running that day (41, 51, 63, 71, 72, 76,
   // 81, 82, B1_OWL, L1_OWL, M1_BUS, MANN, NOR_BUS) while listing 33 ids with
   // no trips in the feed at all. Validating against it warned about a live
-  // route 63 with buses reporting GPS at that moment. It stays in use for
-  // what it's actually good for -- label colors and is_frequent_bus.
+  // route 63 with buses reporting GPS at that moment. Label colors were its
+  // last remaining use and moved to the feed's routes.txt on 2026-09-09
+  // (see gtfs-schedule.js's resolveRouteLabelColor); nothing calls it now.
   validateRouteIds() {
     const scheduledRouteIds = getScheduledRouteIds(this.scheduleCache);
     if (!scheduledRouteIds) return; // cache predates the field; nothing to check against
@@ -723,7 +688,7 @@ module.exports = NodeHelper.create({
         secondaryStopName: state.secondaryStopName,
         secondaryStopSkippedHeadsigns,
         inferredDetourNear: state.inferredDetourNear || null,
-        routeColor: this.routeColors[state.config.routeId] || null,
+        routeColor: getRouteLabelColor(this.scheduleCache, state.config.routeId),
         scheduleUnavailable,
       });
 
