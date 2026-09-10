@@ -342,14 +342,11 @@ function hasActiveServiceOn(cache, date) {
 // Separate from `entries`, which is filtered to the user's configured stops and so can't say what lies between them.
 //
 // Read straight from route_stops.txt, SEPTA's own answer to "what stops does this route serve, in order".
-// It replaced a reconstruction that sampled 20 trips and kept the longest,
-// which made the path only as complete as one real trip: route 63 southbound came out 102 stops against 121 here.
-// That also cost a second full scan of the ~100MB stop_times.txt per refresh.
+// It's the union of every pattern, so a branchy route's path includes stops no single trip serves.
 //
-// Accepted difference: route_stops.txt lists a stop once even when a trip serves it twice,
-// so it's a deduplicated union rather than a literal traversal.
-// On feed v202609060 that affects 7 of 327 route/directions (95, 107, 114, 117, 310 and both LUCY loops), 0.81% of trips.
-// Inferred spans may differ there -- not necessarily for the worse, since nearest-stop matching could pick either occurrence anyway.
+// Caveat: a stop a trip serves twice is listed once, so on a loop route the path is a deduplicated union rather than a literal traversal.
+// On feed v202609060 that's 7 of 327 route/directions (95, 107, 114, 117, 310 and both LUCY loops).
+// inferDetourSpanStops's nearest-stop matching could land on either visit of such a stop anyway.
 //
 // Filtered to the configured routes, unlike parseRouteLabelColors: these carry coordinates,
 // so keeping all 327 would cost ~1MB against ~23KB.
@@ -496,16 +493,9 @@ function getDirectionName(cache, routeId, directionId) {
 // The red SEPTA marks its frequent bus network with -- the same red that's now on the physical signage at those stops.
 // Carried in routes.txt as a literal route_color on exactly the frequent routes
 // (25 of them as of feed v202609060: 3, 6, 17, 18, 21, 23, 25, 33, 46, 47, 48, 51, 52, 56, 57, 58, 60, 63, 64, 66, 70, 79, 82, 108, 113).
-// Nothing below branches on it any more -- it is drawn because it is a color, like every other
+// Nothing below branches on it -- it is drawn because it is a color, like every other
 // -- but it is exported and named because "which routes are frequent" is a question worth being able to ask,
 // and scripts/compare-feeds.js reports movement in it.
-//
-// This is what replaced the /api/v2/routes/ endpoint's is_frequent_bus flag,
-// which looked authoritative and wasn't: every entry it serves is stamped release_name "20240318", a frozen March 2024 snapshot.
-// Measured against feed v202609060 on 2026-09-09,
-// and after accounting for the New Bus Network's relettering
-// (G -> 63, L -> 51, R -> 82), it missed three routes SEPTA now marks frequent (25, 57, 64) and still flagged one it doesn't (45).
-// Route 64 reading as an ordinary route on the mirror surfaced it.
 const FREQUENT_BUS_COLOR = "EF3340";
 
 // The generic near-black routes.txt hands every ordinary bus route (116 of them in v202609060).
@@ -524,9 +514,8 @@ const HEX_COLOR_RE = /^[0-9a-fA-F]{6}$/;
 // Six of those twelve deliberately duplicate the color of the line they substitute for
 // -- M1_BUS really is meant to read as M1 -- so a shared color here is SEPTA's intent, not a collision to design around.
 //
-// route_type is deliberately not consulted.
-// It used to be, back when bus route_color was believed to be meaningless and only rail/trolley colors were trusted;
-// now the only value that means "no color" is the ordinary-bus near-black, and that is a value test, not a type test.
+// route_type is deliberately not consulted: the only value that means "no color" is the ordinary-bus near-black,
+// and that's a property of the value, not the vehicle.
 function resolveRouteLabelColor(routeMeta) {
   if (!routeMeta) return null;
   const color = String(routeMeta.route_color || "").trim();
@@ -690,7 +679,7 @@ function mergeDirectionPatterns(directionPatterns) {
 // directionId, when given, filters to just that direction
 // -- some stop_ids are (rarely, but confirmed live -- e.g. route 2 stop 40) served by both directions of the same route,
 // and without this a schedule-supplement arrival or headsign from the *opposite* configured direction would leak into the display.
-// Omit it (undefined/null) to fall back to the old unfiltered behavior
+// Omit it (undefined/null) to skip direction filtering
 // -- used when the caller hasn't yet resolved which directionId corresponds to the configured direction
 // (see septa-client.js's pollRoute), since that's the common case
 // (a stop used by only one direction) and unfiltered is still correct there.
@@ -982,7 +971,7 @@ function resolveDirectionIdByName(cache, routeId, directionIds, direction) {
 // A pattern that serves the secondary stop only before the primary one is no use to someone boarding at the primary stop,
 // and on a looping route the same stop_id appears on both sides of it
 // (LUCYGR's "Green Loop" serves stop 28325 at sequence 1 and again at sequence 21).
-// Comparing headsign *sets*, as this used to, counted the earlier visit and reported such a pattern as reaching a stop the rider can't actually get to.
+// Comparing headsign *sets* instead would count the earlier visit and report such a pattern as reaching a stop the rider can't actually get to.
 //
 // A headsign qualifies if *any* of its trips manages it,
 // and each trip is judged on its own earliest primary visit against its own latest secondary visit
@@ -1299,8 +1288,8 @@ function buildCacheFromBuffer(buffer, routeIds, stopIds) {
 // SEPTA republishes the next service period's feed several days before it starts (see FEED_RETENTION_DAYS),
 // and during that window the newest feed answers nothing while the previous one still answers everything.
 //
-// Falls back to the newest retained feed when none covers today,
-// which reproduces the old behavior: node_helper then reports the supplement as unavailable and the display drops to live-only data.
+// Falls back to the newest retained feed when none covers today;
+// node_helper then reports the schedule supplement as unavailable and the display drops to live-only data.
 async function fetchScheduleCache(routeIds, stopIds, fetchImpl = fetch, options = {}) {
   const feedsDir = options.feedsDir || FEEDS_DIR;
   const date = options.now || new Date();

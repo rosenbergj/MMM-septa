@@ -1399,17 +1399,11 @@ test("parseDirectionNames", async (t) => {
     assert.equal(parseDirectionNames(text, "999").size, 0);
   });
 
-  // Routes 63 and 135 are specifically why find-stop.js used to lean on live
-  // /trips/ data plus a geometry sanity check instead of trusting a name
-  // outright (see the git history around applyGeographySanityCheck/
-  // computeDirectionTrend): 63's longest pattern detours far enough west to
-  // read as east-west by raw geometry even though it's a north-south route,
-  // and some non-GTFS sources have reported reversed names for both routes
-  // (63's southbound trips as "Northbound"; 135's eastbound/westbound
-  // swapped). directions.txt is SEPTA's own designation, not inferred from
-  // geometry or subject to those other sources' mixups, so these confirm
-  // real rows for those two routes (copied verbatim from the live feed,
-  // leading space in 135's destination included) parse to the right names.
+  // Routes 63 and 135 are where other sources get direction wrong.
+  // 63's longest pattern detours far enough west to read as east-west by raw geometry, though it's a north-south route,
+  // and other sources, SEPTA's live feed among them, report reversed names for both (63's southbound trips as "Northbound"; 135's eastbound and westbound swapped).
+  // directions.txt is SEPTA's own designation and gets both right,
+  // so these check that real rows for those two routes (copied verbatim from the published feed, leading space in 135's destination included) parse to the right names.
   await t.test("route 63 -- geometry-misleading spur, still just Northbound/Southbound", () => {
     const real =
       "route_id,direction_id,direction,direction_destination\n" +

@@ -284,7 +284,7 @@ module.exports = NodeHelper.create({
   // A configured `direction` that doesn't match SEPTA's name for the stop's resolved direction_id otherwise fails silently: filterGoodTrips filters out every trip,
   // so the row shows no arrivals, indistinguishable from a route with nothing running.
   //
-  // Checked against directions.txt (getDirectionName), not a live trip's direction_name, so it covers every route once per refresh.
+  // Checked against directions.txt (getDirectionName), not a live trip's direction_name, so it covers every route at each daily schedule refresh.
   // That includes routes whose live feed never gives a usable name (T1-T5, 63, B1/B2/B3/L1) and routes whose live names are wrong (G1, 135); see DESIGN.md.
   //
   // Uses only the two *structural* tiers runCycle's structuralDirectionId starts with, never its third name-matching tier
@@ -399,11 +399,9 @@ module.exports = NodeHelper.create({
       this.routes.set(fullKey, state);
       this.runCycle(fullKey); // kick off the first fetch immediately
     });
-    // No eager routeId validation here.
-    // It used to be safe because SEPTA's /routes/ list didn't depend on what was configured,
-    // but the GTFS cache that replaced it is scoped to the currently configured routes
-    // -- so checking a route before the next refresh has pulled it into the feed would false-positive on every legitimately new one.
-    // Deferred to refreshScheduleCache, same as the stop validators.
+    // No routeId validation here: the schedule cache is scoped to the configured routes,
+    // so checking a newly added route before the daily schedule refresh (first run 60s after startup) has pulled it in would false-positive.
+    // It runs in refreshScheduleCache instead, like the stop validators.
   },
 
   // Self-rescheduling setTimeout chain (not setInterval) so a slow cycle never overlaps with the next one,

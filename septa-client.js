@@ -30,14 +30,9 @@ async function fetchTripUpdate(tripId, fetchImpl = fetch) {
   return fetchJson(`${BASE_URL}/trip-update/?trip_id=${encodeURIComponent(tripId)}`, fetchImpl);
 }
 
-// Route label colors do NOT come from this API. SEPTA serves a /routes/
-// endpoint that looks like the obvious source and isn't: every entry it
-// returns is stamped release_name "20240318" and its is_frequent_bus flag is
-// frozen there, so it misses routes SEPTA has since marked frequent (25, 57,
-// 64) and still flags one it hasn't (45). The static GTFS feed's routes.txt
-// carries SEPTA's own red on exactly the current frequent network, plus the
-// same rail/trolley brand colors this endpoint had. See gtfs-schedule.js's
-// resolveRouteLabelColor.
+// SEPTA's /api/v2/routes/ endpoint is deliberately not used: every entry it returns is stamped release_name "20240318",
+// a frozen snapshot whose is_frequent_bus flags and route list don't match current service.
+// Route label colors come from the static feed's routes.txt; see gtfs-schedule.js's resolveRouteLabelColor.
 
 // SEPTA formats detour start/end as "%m/%d/%Y, %H:%M:%S" (e.g.
 // "7/6/2026, 14:30:00").
@@ -385,8 +380,7 @@ function makeCachingFetch(ttlMs, fetchImpl = fetch, now = () => Date.now()) {
 // First, each configured row self-reschedules independently,
 // so rows drift to wherever their own first cycle started and their updates trickle into the display at unrelated moments;
 // aligning them makes one cycle arrive as a single batch the frontend can render with one fade (see MMM-septa.js's scheduleDataRender).
-// Second, it removes the cycle's own duration from the wait
-// -- the old scheme spaced polls at interval + duration (121s for a 1s cycle on a 120s interval), this spaces them at exactly interval.
+// Second, it keeps the cycle's own duration out of the wait, so polls land exactly one interval apart rather than drifting by however long each cycle took.
 //
 // offsetMs shifts this route's grid off the shared one by a fixed amount,
 // so that aligning every row doesn't turn each tick into a thundering herd of simultaneous requests against an undocumented API
@@ -428,7 +422,7 @@ async function pollRoute(routeConfig, options = {}) {
   const structuralDirectionId = options.structuralDirectionId != null ? String(options.structuralDirectionId) : null;
   // tripId -> this stop's last stop_sequence on that trip, or null for "unknown".
   // Injected by node_helper from the GTFS schedule cache (see gtfs-schedule.js's getLastStopSequence);
-  // defaulting to "always unknown" keeps the old fetch-everything behavior for any caller that doesn't supply it, including every existing test.
+  // Defaults to "always unknown" when not supplied, in which case every trip's /trip-update/ is fetched.
   const stopSequenceForTrip = options.stopSequenceForTrip || (() => null);
   const { routeId, stopId, direction } = routeConfig;
 

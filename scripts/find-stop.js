@@ -158,7 +158,7 @@ function printMergedDirection(routeId, label, merged, tripsByStop) {
   merged.rows.forEach((row, index) => {
     if (shouldBreakBefore(row, prevType)) console.log("");
     const seqLabel = row.type === "alt" ? "alt" : String(row.stopSequence);
-    // trimEnd so an unannotated row is byte-for-byte what it printed before this column existed, rather than carrying invisible padding.
+    // trimEnd so an unannotated row carries no invisible trailing padding.
     const trips = annotated[index] ? String(tripsByStop.get(row.stopId) || 0).padStart(5) : "";
     console.log(
       `  ${seqLabel.padEnd(seqWidth)}  ${String(row.stopId).padEnd(idWidth)}  ${(row.stopName || "").padEnd(nameWidth)}  ${trips}`.trimEnd()
