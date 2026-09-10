@@ -193,8 +193,12 @@ function septaResolveDirectionForRoute(direction, routeId) {
 // future T6) without any code change needed here; a hardcoded list would
 // silently miss those. Not derived from a route's color: an ordinary
 // trolley also gets a real brand color from the feed's routes.txt, so color
-// alone can't tell a Metro line apart from a bus SEPTA marks as part of its
-// frequent network (see gtfs-schedule.js's resolveRouteLabelColor).
+// alone can't tell a Metro line apart from a bus. Now doubly so: a
+// Metro-replacement bus is drawn in the *exact* color of the line it stands
+// in for (M1_BUS in M1's purple, L1_OWL in L1's blue), so color can't even
+// separate a Metro line from its own substitute bus -- which is precisely
+// what this label has to distinguish. See gtfs-schedule.js's
+// resolveRouteLabelColor.
 const METRO_ROUTE_ID_PATTERN = /^[LGBTDM]\d+$/i;
 function septaMergedRouteTypeLabel(subRouteIds) {
   return subRouteIds.some((id) => METRO_ROUTE_ID_PATTERN.test(id)) ? "METRO" : "BUS";
@@ -513,10 +517,11 @@ Module.register("MMM-septa", {
       const labelMain = document.createElement("div");
       labelMain.className = "septa-label-main";
       const abbrev = septaAbbreviateDirection(route.direction);
-      // routeColor (node_helper.js, from the static feed's routes.txt): a
-      // real brand color for Metro/trolley routes, SEPTA's own frequent-
-      // network red (EF3340) for a frequent bus route, or null (default
-      // label color) for an ordinary bus route -- see gtfs-schedule.js's
+      // routeColor (node_helper.js, from the static feed's routes.txt):
+      // whatever color SEPTA gives the route -- a Metro/trolley brand color,
+      // the frequent-network red (EF3340), or a Metro-replacement bus's own
+      // -- or null (default label color) for an ordinary bus route, the only
+      // case the feed has no real color for. See gtfs-schedule.js's
       // resolveRouteLabelColor.
       // Scoped to just the route number span, not the direction abbreviation
       // next to it, which keeps its own muted styling regardless.

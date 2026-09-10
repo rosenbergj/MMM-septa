@@ -24,6 +24,7 @@ const {
   resolveRouteLabelColor,
   parseRouteLabelColors,
   getRouteLabelColor,
+  FREQUENT_BUS_COLOR,
   resolveDirectionIdByName,
   mergeDirectionPatterns,
   getScheduledArrivals,
@@ -2001,12 +2002,8 @@ test("resolveRouteLabelColor", async (t) => {
     assert.equal(resolveRouteLabelColor({ route_type: "0", route_color: "5A960A" }), "#5a960a");
   });
 
-  await t.test("route_type is compared as a string -- parsed CSV rows carry \"0\"/\"1\", not 0/1", () => {
-    assert.equal(resolveRouteLabelColor({ route_type: 1, route_color: "0097D6" }), "#0097d6");
-  });
-
   await t.test("bus route carrying the frequent-network red -> that red, SEPTA's own hex", () => {
-    assert.equal(resolveRouteLabelColor({ route_type: "3", route_color: "EF3340" }), "#ef3340");
+    assert.equal(resolveRouteLabelColor({ route_type: "3", route_color: FREQUENT_BUS_COLOR }), "#ef3340");
   });
 
   await t.test("route_type 11 (trolleybus) carrying the red -> red too; route 66 is really shaped this way", () => {
@@ -2015,29 +2012,38 @@ test("resolveRouteLabelColor", async (t) => {
 
   await t.test("ordinary bus (the generic near-black) -> null, never the near-black itself", () => {
     // Returning #1a1818 would draw the route number invisibly on the
-    // mirror's black background.
+    // mirror's black background. This is the one value that means "no color".
     assert.equal(resolveRouteLabelColor({ route_type: "3", route_color: "1A1818" }), null);
   });
 
-  await t.test("a rail/trolley route somehow carrying the ordinary-bus black -> still null", () => {
+  await t.test("the near-black is rejected by value, not by route_type", () => {
     assert.equal(resolveRouteLabelColor({ route_type: "0", route_color: "1A1818" }), null);
+    assert.equal(resolveRouteLabelColor({ route_type: "1", route_color: "1a1818" }), null);
   });
 
-  await t.test("a real-but-dark shuttle brand color on a bus -> null, deliberately not widened", () => {
-    // BLVDDIR / M1_BUS / the Regional Rail shuttles carry real brand colors
-    // in routes.txt; they keep the default label color they have always had.
-    assert.equal(resolveRouteLabelColor({ route_type: "3", route_color: "003E53" }), null);
-    assert.equal(resolveRouteLabelColor({ route_type: "3", route_color: "5F249F" }), null);
-    assert.equal(resolveRouteLabelColor({ route_type: "3", route_color: "4F758B" }), null);
+  await t.test("a Metro-replacement bus gets the color of the line it substitutes for", () => {
+    // M1_BUS is the NHSL shuttle and carries M1's purple; L1_OWL carries
+    // L1's blue. Sharing a color with the parent line is SEPTA's intent.
+    assert.equal(resolveRouteLabelColor({ route_type: "3", route_color: "5F249F" }), "#5f249f");
+    assert.equal(resolveRouteLabelColor({ route_type: "3", route_color: "0097D6" }), "#0097d6");
   });
 
-  await t.test("rail/trolley route_type takes priority over the frequent-network red", () => {
-    assert.equal(resolveRouteLabelColor({ route_type: "1", route_color: "EF3340" }), "#ef3340");
+  await t.test("the loop and shuttle brand colors are drawn too, dark ones included", () => {
+    assert.equal(resolveRouteLabelColor({ route_type: "3", route_color: "ECAF3B" }), "#ecaf3b"); // LUCYGO
+    assert.equal(resolveRouteLabelColor({ route_type: "3", route_color: "00A239" }), "#00a239"); // LUCYGR
+    assert.equal(resolveRouteLabelColor({ route_type: "3", route_color: "003E53" }), "#003e53"); // BLVDDIR
+    assert.equal(resolveRouteLabelColor({ route_type: "3", route_color: "4F758B" }), "#4f758b"); // FXCB/NOR_BUS/WTR_BUS
+  });
+
+  await t.test("route_type is not consulted at all -- a missing one still resolves", () => {
+    assert.equal(resolveRouteLabelColor({ route_color: "EF3340" }), "#ef3340");
+    assert.equal(resolveRouteLabelColor({ route_type: "", route_color: "0097D6" }), "#0097d6");
   });
 
   await t.test("malformed or missing route_color -> null", () => {
     assert.equal(resolveRouteLabelColor({ route_type: "1", route_color: "not-a-color" }), null);
     assert.equal(resolveRouteLabelColor({ route_type: "1", route_color: "" }), null);
+    assert.equal(resolveRouteLabelColor({ route_type: "1", route_color: "#0097D6" }), null); // hash is not in the feed's format
     assert.equal(resolveRouteLabelColor({ route_type: "1" }), null);
   });
 
@@ -2058,19 +2064,19 @@ test("parseRouteLabelColors", async (t) => {
     "BLVDDIR,1,BLVDDIR,Blvd Direct Neshaminy Mall to FTC,3,https://x,003E53,FFFFFF,20990,bus_metro",
   ].join("\n");
 
-  await t.test("keeps only the routes that get a non-default color", () => {
+  await t.test("keeps every route that gets a non-default color", () => {
     assert.deepEqual(parseRouteLabelColors(text), {
       L1: "#0097d6",
       T1: "#5a960a",
       17: "#ef3340",
       64: "#ef3340",
+      BLVDDIR: "#003e53",
     });
   });
 
-  await t.test("ordinary and dark-shuttle routes are omitted, not stored as null", () => {
+  await t.test("only the ordinary near-black routes are omitted, not stored as null", () => {
     const colors = parseRouteLabelColors(text);
     assert.ok(!("9" in colors));
-    assert.ok(!("BLVDDIR" in colors));
   });
 
   await t.test("header-only file -> empty object, doesn't throw", () => {

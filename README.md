@@ -469,15 +469,22 @@ rather than one per route.
   was provided) instead of arrival times. The route label is followed by
   a small direction abbreviation (e.g. "17 NB"). The route number itself is
   colored using SEPTA's own colors, read from the static GTFS feed's
-  `routes.txt`: Metro/trolley routes get their real brand color (e.g.
-  Market-Frankford Line blue, Broad St Line orange), a route in SEPTA's
-  frequent bus network gets the same red SEPTA uses for it on stop signage
-  (25 routes as of the Sept 2026 feed — 3, 6, 17, 18, 21, 23, 25, 33, 46,
-  47, 48, 51, 52, 56, 57, 58, 60, 63, 64, 66, 70, 79, 82, 108, 113), and
-  everything else keeps the default label color. Ordinary bus routes carry
-  a near-black in `routes.txt` that would be invisible on a mirror, so it
-  is never used. The colors ride along in the GTFS schedule cache, so they
-  need no separate fetch and a restart shows them immediately. Each route also gets
+  `routes.txt`. Every real color in the feed is used: Metro and trolley
+  routes get their brand color (e.g. Market-Frankford Line blue, Broad St
+  Line orange), a route in SEPTA's frequent bus network gets the same red
+  SEPTA uses for it on stop signage (25 routes as of the Sept 2026 feed —
+  3, 6, 17, 18, 21, 23, 25, 33, 46, 47, 48, 51, 52, 56, 57, 58, 60, 63, 64,
+  66, 70, 79, 82, 108, 113), and the bus services that stand in for a Metro
+  line or run their own branded loop get theirs (`L1_OWL` and `B1_OWL` in
+  their parent line's color, `T_BUS`, `D1_BUS`/`D2_BUS`, `M1_BUS`, the two
+  LUCY loops, `BLVDDIR`, and the `FXCB`/`NOR_BUS`/`WTR_BUS` shuttles). Some
+  of those deliberately match the line they replace — `M1_BUS` is drawn in
+  M1's purple because SEPTA means it to read as M1.
+
+  Ordinary bus routes are the exception: they carry a near-black in
+  `routes.txt` that would be invisible on a mirror, so they keep the default
+  label color instead. The colors ride along in the GTFS schedule cache, so
+  they need no separate fetch and a restart shows them immediately. Each route also gets
   a small header line with the stop name (e.g. "20th St & Oregon Av"),
   discovered automatically from SEPTA's live data (no config needed) and
   cached once known, so it doesn't disappear during a cycle with no

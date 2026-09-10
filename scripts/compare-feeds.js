@@ -17,7 +17,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { readZipEntries, parseFeedInfo, resolveRouteLabelColor } = require("../gtfs-schedule.js");
+const { readZipEntries, parseFeedInfo, resolveRouteLabelColor, FREQUENT_BUS_COLOR } = require("../gtfs-schedule.js");
 
 const FILES = ["feed_info.txt", "routes.txt", "trips.txt", "calendar.txt", "calendar_dates.txt", "stops.txt", "directions.txt"];
 
@@ -263,18 +263,17 @@ function main() {
   // (the thing most likely to actually move), then any other color change.
   console.log("\n" + "-".repeat(72) + "\nROUTE COLORS (routes.txt)");
   {
-    const FREQUENT = "EF3340";
     const oldIds = new Set(oldFeed.rawColors.keys());
     const newIds = new Set(newFeed.rawColors.keys());
     const bothIds = [...newIds].filter((r) => oldIds.has(r)).sort();
 
-    const wasFrequent = (feed, r) => feed.rawColors.get(r) === FREQUENT;
+    const wasFrequent = (feed, r) => feed.rawColors.get(r) === FREQUENT_BUS_COLOR;
     const gainedRed = bothIds.filter((r) => !wasFrequent(oldFeed, r) && wasFrequent(newFeed, r));
     const lostRed = bothIds.filter((r) => wasFrequent(oldFeed, r) && !wasFrequent(newFeed, r));
     const oldRedCount = [...oldIds].filter((r) => wasFrequent(oldFeed, r)).length;
     const newRedCount = [...newIds].filter((r) => wasFrequent(newFeed, r)).length;
 
-    console.log(`  frequent network (${FREQUENT}): old ${oldRedCount}, new ${newRedCount}`);
+    console.log(`  frequent network (${FREQUENT_BUS_COLOR}): old ${oldRedCount}, new ${newRedCount}`);
     if (gainedRed.length) {
       console.log(`    + now frequent: ${gainedRed.map((r) => `${r} (${newFeed.routeNames.get(r) || "?"})`).join(", ")}`);
     }
@@ -284,8 +283,10 @@ function main() {
     if (!gainedRed.length && !lostRed.length) console.log("    no change in frequent-network membership");
 
     // Everything else: a brand color actually changing value. Split by
-    // whether the display draws it, so a cosmetic feed-side change to a
-    // color we ignore doesn't read as a display change.
+    // whether the display draws it. Since every real color is now drawn, the
+    // "ignores" bucket only catches a route moving to or staying on the
+    // ordinary-bus near-black -- but keeping the split means the report stays
+    // honest if that policy ever narrows again.
     const otherChanges = bothIds
       .filter((r) => oldFeed.rawColors.get(r) !== newFeed.rawColors.get(r))
       .filter((r) => !gainedRed.includes(r) && !lostRed.includes(r));

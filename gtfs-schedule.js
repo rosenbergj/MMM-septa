@@ -547,33 +547,28 @@ function getDirectionName(cache, routeId, directionId) {
   return cache.directionNames[`${routeId}|${directionId}`] || null;
 }
 
-// GTFS route_type: 0 = trolley/streetcar/light rail, 1 = subway/metro. Their
-// route_color values are SEPTA's real brand colors (Market-Frankford Line
-// blue 0097D6, Broad St Line orange F26100, the T's green 5A960A) and are
-// worth showing as-is.
-const RAIL_TROLLEY_ROUTE_TYPES = new Set(["0", "1"]);
-
 // The red SEPTA marks its frequent bus network with -- the same red that's
 // now on the physical signage at those stops. Carried in routes.txt as a
 // literal route_color on exactly the frequent routes (25 of them as of feed
 // v202609060: 3, 6, 17, 18, 21, 23, 25, 33, 46, 47, 48, 51, 52, 56, 57, 58,
-// 60, 63, 64, 66, 70, 79, 82, 108, 113), so this is a value we *recognize*
-// rather than one we substitute -- the display shows SEPTA's own hex.
+// 60, 63, 64, 66, 70, 79, 82, 108, 113). Nothing below branches on it any
+// more -- it is drawn because it is a color, like every other -- but it is
+// exported and named because "which routes are frequent" is a question worth
+// being able to ask, and scripts/compare-feeds.js reports movement in it.
 //
-// This replaced the /api/v2/routes/ endpoint's is_frequent_bus flag, which
-// looked authoritative and wasn't: every entry it serves is stamped
+// This is what replaced the /api/v2/routes/ endpoint's is_frequent_bus flag,
+// which looked authoritative and wasn't: every entry it serves is stamped
 // release_name "20240318", a frozen March 2024 snapshot. Measured against
 // feed v202609060 on 2026-09-09, and after accounting for the New Bus
 // Network's relettering (G -> 63, L -> 51, R -> 82), it missed three routes
 // SEPTA now marks frequent (25, 57, 64) and still flagged one it doesn't
-// (45). Route 64 reading as an ordinary route on the mirror is what surfaced
-// this.
+// (45). Route 64 reading as an ordinary route on the mirror surfaced it.
 const FREQUENT_BUS_COLOR = "EF3340";
 
 // The generic near-black routes.txt hands every ordinary bus route (116 of
 // them in v202609060). It is not a brand color of any kind, and drawing it on
 // the mirror's black background would render the route number invisible, so
-// it always resolves to "no override".
+// it is the one value that always resolves to "no override".
 const ORDINARY_BUS_COLOR = "1A1818";
 
 const HEX_COLOR_RE = /^[0-9a-fA-F]{6}$/;
@@ -581,23 +576,25 @@ const HEX_COLOR_RE = /^[0-9a-fA-F]{6}$/;
 // One routes.txt row -> the "#rrggbb" its route number should be drawn in, or
 // null for "no override, use the default label color".
 //
-// Deliberately narrower than "whatever route_color says". Beyond the
-// rail/trolley brand colors and the frequent-bus red, routes.txt also carries
-// a scattering of real-but-dark brand colors for Metro-adjacent shuttles
-// (BLVDDIR 003E53, M1_BUS 5F249F, the Regional Rail shuttles 4F758B). Those
-// keep the default label color they have always had here: several are too
-// dark to read on a black background, and widening the colored set isn't
-// what switching data sources was for.
+// Every real color in the file is drawn, whatever the route_type: the
+// rail/trolley brand colors, the frequent-bus red, and the twelve
+// Metro-replacement and loop services that carry a brand color of their own
+// (L1_OWL and B1_OWL in their parent line's color, T_BUS, D1_BUS/D2_BUS,
+// M1_BUS, the LUCY loops, BLVDDIR, and the FXCB/NOR_BUS/WTR_BUS shuttles).
+// Six of those twelve deliberately duplicate the color of the line they
+// substitute for -- M1_BUS really is meant to read as M1 -- so a shared
+// color here is SEPTA's intent, not a collision to design around.
+//
+// route_type is deliberately not consulted. It used to be, back when bus
+// route_color was believed to be meaningless and only rail/trolley colors
+// were trusted; now the only value that means "no color" is the ordinary-bus
+// near-black, and that is a value test, not a type test.
 function resolveRouteLabelColor(routeMeta) {
   if (!routeMeta) return null;
   const color = String(routeMeta.route_color || "").trim();
   if (!HEX_COLOR_RE.test(color)) return null;
   if (color.toUpperCase() === ORDINARY_BUS_COLOR) return null;
-  // Rail/trolley take priority: a real distinct brand color is a stronger
-  // signal than the frequent-network marker if a route ever carries both.
-  if (RAIL_TROLLEY_ROUTE_TYPES.has(String(routeMeta.route_type))) return `#${color.toLowerCase()}`;
-  if (color.toUpperCase() === FREQUENT_BUS_COLOR) return `#${color.toLowerCase()}`;
-  return null;
+  return `#${color.toLowerCase()}`;
 }
 
 // routes.txt -> {routeId: "#rrggbb"} for every route that gets a non-default
@@ -1587,6 +1584,7 @@ module.exports = {
   resolveRouteLabelColor,
   parseRouteLabelColors,
   getRouteLabelColor,
+  FREQUENT_BUS_COLOR,
   resolveDirectionIdByName,
   parseStopTimesForTrips,
   parseCalendar,
