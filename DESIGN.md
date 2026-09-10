@@ -52,6 +52,34 @@ Configured routes are also polled on a shared schedule, spread across a few
 seconds, so one refresh cycle arrives as a single batch and produces one fade
 rather than one per route.
 
+## Resolving direction at a two-direction stop
+
+Most stops are served by one direction of a route, so the configured
+`direction` is just a label. A few are genuinely served by both — route 2 at
+stop 40, or T1-T5's shared 13th St tunnel terminus — and those are resolved in
+this order, without any config:
+
+1. **Terminal exclusion.** If every one of one direction's patterns reaches the
+   stop only as that pattern's own last stop, nobody could board there and
+   continue, so that direction is excluded and the other is used. This is what
+   handles a tunnel-portal terminus, where one direction's trips all end and
+   the other's all begin.
+2. **`directions.txt` name match.** Otherwise, if SEPTA's static
+   `directions.txt` gives exactly one of the stop's two direction_ids the same
+   name as the configured `direction`, that one wins. No live trip needed.
+3. **Live `direction_name`.** Otherwise, fall back to a running trip's own
+   direction name — which requires a trip to be running *and* to report a
+   usable name. The trolleys, route 63 and `B1`/`B2`/`B3`/`L1` always report
+   `"N/A"`, so those can never resolve this way.
+
+Unresolvable only when all three fail at once: neither direction is uniformly
+terminal, `directions.txt` has no data for the route or the configured
+`direction` doesn't exactly match one of its names, and no live trip with a
+usable name is running.
+
+Asking for the *excluded* side of (1) on purpose — the arriving platform at a
+terminus rather than the departing one — isn't supported.
+
 ## File by file
 
 - `septa-client.js` — pure SEPTA API client + filtering logic (detours,
@@ -98,7 +126,7 @@ rather than one per route.
   routes out of the order you configured them in. Each arrival carries
   its own trip's destination, shown as a full-width line below the route
   (not squeezed into the label column, which would stretch it for every
-  route once a longer note is involved — see "Secondary stop" below)
+  route once a longer note is involved — see README's "Secondary stop")
   when every currently-shown arrival agrees on it (e.g. "→ Front-Market").
   When they don't, each distinct destination among the shown arrivals
   gets a footnote marker (\*, †, ‡, ...) appended to its times (e.g.
@@ -109,8 +137,8 @@ rather than one per route.
   scheduled to see (not just whichever trip happens to be next), so a
   given destination keeps the same marker even as different trips
   rotate through. Set `showHeadsigns: false` to hide both the destination
-  line(s) and the footnote markers for a more compact display — see
-  "Secondary stop" above for how it also changes secondary-stop handling.
+  line(s) and the footnote markers for a more compact display — see README's
+  "Secondary stop" for how it also changes secondary-stop handling.
   Two arrival times joined by a slash (e.g. "8m/15m") are the **same
   vehicle** serving your stop twice on one trip -- a mid-route loop or an
   out-and-back spur, which a handful of SEPTA routes really do (route 107
