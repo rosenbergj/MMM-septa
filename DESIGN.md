@@ -80,6 +80,27 @@ usable name is running.
 Asking for the *excluded* side of (1) on purpose — the arriving platform at a
 terminus rather than the departing one — isn't supported.
 
+## Comment style
+
+Comments use **semantic line breaks**: one sentence per line, no hard wrapping
+to a column. Long sentences break at a clause (` -- `, `; `, `, and `) rather
+than mid-phrase.
+
+This is not cosmetic. Hard-wrapped paragraphs reflow entirely when one word
+changes, so a one-word edit shows up as twenty changed lines and real changes
+get lost in the churn. One sentence per line means a one-sentence edit touches
+one line.
+
+Lines can exceed 100 characters and that is fine. Editors soft-wrap; diffs
+don't.
+
+Two shapes are deliberately left hard-wrapped, because their line breaks carry
+meaning: bulleted or numbered lists, and label lists (consecutive lines opening
+`Usage:`, `Example:`, `options.fetchImpl:`). Don't reflow those into prose.
+
+When editing an existing comment, match the surrounding style rather than
+rewrapping the block.
+
 ## File by file
 
 - `septa-client.js` — pure SEPTA API client + filtering logic (detours,
