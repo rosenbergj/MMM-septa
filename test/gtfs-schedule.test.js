@@ -17,6 +17,7 @@ const {
   isServiceActiveOn,
   hasActiveServiceOn,
   buildScheduleCache,
+  parseRouteStopPaths,
   buildRouteStopPatterns,
   parseDirectionNames,
   parseDirectionNamesForRoutes,
@@ -2115,5 +2116,104 @@ test("getRouteLabelColor", async (t) => {
   await t.test("no cache at all -> null, doesn't throw", () => {
     assert.equal(getRouteLabelColor(null, "17"), null);
     assert.equal(getRouteLabelColor(undefined, "17"), null);
+  });
+});
+
+test("parseRouteStopPaths", async (t) => {
+  const text = [
+    "route_id,direction_id,stop_id,route_stop_sort_order",
+    // deliberately out of order in the file, to prove sorting isn't incidental
+    "17,0,300,3",
+    "17,0,100,1",
+    "17,0,200,2",
+    "17,1,200,1",
+    "63,0,100,1",
+    "99,0,100,1",
+  ].join("\n");
+  const latLon = new Map([
+    ["100", { lat: 39.9, lon: -75.1 }],
+    ["200", { lat: 39.8, lon: -75.2 }],
+    ["300", { lat: 39.7, lon: -75.3 }],
+  ]);
+
+  await t.test("orders stops by route_stop_sort_order, not file order", () => {
+    const paths = parseRouteStopPaths(text, ["17"], latLon);
+    assert.deepEqual(
+      paths["17|0"].map((s) => s.stopId),
+      ["100", "200", "300"]
+    );
+  });
+
+  await t.test("attaches coordinates from stops.txt", () => {
+    const paths = parseRouteStopPaths(text, ["17"], latLon);
+    assert.deepEqual(paths["17|0"][0], { stopId: "100", lat: 39.9, lon: -75.1 });
+  });
+
+  await t.test("keys each direction separately", () => {
+    const paths = parseRouteStopPaths(text, ["17"], latLon);
+    assert.deepEqual(Object.keys(paths).sort(), ["17|0", "17|1"]);
+  });
+
+  await t.test("filtered to the requested routes -- unlike route label colors, these carry coordinates", () => {
+    const paths = parseRouteStopPaths(text, ["17"], latLon);
+    assert.ok(!("63|0" in paths));
+    assert.ok(!("99|0" in paths));
+  });
+
+  await t.test("sort order is numeric, not lexicographic", () => {
+    const many = ["route_id,direction_id,stop_id,route_stop_sort_order", "17,0,300,10", "17,0,100,2", "17,0,200,9"].join("\n");
+    assert.deepEqual(
+      parseRouteStopPaths(many, ["17"], latLon)["17|0"].map((s) => s.stopId),
+      ["100", "200", "300"]
+    );
+  });
+
+  await t.test("a stop with no coordinates is dropped, not left as a null hole", () => {
+    // inferDetourSpanStops does haversine math on every entry, so a
+    // coordinate-less one would poison it.
+    const paths = parseRouteStopPaths(text, ["17"], new Map([["100", { lat: 39.9, lon: -75.1 }]]));
+    assert.deepEqual(
+      paths["17|0"].map((s) => s.stopId),
+      ["100"]
+    );
+  });
+
+  await t.test("header-only file -> empty object, doesn't throw", () => {
+    assert.deepEqual(parseRouteStopPaths("route_id,direction_id,stop_id,route_stop_sort_order", ["17"], latLon), {});
+  });
+});
+
+test("buildScheduleCache routeStopPaths", async (t) => {
+  const fileTexts = {
+    "trips.txt": "route_id,service_id,trip_id,trip_headsign,direction_id\n17,1,t1,North,0",
+    "stop_times.txt": "trip_id,arrival_time,departure_time,stop_id,stop_sequence\nt1,08:00:00,08:00:00,100,1",
+    "calendar.txt": "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\n1,1,1,1,1,1,1,1,20260101,20261231",
+    "calendar_dates.txt": "service_id,date,exception_type",
+    "stops.txt": "stop_id,stop_name,stop_lat,stop_lon\n100,First & Main,39.9,-75.1\n200,Second & Main,39.8,-75.2",
+  };
+
+  await t.test("a feed without route_stops.txt still builds, just with no paths", () => {
+    // route_stops.txt is non-standard, so this has to degrade rather than
+    // throw -- same contract as directions.txt.
+    const cache = buildScheduleCache(fileTexts, ["17"], ["100"]);
+    assert.deepEqual(cache.routeStopPaths, {});
+  });
+
+  await t.test("with route_stops.txt present, paths are built from it", () => {
+    const withPaths = {
+      ...fileTexts,
+      "route_stops.txt": "route_id,direction_id,stop_id,route_stop_sort_order\n17,0,100,1\n17,0,200,2",
+    };
+    const cache = buildScheduleCache(withPaths, ["17"], ["100"]);
+    assert.deepEqual(
+      cache.routeStopPaths["17|0"].map((s) => s.stopId),
+      ["100", "200"]
+    );
+  });
+
+  await t.test("route_stops.txt without stops.txt -> no paths, since coordinates are required", () => {
+    const noStops = { ...fileTexts, "route_stops.txt": "route_id,direction_id,stop_id,route_stop_sort_order\n17,0,100,1" };
+    delete noStops["stops.txt"];
+    assert.deepEqual(buildScheduleCache(noStops, ["17"], ["100"]).routeStopPaths, {});
   });
 });

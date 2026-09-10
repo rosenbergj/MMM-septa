@@ -44,6 +44,10 @@ const DIRECTIONS_FILE = "directions.txt";
 // NEEDED_FILES for the same reason: a feed without it still builds a normal
 // cache, just with every route falling back to the default label color.
 const ROUTES_FILE = "routes.txt";
+// Optional in the same way, and also non-standard GTFS: a feed without it
+// still builds a normal cache, just with no inferred detour spans (see
+// parseRouteStopPaths).
+const ROUTE_STOPS_FILE = "route_stops.txt";
 // Enough of a feed to decide whether to keep it, whether it covers a given
 // date, and whether it has directions.txt, without the 100MB stop_times.txt
 // scan a full parse needs. directions.txt itself is tiny (tens of KB).
@@ -371,66 +375,51 @@ function hasActiveServiceOn(cache, date) {
 // structurally-skipping headsign, e.g. a secondary stop, might never do) --
 // stops.txt in fileTexts is optional so callers that don't need names (or
 // don't have it, e.g. NEEDED_FILES-less test fixtures) still work.
-// How many trips per (routeId, directionId) to sample when picking the
-// representative one for routeStopPaths. The longest of the sample wins,
-// which is what makes short-turn variants lose to a full-length pattern.
-const ROUTE_PATH_TRIP_SAMPLE = 20;
-
 // One ordered, coordinate-bearing stop list per configured (routeId,
 // directionId) -- the geometric backbone the inferred-detour span test needs
 // (see inferDetourSpanStops). Deliberately separate from `entries`, which is
 // filtered down to the user's configured stops and so can't say what lies
 // between them.
 //
-// Built from a small sample of trips rather than all of them: the longest
-// sampled trip stands in for the route's full shape, so a short-turn variant
-// doesn't produce a truncated path. Scanning stop_times.txt a second time
-// costs a few seconds on the Pi, which a once-daily refresh can afford;
-// keeping every trip's stop list resident could not.
-function buildRouteStopPaths(stopTimesText, tripsById, stopLatLon) {
-  const sampled = new Map(); // "routeId|directionId" -> Set of tripIds
-  const tripKey = new Map(); // tripId -> that same key
-  for (const [tripId, trip] of tripsById) {
-    const key = `${trip.routeId}|${trip.directionId}`;
-    let bucket = sampled.get(key);
-    if (!bucket) sampled.set(key, (bucket = new Set()));
-    if (bucket.size >= ROUTE_PATH_TRIP_SAMPLE) continue;
-    bucket.add(tripId);
-    tripKey.set(tripId, key);
+// Read straight from route_stops.txt, which is SEPTA's own answer to "what
+// stops does this route serve, in order". This replaced a reconstruction that
+// sampled 20 trips per route/direction and kept the longest: that made the
+// path only as complete as one real trip, so a branchy route lost every stop
+// its representative trip didn't serve (route 63 southbound: 102 stops
+// reconstructed vs 121 in route_stops.txt). It also cost a second full scan
+// of the ~100MB stop_times.txt on every refresh, which this doesn't.
+//
+// One known difference, accepted: route_stops.txt lists a stop once even when
+// a trip serves it twice, so it is a deduplicated union rather than a literal
+// traversal. Measured on feed v202609060, that affects 7 of 327
+// route/direction pairs (routes 95, 107, 114, 117, 310 and both LUCY loops),
+// covering 0.81% of trips. On those the inferred span may differ from the old
+// reconstruction -- not necessarily for the worse, since nearest-stop matching
+// could pick either occurrence anyway. Detour-stop inference is a best-effort
+// fallback for when SEPTA omits skipped_stops at all, so a different guess on
+// a handful of loop routes doesn't warrant carrying two code paths.
+//
+// Filtered to the configured routes, unlike parseRouteLabelColors: these
+// entries carry coordinates, so keeping all 327 would put ~1MB in the cache
+// against ~23KB for a typical config.
+function parseRouteStopPaths(text, routeIds, stopLatLon) {
+  const targetRoutes = new Set(routeIds.map(String));
+  const ordered = new Map(); // "routeId|directionId" -> [{ stopId, sortOrder }]
+  for (const row of parseCsv(text, splitCsvLineSimple)) {
+    if (!targetRoutes.has(row.route_id)) continue;
+    const key = `${row.route_id}|${row.direction_id}`;
+    if (!ordered.has(key)) ordered.set(key, []);
+    ordered.get(key).push({ stopId: String(row.stop_id), sortOrder: Number(row.route_stop_sort_order) });
   }
-
-  // stop_times.txt is ordered trip_id-first on every line, so the id can be
-  // read with one indexOf instead of splitting the row -- the same trick the
-  // stopIds pre-check uses, and what keeps this pass cheap over ~2M rows.
-  const rows = new Map(); // tripId -> [{ stopId, stopSequence }]
-  const lines = stopTimesText.split("\n");
-  const header = splitCsvLineSimple(lines[0]).map((h) => h.trim());
-  const stopIdx = header.indexOf("stop_id");
-  const seqIdx = header.indexOf("stop_sequence");
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line) continue;
-    const comma = line.indexOf(",");
-    if (comma < 1) continue;
-    const tripId = line.slice(0, comma);
-    if (!tripKey.has(tripId)) continue;
-    const cols = splitCsvLineSimple(line);
-    const list = rows.get(tripId) || rows.set(tripId, []).get(tripId);
-    list.push({ stopId: cols[stopIdx], stopSequence: Number(cols[seqIdx]) });
-  }
-
   const paths = {};
-  for (const [tripId, list] of rows) {
-    const key = tripKey.get(tripId);
-    if (!paths[key] || list.length > paths[key].length) {
-      paths[key] = list
-        .sort((a, b) => a.stopSequence - b.stopSequence)
-        .map((row) => {
-          const point = stopLatLon.get(row.stopId);
-          return point ? { stopId: row.stopId, lat: point.lat, lon: point.lon } : null;
-        })
-        .filter(Boolean);
-    }
+  for (const [key, rows] of ordered) {
+    paths[key] = rows
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((row) => {
+        const point = stopLatLon.get(row.stopId);
+        return point ? { stopId: row.stopId, lat: point.lat, lon: point.lon } : null;
+      })
+      .filter(Boolean);
   }
   return paths;
 }
@@ -448,9 +437,13 @@ function buildScheduleCache(fileTexts, routeIds, stopIds) {
   // route, and gets reported as the stop problem it is rather than as a
   // phantom typo'd routeId. See node_helper.js's validateRouteIds.
   const routeIdsWithTrips = [...new Set([...trips.values()].map((trip) => trip.routeId))];
-  const routeStopPaths = fileTexts["stops.txt"]
-    ? buildRouteStopPaths(fileTexts["stop_times.txt"], trips, parseStopLatLon(fileTexts["stops.txt"]))
-    : {};
+  // Needs both files: route_stops.txt for the order, stops.txt for the
+  // coordinates. Either one missing just means no inferred detour spans --
+  // inferDetourSpanStops already treats an absent path as "can't tell".
+  const routeStopPaths =
+    fileTexts["stops.txt"] && fileTexts[ROUTE_STOPS_FILE]
+      ? parseRouteStopPaths(fileTexts[ROUTE_STOPS_FILE], routeIds, parseStopLatLon(fileTexts["stops.txt"]))
+      : {};
   // Which feed this cache came from, when the caller supplied feed_info.txt.
   // Purely diagnostic, but the absence of it is what made the 2026-09-02
   // incident hard to read off the Pi: the cache on disk gave no clue which
@@ -1461,7 +1454,7 @@ function selectFeedForDate(entries, date, feedsDir = FEEDS_DIR) {
 }
 
 function buildCacheFromBuffer(buffer, routeIds, stopIds) {
-  const zipEntries = readZipEntries(buffer, [...NEEDED_FILES, FEED_INFO_FILE, DIRECTIONS_FILE, ROUTES_FILE]);
+  const zipEntries = readZipEntries(buffer, [...NEEDED_FILES, FEED_INFO_FILE, DIRECTIONS_FILE, ROUTES_FILE, ROUTE_STOPS_FILE]);
   const fileTexts = {};
   for (const name of NEEDED_FILES) {
     const data = zipEntries.get(name);
@@ -1477,6 +1470,8 @@ function buildCacheFromBuffer(buffer, routeIds, stopIds) {
   // Optional for the same reason as directions.txt above.
   const routes = zipEntries.get(ROUTES_FILE);
   if (routes) fileTexts[ROUTES_FILE] = routes.toString("utf8");
+  const routeStops = zipEntries.get(ROUTE_STOPS_FILE);
+  if (routeStops) fileTexts[ROUTE_STOPS_FILE] = routeStops.toString("utf8");
   return buildScheduleCache(fileTexts, routeIds, stopIds);
 }
 
@@ -1592,6 +1587,7 @@ module.exports = {
   isServiceActiveOn,
   hasActiveServiceOn,
   buildScheduleCache,
+  parseRouteStopPaths,
   buildRouteStopPatterns,
   getDirectionIdsForStop,
   getScheduledRouteIds,
