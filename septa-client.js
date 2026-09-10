@@ -1,14 +1,11 @@
 "use strict";
 
-// Pure, dependency-free client for SEPTA's public v2 REST API, plus the
-// filtering/orchestration logic that turns raw API responses into a display-
-// ready summary for one route/stop/direction. No timers, no module-level
-// state, no MagicMirror dependency — everything here takes explicit inputs
-// so it can be unit tested with fixture JSON and a fake clock.
+// Pure, dependency-free client for SEPTA's public v2 REST API,
+// plus the filtering/orchestration logic that turns raw API responses into a display- ready summary for one route/stop/direction.
+// No timers, no module-level state, no MagicMirror dependency — everything here takes explicit inputs so it can be unit tested with fixture JSON and a fake clock.
 //
-// Ported from the proven design in /home/josh/working/lightpi
-// (fetchers.py:199-319, config.py:139-178), which has polled these same
-// endpoints reliably for months.
+// Ported from the proven design in /home/josh/working/lightpi (fetchers.py:199-319, config.py:139-178),
+// which has polled these same endpoints reliably for months.
 
 const BASE_URL = "https://www3.septa.org/api/v2";
 const REQUEST_TIMEOUT_MS = 20000;
@@ -43,8 +40,8 @@ async function fetchTripUpdate(tripId, fetchImpl = fetch) {
 // resolveRouteLabelColor.
 
 // SEPTA formats detour start/end as "%m/%d/%Y, %H:%M:%S" (e.g.
-// "7/6/2026, 14:30:00"). JS Date parsing of that exact format isn't
-// reliable across locales/engines, so parse it by hand.
+// "7/6/2026, 14:30:00").
+// JS Date parsing of that exact format isn't reliable across locales/engines, so parse it by hand.
 function parseSeptaDateTime(value) {
   if (typeof value !== "string") return null;
   const match = /^(\d{1,2})\/(\d{1,2})\/(\d{4}),\s*(\d{1,2}):(\d{2}):(\d{2})$/.exec(value.trim());
@@ -53,9 +50,8 @@ function parseSeptaDateTime(value) {
   return new Date(year, month - 1, day, hour, minute, second);
 }
 
-// SEPTA's detour skipped_stops has shown up as a flat array of stop-id
-// strings, but every live detour we've actually captured returns an object
-// keyed by stop id instead (values are [name, lat, lon], not needed here).
+// SEPTA's detour skipped_stops has shown up as a flat array of stop-id strings,
+// but every live detour we've actually captured returns an object keyed by stop id instead (values are [name, lat, lon], not needed here).
 // Handle both, plus null/missing.
 // skipped_stops is either an object keyed by stop id or a flat array of them
 // (both shapes are real -- see detourSkipsStop), and sometimes neither.
@@ -85,13 +81,12 @@ function parseTimeOfDaySeconds(value) {
   return hour * 3600 + minute * 60 + second;
 }
 
-// day_time_active_info gives each detour a per-weekday "HH:MM:SS-HH:MM:SS"
-// window on top of its overall start/end date range (e.g. a detour that's
-// only in effect during evening rush hour, every day, for a month). The
-// window can cross midnight (e.g. "16:30:00-04:30:00"). If the field is
-// missing entirely, the detour is active for its whole date range, which
-// matches SEPTA's own convention of an explicit "00:00:00-23:59:59" entry
-// meaning "all day".
+// day_time_active_info gives each detour a per-weekday "HH:MM:SS-HH:MM:SS" window on top of its overall start/end date range
+// (e.g. a detour that's only in effect during evening rush hour, every day, for a month).
+// The window can cross midnight (e.g.
+// "16:30:00-04:30:00").
+// If the field is missing entirely, the detour is active for its whole date range,
+// which matches SEPTA's own convention of an explicit "00:00:00-23:59:59" entry meaning "all day".
 function isWithinDayTimeWindow(dayTimeInfo, now) {
   if (!dayTimeInfo || typeof dayTimeInfo !== "object") return true;
   const range = dayTimeInfo[DAY_NAMES[now.getDay()]];
@@ -104,11 +99,9 @@ function isWithinDayTimeWindow(dayTimeInfo, now) {
   return start <= end ? nowSeconds >= start && nowSeconds <= end : nowSeconds >= start || nowSeconds <= end;
 }
 
-// Returns the detour currently in effect for this stop (so callers can read
-// fields like `reason`), or null. A detour is "active" if now falls strictly
-// between its start/end date range, the configured stop is one of its
-// skipped stops, and (if present) now falls within its day_time_active_info
-// window for today.
+// Returns the detour currently in effect for this stop (so callers can read fields like `reason`), or null.
+// A detour is "active" if now falls strictly between its start/end date range, the configured stop is one of its skipped stops,
+// and (if present) now falls within its day_time_active_info window for today.
 function findActiveDetour(detours, stopId, now = new Date()) {
   if (!Array.isArray(detours)) return null;
   const targetStopId = String(stopId);
@@ -125,10 +118,10 @@ function findActiveDetour(detours, stopId, now = new Date()) {
   );
 }
 
-// One entry of a detour's coordinate_detail_from_message. Guards against
-// Number()'s coercions rather than trusting it: Number(null) and Number("")
-// are both 0, so a missing coordinate would otherwise read as a valid point
-// at 0,0 -- in the Atlantic -- and drag the nearest-stop search with it.
+// One entry of a detour's coordinate_detail_from_message.
+// Guards against Number()'s coercions rather than trusting it: Number(null) and Number("") are both 0,
+// so a missing coordinate would otherwise read as a valid point at 0,0
+// -- in the Atlantic -- and drag the nearest-stop search with it.
 function isUsableCoordinatePair(value) {
   if (!Array.isArray(value) || value.length < 2) return false;
   return [value[0], value[1]].every((part) => {
@@ -138,22 +131,18 @@ function isUsableCoordinatePair(value) {
 }
 
 // Longest a no-skipped-stops detour can run and still be worth mentioning.
-// Past this it's the new normal rather than news, and a permanently-orange
-// note on the mirror is noise. Measured 2026-09-02: of the 30 active
-// empty-skipped detours that would otherwise alert, 18 run longer than a
-// month, so this cut is doing most of the noise reduction on its own.
+// Past this it's the new normal rather than news, and a permanently-orange note on the mirror is noise.
+// Measured 2026-09-02: of the 30 active empty-skipped detours that would otherwise alert, 18 run longer than a month,
+// so this cut is doing most of the noise reduction on its own.
 const INFERRED_DETOUR_MAX_DAYS = 28;
 
-// Detours eligible for span inference: active now, carrying no skipped_stops
-// of their own (when SEPTA lists them we use those, and far more
-// confidently), short-lived enough to be news, and carrying at least two
-// turn coordinates so there's a path to localize. Everything geometric
-// happens later, against the schedule cache -- see gtfs-schedule.js's
-// inferDetourSpanStops.
+// Detours eligible for span inference: active now, carrying no skipped_stops of their own
+// (when SEPTA lists them we use those, and far more confidently), short-lived enough to be news,
+// and carrying at least two turn coordinates so there's a path to localize.
+// Everything geometric happens later, against the schedule cache -- see gtfs-schedule.js's inferDetourSpanStops.
 //
-// Note this returns *candidates*, not a verdict: a detour surviving these
-// filters may still turn out to bypass a stretch of route nowhere near the
-// configured stop, which is exactly what the span test decides.
+// Note this returns *candidates*, not a verdict: a detour surviving these filters may still turn out to bypass a stretch of route nowhere near the configured stop,
+// which is exactly what the span test decides.
 function findInferredDetourCandidates(detours, now = new Date(), maxDays = INFERRED_DETOUR_MAX_DAYS) {
   if (!Array.isArray(detours)) return [];
   return detours.filter((detour) => {
@@ -175,33 +164,28 @@ function isDetourActive(detours, stopId, now = new Date()) {
   return findActiveDetour(detours, stopId, now) !== null;
 }
 
-// When skipped_stops is the object-keyed real API shape, each entry also
-// carries the stop's name -- reuse it so the stop-context header still has
-// something to show during an active detour, when we skip fetching trip
-// data entirely and so can't derive stopName from stop_times instead.
+// When skipped_stops is the object-keyed real API shape, each entry also carries the stop's name
+// -- reuse it so the stop-context header still has something to show during an active detour,
+// when we skip fetching trip data entirely and so can't derive stopName from stop_times instead.
 function findSkippedStopName(skippedStops, targetStopId) {
   if (!skippedStops || Array.isArray(skippedStops) || typeof skippedStops !== "object") return null;
   const entry = skippedStops[targetStopId];
   return (Array.isArray(entry) && typeof entry[0] === "string" && entry[0]) || null;
 }
 
-// A trip is "good" if it's heading the configured direction and isn't
-// canceled. With useScheduleSupplement enabled (the default), that's the
-// whole rule -- trips SEPTA hasn't started GPS-tracking yet (or that
-// haven't left their first stop) are included too, and flagged via
-// isTripTracked() rather than dropped. With it disabled, only trips past
-// their first stop count as "good", matching the module's original
-// tracked-only behavior.
+// A trip is "good" if it's heading the configured direction and isn't canceled.
+// With useScheduleSupplement enabled (the default), that's the whole rule
+// -- trips SEPTA hasn't started GPS-tracking yet (or that haven't left their first stop) are included too,
+// and flagged via isTripTracked() rather than dropped.
+// With it disabled, only trips past their first stop count as "good", matching the module's original tracked-only behavior.
 //
-// Direction is decided by structuralDirectionId when it's given -- the
-// configured stop_id is itself exclusive to one direction_id, straight from
-// the schedule (see gtfs-schedule.js's getDirectionIdsForStop) -- rather
-// than by matching direction_name, since that's confirmed live to sometimes
-// be unusable (always "N/A" for every trip on a route, e.g. route 63) or
-// actively wrong (swapped between directions, e.g. route 135). Falls back
-// to the direction_name match (the original rule) when structuralDirectionId
-// is null -- the configured stop is itself ambiguous, or the schedule cache
-// isn't available yet.
+// Direction is decided by structuralDirectionId when it's given
+// -- the configured stop_id is itself exclusive to one direction_id, straight from the schedule
+// (see gtfs-schedule.js's getDirectionIdsForStop)
+// -- rather than by matching direction_name, since that's confirmed live to sometimes be unusable
+// (always "N/A" for every trip on a route, e.g. route 63) or actively wrong (swapped between directions, e.g. route 135).
+// Falls back to the direction_name match (the original rule) when structuralDirectionId is null
+// -- the configured stop is itself ambiguous, or the schedule cache isn't available yet.
 function filterGoodTrips(trips, direction, useScheduleSupplement = true, structuralDirectionId = null) {
   if (!Array.isArray(trips)) return [];
   return trips.filter((trip) => {
@@ -217,11 +201,9 @@ function filterGoodTrips(trips, direction, useScheduleSupplement = true, structu
   });
 }
 
-// A trip counts as "tracked" (solid, live data) unless SEPTA's own data
-// says otherwise: still at/before its first stop, no GPS yet, no vehicle
-// assigned, or the trip-update response itself says "real-time": false.
-// Untracked trips still get real ETAs (SEPTA blends in the static
-// schedule for them), just with lower confidence -- flagged, not dropped.
+// A trip counts as "tracked" (solid, live data) unless SEPTA's own data says otherwise: still at/before its first stop,
+// no GPS yet, no vehicle assigned, or the trip-update response itself says "real-time": false.
+// Untracked trips still get real ETAs (SEPTA blends in the static schedule for them), just with lower confidence -- flagged, not dropped.
 function isTripTracked(tripsEntry, tripUpdateTrip) {
   if (!tripsEntry) return false;
   if (Number(tripsEntry.next_stop_sequence) === 1) return false;
@@ -231,31 +213,26 @@ function isTripTracked(tripsEntry, tripUpdateTrip) {
   return true;
 }
 
-// A stricter, narrower check than isTripTracked: true only for trips with
-// no real telemetry at all (status "NO GPS" or no vehicle assigned yet),
-// not for the next_stop_sequence===1 case (which has real GPS and a real
-// delay, just hasn't left its first stop -- that one is untracked for
-// display purposes but its ETA is genuinely trustworthy). Confirmed live
-// that these carry dummy sentinel values (delay 998, a fixed placeholder
-// timestamp) rather than real data, and that even after a vehicle_id
-// eventually appears, delay/next-stop stay null until status itself
-// changes -- so there's no trustworthy ETA to protect here either way.
+// A stricter, narrower check than isTripTracked: true only for trips with no real telemetry at all
+// (status "NO GPS" or no vehicle assigned yet),
+// not for the next_stop_sequence===1 case (which has real GPS and a real delay, just hasn't left its first stop
+// -- that one is untracked for display purposes but its ETA is genuinely trustworthy).
+// Confirmed live that these carry dummy sentinel values (delay 998, a fixed placeholder timestamp) rather than real data,
+// and that even after a vehicle_id eventually appears, delay/next-stop stay null until status itself changes
+// -- so there's no trustworthy ETA to protect here either way.
 function isNoGpsSource(tripsEntry) {
   if (!tripsEntry) return false;
   return tripsEntry.status === "NO GPS" || tripsEntry.vehicle_id === "None";
 }
 
-// Whether SEPTA's own /trips/ entry already proves this bus is past the
-// configured stop, making its /trip-update/ fetch pure waste -- the response
-// would contain nothing filterStopTimes could use (every stop_time at our
-// stop is already `departed`, or its eta is in the past). Measured against
-// the full service day for the four configured rows on 2026-09-02: 63% of
-// per-cycle trip-update calls fall into this bucket, because a bus stays "in
-// service, already past you" for the whole remainder of its run. The saving
-// is largest for stops near the *start* of a route.
+// Whether SEPTA's own /trips/ entry already proves this bus is past the configured stop, making its /trip-update/ fetch pure waste
+// -- the response would contain nothing filterStopTimes could use
+// (every stop_time at our stop is already `departed`, or its eta is in the past).
+// Measured against the full service day for the four configured rows on 2026-09-02: 63% of per-cycle trip-update calls fall into this bucket,
+// because a bus stays "in service, already past you" for the whole remainder of its run.
+// The saving is largest for stops near the *start* of a route.
 //
-// Fails open in every uncertain case -- an unnecessary fetch costs one
-// request, a wrong skip silently drops a real arrival off the display:
+// Fails open in every uncertain case -- an unnecessary fetch costs one request, a wrong skip silently drops a real arrival off the display:
 //
 //   - stopSequence null (the schedule cache doesn't know this trip, or isn't
 //     loaded yet) -> fetch.
@@ -264,9 +241,8 @@ function isNoGpsSource(tripsEntry) {
 //     trips the schedule supplement leans on.
 //   - a non-numeric next_stop_sequence -> fetch.
 //
-// stopSequence must be the *last* sequence at which the trip serves the stop
-// when it serves it more than once -- see gtfs-schedule.js's
-// getLastStopSequence for why, and for the routes it actually happens on.
+// stopSequence must be the *last* sequence at which the trip serves the stop when it serves it more than once
+// -- see gtfs-schedule.js's getLastStopSequence for why, and for the routes it actually happens on.
 function isTripPastStop(tripsEntry, stopSequence) {
   if (!tripsEntry) return false;
   if (stopSequence == null) return false;
@@ -276,22 +252,17 @@ function isTripPastStop(tripsEntry, stopSequence) {
   return nextStopSequence > Number(stopSequence);
 }
 
-// SEPTA mis-dates the last trip(s) of the service day for a few minutes
-// after midnight: a stop time expressed with the GTFS past-midnight
-// convention ("24:xx", meaning "still the previous service day") gets its
-// transit_date read as the calendar day that just rolled over instead of
-// the service day the trip actually started on, landing eta a full 24h in
-// the future even though the bus is really due any minute. Confirmed live
-// (2026-07-14 ~00:08 EDT, route 17 stop 21303): a bus 7 stops out, on time,
-// got an eta stamped for the following night instead of ~3 minutes away --
-// and because MMM.js's clock-time display drops the date, it *looked*
-// correct (same HH:MM, wrong day) while actually sitting past
-// countdownWithinMinutes and showing green instead of a red "3m".
+// SEPTA mis-dates the last trip(s) of the service day for a few minutes after midnight: a stop time expressed with the GTFS past-midnight convention
+// ("24:xx", meaning "still the previous service day") gets its transit_date read as the calendar day that just rolled over instead of the service day the trip actually started on,
+// landing eta a full 24h in the future even though the bus is really due any minute.
+// Confirmed live (2026-07-14 ~00:08 EDT, route 17 stop 21303): a bus 7 stops out,
+// on time, got an eta stamped for the following night instead of ~3 minutes away
+// -- and because MMM.js's clock-time display drops the date, it *looked* correct
+// (same HH:MM, wrong day) while actually sitting past countdownWithinMinutes and showing green instead of a red "3m".
 //
-// Every stop_time here belongs to a trip already in progress (goodTrips
-// excludes next_stop_sequence <= 1 unless schedule-supplementing), so no
-// genuine eta should be more than a couple hours out -- correct rather than
-// trust SEPTA's eta as-is.
+// Every stop_time here belongs to a trip already in progress (goodTrips excludes next_stop_sequence <= 1 unless schedule-supplementing),
+// so no genuine eta should be more than a couple hours out
+// -- correct rather than trust SEPTA's eta as-is.
 const MIDNIGHT_ETA_BUG_THRESHOLD_SECONDS = 3 * 3600;
 const ONE_DAY_SECONDS = 86400;
 
@@ -299,13 +270,11 @@ function correctMidnightEta(eta, now) {
   return eta - now > MIDNIGHT_ETA_BUG_THRESHOLD_SECONDS ? eta - ONE_DAY_SECONDS : eta;
 }
 
-// A stop_time counts as an upcoming arrival if it's for the configured
-// stop, hasn't already departed, is still in the future, and doesn't carry
-// SEPTA's "bad data" delay sentinel (>= 999).
+// A stop_time counts as an upcoming arrival if it's for the configured stop, hasn't already departed, is still in the future,
+// and doesn't carry SEPTA's "bad data" delay sentinel (>= 999).
 //
-// stop_id shows up as a string in some SEPTA payloads (e.g. trips'
-// next_stop_id) and as a number in others (trip-update's stop_times), so
-// compare numerically rather than with strict equality.
+// stop_id shows up as a string in some SEPTA payloads (e.g. trips' next_stop_id) and as a number in others (trip-update's stop_times),
+// so compare numerically rather than with strict equality.
 function filterStopTimes(stopTimes, stopId, now = Date.now() / 1000) {
   if (!Array.isArray(stopTimes)) return [];
   const targetStopId = Number(stopId);
@@ -321,10 +290,8 @@ function filterStopTimes(stopTimes, stopId, now = Date.now() / 1000) {
   return results;
 }
 
-// Every stop_time entry in a trip-update carries stop_name for every stop
-// along that trip, not just the target one -- reuse that (same trick
-// scripts/find-stop.js uses) so callers can label which physical stop
-// they're showing, without a separate "stops" API call.
+// Every stop_time entry in a trip-update carries stop_name for every stop along that trip, not just the target one
+// -- reuse that (same trick scripts/find-stop.js uses) so callers can label which physical stop they're showing, without a separate "stops" API call.
 function findStopName(stopTimes, stopId) {
   if (!Array.isArray(stopTimes)) return null;
   const targetStopId = Number(stopId);
@@ -332,28 +299,22 @@ function findStopName(stopTimes, stopId) {
   return (match && match.stop_name) || null;
 }
 
-// Ground-truth check for whether a specific trip serves a given stop *after*
-// the point the rider would board -- unlike the static-schedule headsign
-// check in gtfs-schedule.js's getHeadsignsSkippingStop, this is per-trip, not
-// per-headsign. That matters because SEPTA doesn't always give a distinct
-// headsign to a distinct pattern: route 17's "Broad-Pattison" headsign, for
-// example, covers both a normal-length trip and a much longer weekend Navy
-// Yard extension, so the headsign-level check alone can't tell them apart.
+// Ground-truth check for whether a specific trip serves a given stop *after* the point the rider would board
+// -- unlike the static-schedule headsign check in gtfs-schedule.js's getHeadsignsSkippingStop, this is per-trip, not per-headsign.
+// That matters because SEPTA doesn't always give a distinct headsign to a distinct pattern: route 17's "Broad-Pattison" headsign,
+// for example, covers both a normal-length trip and a much longer weekend Navy Yard extension,
+// so the headsign-level check alone can't tell them apart.
 //
-// Only visits later in the trip count. A secondary stop the bus already
-// passed before reaching the configured stop is no use to someone boarding
-// there, and on a looping route the same stop_id legitimately appears on
-// both sides: LUCYGR's "Green Loop" serves stop 28325 at sequence 1 and again
-// at sequence 21. If a detour stops it looping back, the trip still lists
-// 28325 at sequence 1, and counting that would report a secondary stop the
-// rider cannot actually reach.
+// Only visits later in the trip count.
+// A secondary stop the bus already passed before reaching the configured stop is no use to someone boarding there,
+// and on a looping route the same stop_id legitimately appears on both sides: LUCYGR's "Green Loop" serves stop 28325 at sequence 1 and again at sequence 21.
+// If a detour stops it looping back, the trip still lists 28325 at sequence 1,
+// and counting that would report a secondary stop the rider cannot actually reach.
 //
-// Returns null (not false) when stopTimes isn't available at all (e.g. this
-// trip's trip-update fetch failed, or the fetch was skipped) -- callers
-// should treat that as "unknown, fall back to the headsign check" rather than
-// "confirmed skip". A non-numeric afterSequence falls back to counting any
-// visit, since with no position to compare against the safer answer is the
-// permissive one.
+// Returns null (not false) when stopTimes isn't available at all (e.g. this trip's trip-update fetch failed, or the fetch was skipped)
+// -- callers should treat that as "unknown, fall back to the headsign check" rather than "confirmed skip".
+// A non-numeric afterSequence falls back to counting any visit,
+// since with no position to compare against the safer answer is the permissive one.
 function tripReachesStopAfter(stopTimes, stopId, afterSequence) {
   if (!Array.isArray(stopTimes)) return null;
   const targetStopId = Number(stopId);
@@ -365,32 +326,27 @@ function tripReachesStopAfter(stopTimes, stopId, afterSequence) {
   });
 }
 
-// Wraps a fetch implementation so that identical URLs requested inside the
-// same ttlMs window share a single real HTTP request, including sharing one
-// that's still in flight.
+// Wraps a fetch implementation so that identical URLs requested inside the same ttlMs window share a single real HTTP request,
+// including sharing one that's still in flight.
 //
-// Exists because each configured row polls independently, and two rows on the
-// same route (e.g. a northbound and a southbound row on 17) build byte-
-// identical /detours/ and /trips/ URLs -- without this, every cycle fetches
-// both twice. Grid-aligned scheduling (see alignedDelayMs) is what makes the
-// windows actually overlap.
+// Exists because each configured row polls independently,
+// and two rows on the same route (e.g. a northbound and a southbound row on 17) build byte- identical /detours/ and /trips/ URLs
+// -- without this, every cycle fetches both twice.
+// Grid-aligned scheduling (see alignedDelayMs) is what makes the windows actually overlap.
 //
-// Only the parsed JSON body is cached, because a real Response body can be
-// read exactly once; each caller therefore gets a fresh minimal
-// Response-shaped object rather than a shared Response. fetchJson above only
-// touches .ok/.status/.statusText/.json(), which is the whole contract here.
+// Only the parsed JSON body is cached, because a real Response body can be read exactly once;
+// each caller therefore gets a fresh minimal Response-shaped object rather than a shared Response.
+// fetchJson above only touches .ok/.status/.statusText/.json(), which is the whole contract here.
 //
-// Failures are never cached -- a rejection or a non-ok response is evicted
-// immediately, so one row's transient error can't poison the other's cycle,
+// Failures are never cached -- a rejection or a non-ok response is evicted immediately,
+// so one row's transient error can't poison the other's cycle,
 // and the retry path still sees the real error.
 function makeCachingFetch(ttlMs, fetchImpl = fetch, now = () => Date.now()) {
   const cache = new Map();
 
   return function cachingFetch(url, options) {
     const currentTime = now();
-    // Bounded by eviction on every call rather than by size: trip-update URLs
-    // carry a different trip_id each cycle, so without this the map would
-    // grow forever.
+    // Bounded by eviction on every call rather than by size: trip-update URLs carry a different trip_id each cycle, so without this the map would grow forever.
     for (const [cachedUrl, entry] of cache) {
       if (currentTime - entry.at > ttlMs) cache.delete(cachedUrl);
     }
@@ -423,28 +379,22 @@ function makeCachingFetch(ttlMs, fetchImpl = fetch, now = () => Date.now()) {
   };
 }
 
-// How long until the next poll, if polls are to land on a shared wall-clock
-// grid of intervalSeconds rather than "intervalSeconds after whenever this
-// cycle happened to finish".
+// How long until the next poll, if polls are to land on a shared wall-clock grid of intervalSeconds rather than "intervalSeconds after whenever this cycle happened to finish".
 //
-// Two reasons to align. First, each configured row self-reschedules
-// independently, so rows drift to wherever their own first cycle started and
-// their updates trickle into the display at unrelated moments; aligning them
-// makes one cycle arrive as a single batch the frontend can render with one
-// fade (see MMM-septa.js's scheduleDataRender). Second, it removes the
-// cycle's own duration from the wait -- the old scheme spaced polls at
-// interval + duration (121s for a 1s cycle on a 120s interval), this spaces
-// them at exactly interval.
+// Two reasons to align.
+// First, each configured row self-reschedules independently,
+// so rows drift to wherever their own first cycle started and their updates trickle into the display at unrelated moments;
+// aligning them makes one cycle arrive as a single batch the frontend can render with one fade (see MMM-septa.js's scheduleDataRender).
+// Second, it removes the cycle's own duration from the wait
+// -- the old scheme spaced polls at interval + duration (121s for a 1s cycle on a 120s interval), this spaces them at exactly interval.
 //
-// offsetMs shifts this route's grid off the shared one by a fixed amount, so
-// that aligning every row doesn't turn each tick into a thundering herd of
-// simultaneous requests against an undocumented API -- node_helper derives a
-// stable per-route offset (see routeStaggerMs).
+// offsetMs shifts this route's grid off the shared one by a fixed amount,
+// so that aligning every row doesn't turn each tick into a thundering herd of simultaneous requests against an undocumented API
+// -- node_helper derives a stable per-route offset (see routeStaggerMs).
 //
-// Returns a delay in (0, intervalMs]: a cycle finishing exactly on a grid
-// point waits a full interval rather than firing again immediately. A
-// non-positive or non-finite interval is passed straight through, preserving
-// whatever setTimeout already did with a nonsense configured value.
+// Returns a delay in (0, intervalMs]: a cycle finishing exactly on a grid point waits a full interval rather than firing again immediately.
+// A non-positive or non-finite interval is passed straight through,
+// preserving whatever setTimeout already did with a nonsense configured value.
 function alignedDelayMs(nowMs, intervalSeconds, offsetMs = 0) {
   const intervalMs = intervalSeconds * 1000;
   if (!Number.isFinite(intervalMs) || intervalMs <= 0) return intervalMs;
@@ -453,8 +403,7 @@ function alignedDelayMs(nowMs, intervalSeconds, offsetMs = 0) {
   return intervalMs - sinceGridPoint;
 }
 
-// Data is "fresh" until it ages past 3x the refresh interval, matching
-// lightpi's get_data() staleness window (fetchers.py:212-226).
+// Data is "fresh" until it ages past 3x the refresh interval, matching lightpi's get_data() staleness window (fetchers.py:212-226).
 function computeIsFresh(lastFetchTime, refreshIntervalSeconds, now = Date.now()) {
   if (lastFetchTime == null) return false;
   const ageSeconds = (now - lastFetchTime) / 1000;
@@ -463,29 +412,22 @@ function computeIsFresh(lastFetchTime, refreshIntervalSeconds, now = Date.now())
 
 // Runs one full poll cycle for a single route/stop/direction.
 //
-// routeConfig: { routeId, stopId, direction }
-// options.fetchImpl: injectable fetch implementation (defaults to global fetch)
-// options.now: () => Date, injectable clock (defaults to () => new Date())
+// routeConfig: { routeId, stopId, direction } options.fetchImpl: injectable fetch implementation
+// (defaults to global fetch) options.now: () => Date, injectable clock (defaults to () => new Date())
 //
-// Detour and trips fetch failures propagate (throw) so the caller can apply
-// its own retry-interval backoff. Per-trip trip-update failures are isolated
-// (Promise.allSettled) so one bad trip only sets hasTripError — it never
-// fails the whole cycle, mirroring lightpi's
-// asyncio.gather(..., return_exceptions=True).
+// Detour and trips fetch failures propagate (throw) so the caller can apply its own retry-interval backoff.
+// Per-trip trip-update failures are isolated (Promise.allSettled) so one bad trip only sets hasTripError — it never fails the whole cycle,
+// mirroring lightpi's asyncio.gather(..., return_exceptions=True).
 async function pollRoute(routeConfig, options = {}) {
   const fetchImpl = options.fetchImpl || fetch;
   const nowFn = options.now || (() => new Date());
   const useScheduleSupplement = options.useScheduleSupplement !== false;
-  // Resolved by node_helper.js from the GTFS schedule cache (see
-  // gtfs-schedule.js's getDirectionIdsForStop) -- null if the configured
-  // stop is itself served by more than one direction, or the cache isn't
-  // available yet.
+  // Resolved by node_helper.js from the GTFS schedule cache (see gtfs-schedule.js's getDirectionIdsForStop)
+  // -- null if the configured stop is itself served by more than one direction, or the cache isn't available yet.
   const structuralDirectionId = options.structuralDirectionId != null ? String(options.structuralDirectionId) : null;
-  // tripId -> this stop's last stop_sequence on that trip, or null for
-  // "unknown". Injected by node_helper from the GTFS schedule cache (see
-  // gtfs-schedule.js's getLastStopSequence); defaulting to "always unknown"
-  // keeps the old fetch-everything behavior for any caller that doesn't
-  // supply it, including every existing test.
+  // tripId -> this stop's last stop_sequence on that trip, or null for "unknown".
+  // Injected by node_helper from the GTFS schedule cache (see gtfs-schedule.js's getLastStopSequence);
+  // defaulting to "always unknown" keeps the old fetch-everything behavior for any caller that doesn't supply it, including every existing test.
   const stopSequenceForTrip = options.stopSequenceForTrip || (() => null);
   const { routeId, stopId, direction } = routeConfig;
 
@@ -506,12 +448,10 @@ async function pollRoute(routeConfig, options = {}) {
     };
   }
 
-  // Reuse the detours already fetched for the primary-stop check above: a
-  // route can have multiple concurrent detours, so the one skipping the
-  // secondary stop (if any) may be a different detour object than the one
-  // (not) skipping the primary stop. Only checked once we know trips will
-  // actually be shown -- if the primary stop were skipped we'd have returned
-  // already, and this only matters when there are trips to color/annotate.
+  // Reuse the detours already fetched for the primary-stop check above: a route can have multiple concurrent detours,
+  // so the one skipping the secondary stop (if any) may be a different detour object than the one (not) skipping the primary stop.
+  // Only checked once we know trips will actually be shown
+  // -- if the primary stop were skipped we'd have returned already, and this only matters when there are trips to color/annotate.
   let secondaryStopDetour = false;
   let secondaryStopName = null;
   if (routeConfig.secondaryStopId) {
@@ -524,24 +464,17 @@ async function pollRoute(routeConfig, options = {}) {
 
   const trips = await fetchTrips(routeId, fetchImpl);
 
-  // Direction resolution: prefer structuralDirectionId over a live
-  // direction_name match, for the same reason filterGoodTrips does -- the
-  // stop_id the user actually configured is more trustworthy than a
-  // direction_name that can be unusable or wrong. Falls back to resolving
-  // from *any* trip matching the configured direction (regardless of
-  // canceled/tracked status -- this is purely about learning the
-  // direction_id<->direction_name pairing) when the stop is itself
-  // ambiguous or the schedule cache isn't available -- some stop_ids are,
-  // rarely but really, served by both directions of the same route
-  // (confirmed live: route 2 stop 40), and the static schedule alone has no
-  // direction_name, only a bare direction_id, so a live match is the only
-  // way to connect the two in that case.
+  // Direction resolution: prefer structuralDirectionId over a live direction_name match, for the same reason filterGoodTrips does
+  // -- the stop_id the user actually configured is more trustworthy than a direction_name that can be unusable or wrong.
+  // Falls back to resolving from *any* trip matching the configured direction
+  // (regardless of canceled/tracked status -- this is purely about learning the direction_id<->direction_name pairing) when the stop is itself ambiguous or the schedule cache isn't available
+  // -- some stop_ids are, rarely but really, served by both directions of the same route (confirmed live: route 2 stop 40),
+  // and the static schedule alone has no direction_name, only a bare direction_id,
+  // so a live match is the only way to connect the two in that case.
   //
-  // Even when structuralDirectionId is used, still check for a live trip
-  // that names this same direction_id something other than the configured
-  // direction -- not to override anything (the configured stop_id remains
-  // the more trustworthy signal), just to warn: it's either a stale/typo'd
-  // config, or a SEPTA-side reversal like route 135's.
+  // Even when structuralDirectionId is used, still check for a live trip that names this same direction_id something other than the configured direction
+  // -- not to override anything (the configured stop_id remains the more trustworthy signal),
+  // just to warn: it's either a stale/typo'd config, or a SEPTA-side reversal like route 135's.
   let directionId;
   if (structuralDirectionId != null) {
     directionId = structuralDirectionId;
@@ -568,9 +501,8 @@ async function pollRoute(routeConfig, options = {}) {
 
   const goodTrips = filterGoodTrips(trips, direction, useScheduleSupplement, structuralDirectionId);
 
-  // Drop the trips SEPTA has already told us are past our stop -- see
-  // isTripPastStop. Everything downstream indexes against pollableTrips
-  // rather than goodTrips, since the results array is positional.
+  // Drop the trips SEPTA has already told us are past our stop -- see isTripPastStop.
+  // Everything downstream indexes against pollableTrips rather than goodTrips, since the results array is positional.
   const pollableTrips = goodTrips.filter(
     (trip) => !isTripPastStop(trip, stopSequenceForTrip(trip.trip_id))
   );
@@ -580,10 +512,9 @@ async function pollRoute(routeConfig, options = {}) {
     pollableTrips.map((trip) => fetchTripUpdate(trip.trip_id, fetchImpl))
   );
 
-  // Each arrival keeps the headsign and tracked-status of the specific trip
-  // it came from -- a route/direction can in principle have mixed headsigns
-  // across trips (short-turns, etc), so a single route-level value can't be
-  // trusted to describe every arrival shown.
+  // Each arrival keeps the headsign and tracked-status of the specific trip it came from
+  // -- a route/direction can in principle have mixed headsigns across trips (short-turns, etc),
+  // so a single route-level value can't be trusted to describe every arrival shown.
   let hasTripError = false;
   let stopName = null;
   const etas = [];
@@ -603,14 +534,12 @@ async function pollRoute(routeConfig, options = {}) {
     const noGpsSource = isNoGpsSource(tripEntry);
     const tripId = (tripEntry && tripEntry.trip_id) || null;
     for (const stopTime of filterStopTimes(stopTimes, stopId, nowSeconds)) {
-      // Computed per *arrival*, not per trip: a trip can serve the configured
-      // stop more than once (route 107 hits Marshall Rd & Sloan St at
-      // sequences 22 and 33), and whether the secondary stop is still ahead
-      // depends on which of those visits the rider boards at. Only added to
-      // the eta object when a secondary stop is configured at all -- see
-      // tripReachesStopAfter's doc comment for why this per-trip check exists
-      // alongside (and takes priority over) node_helper.js's headsign-level
-      // static-schedule check.
+      // Computed per *arrival*, not per trip: a trip can serve the configured stop more than once
+      // (route 107 hits Marshall Rd & Sloan St at sequences 22 and 33),
+      // and whether the secondary stop is still ahead depends on which of those visits the rider boards at.
+      // Only added to the eta object when a secondary stop is configured at all
+      // -- see tripReachesStopAfter's doc comment for why this per-trip check exists alongside
+      // (and takes priority over) node_helper.js's headsign-level static-schedule check.
       const secondaryStopFields = routeConfig.secondaryStopId
         ? {
             reachesSecondaryStop: tripReachesStopAfter(
@@ -625,14 +554,11 @@ async function pollRoute(routeConfig, options = {}) {
   });
   etas.sort((a, b) => a.eta - b.eta);
 
-  // A "NO GPS" trip's ETA is pure unadjusted static-schedule math (no real
-  // delay to apply), and confirmed live that these can vanish entirely or
-  // sit unchanged for the better part of an hour -- no more trustworthy
-  // than a schedule-supplement candidate. Apply the exact same cutoff
-  // mergeScheduledArrivals uses: drop it if a later confirmed-tracked
-  // arrival already exists (nothing to compare against -> no cutoff).
-  // next_stop_sequence===1 trips are untracked too but have real GPS/delay
-  // and are deliberately exempt -- see isNoGpsSource's doc comment.
+  // A "NO GPS" trip's ETA is pure unadjusted static-schedule math (no real delay to apply),
+  // and confirmed live that these can vanish entirely or sit unchanged for the better part of an hour
+  // -- no more trustworthy than a schedule-supplement candidate.
+  // Apply the exact same cutoff mergeScheduledArrivals uses: drop it if a later confirmed-tracked arrival already exists (nothing to compare against -> no cutoff).
+  // next_stop_sequence===1 trips are untracked too but have real GPS/delay and are deliberately exempt -- see isNoGpsSource's doc comment.
   const maxTrackedEta = etas.reduce((max, arrival) => (arrival.tracked ? Math.max(max, arrival.eta) : max), -Infinity);
   const filteredEtas = etas
     .filter((arrival) => !arrival.noGpsSource || arrival.eta > maxTrackedEta)
@@ -649,22 +575,19 @@ async function pollRoute(routeConfig, options = {}) {
     secondaryStopDetour,
     secondaryStopName,
     directionId,
-    // Detours SEPTA left without a stop list, narrowed to the ones worth
-    // localizing (see findInferredDetourCandidates). Passed up raw because
-    // deciding whether they touch this stop needs the GTFS schedule cache,
+    // Detours SEPTA left without a stop list, narrowed to the ones worth localizing (see findInferredDetourCandidates).
+    // Passed up raw because deciding whether they touch this stop needs the GTFS schedule cache,
     // which lives in node_helper -- this module stays network-and-cache-free.
     inferredDetourCandidates: findInferredDetourCandidates(detours, nowDate),
   };
 }
 
-// Merges GTFS-schedule-derived candidates (see gtfs-schedule.js's
-// getScheduledArrivals) into an already-tracked etas list. A candidate is
-// dropped unconditionally if its eta is at or before the latest tracked
-// arrival (SEPTA's own live data should already cover anything that
-// imminent -- if it didn't show up there, something's off, so it's not
-// worth surfacing from the schedule instead) and otherwise dropped only if
-// its tripId matches a trip we're already showing (the same run counted
-// twice). Survivors are tagged tracked:false and merged in eta order.
+// Merges GTFS-schedule-derived candidates (see gtfs-schedule.js's getScheduledArrivals) into an already-tracked etas list.
+// A candidate is dropped unconditionally if its eta is at or before the latest tracked arrival
+// (SEPTA's own live data should already cover anything that imminent
+// -- if it didn't show up there, something's off,
+// so it's not worth surfacing from the schedule instead) and otherwise dropped only if its tripId matches a trip we're already showing (the same run counted twice).
+// Survivors are tagged tracked:false and merged in eta order.
 function mergeScheduledArrivals(trackedEtas, scheduledCandidates) {
   const maxTrackedEta = trackedEtas.reduce((max, arrival) => Math.max(max, arrival.eta), -Infinity);
   const trackedTripIds = new Set(trackedEtas.map((arrival) => arrival.tripId).filter(Boolean));

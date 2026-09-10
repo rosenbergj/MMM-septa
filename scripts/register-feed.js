@@ -1,23 +1,21 @@
 #!/usr/bin/env node
 "use strict";
 
-// Registers a banked GTFS zip into the module's feed store, so feed selection
-// can use it (see gtfs-schedule.js's selectFeedForDate).
+// Registers a banked GTFS zip into the module's feed store, so feed selection can use it (see gtfs-schedule.js's selectFeedForDate).
 //
-// Needed because SEPTA keeps no feed history: once it republishes
-// google_bus.zip, the superseded feed is only recoverable from a copy you
-// already had. This puts such a copy back into rotation.
+// Needed because SEPTA keeps no feed history: once it republishes google_bus.zip,
+// the superseded feed is only recoverable from a copy you already had.
+// This puts such a copy back into rotation.
 //
 // Usage:
 //   node scripts/register-feed.js <path-to-google_bus.zip>
 //
-// Copies the zip into feeds/ if it isn't already there, reads its real
-// feed_version out of feed_info.txt (the filename is never trusted), and adds
-// it to feeds/index.json under the normal retention rules.
+// Copies the zip into feeds/ if it isn't already there, reads its real feed_version out of feed_info.txt (the filename is never trusted),
+// and adds it to feeds/index.json under the normal retention rules.
 //
-// Deliberately conservative: it never deletes a zip. If registering would
-// push an existing feed out of the retained set, it stops and says so rather
-// than silently discarding something SEPTA can no longer serve.
+// Deliberately conservative: it never deletes a zip.
+// If registering would push an existing feed out of the retained set,
+// it stops and says so rather than silently discarding something SEPTA can no longer serve.
 
 const fs = require("fs");
 const path = require("path");

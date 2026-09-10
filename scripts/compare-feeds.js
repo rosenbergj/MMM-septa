@@ -3,17 +3,16 @@
 
 // Diffs two banked SEPTA GTFS feeds and prints what changed between them.
 //
-// SEPTA serves exactly one google_bus.zip and keeps no history, so this is
-// only possible because gtfs-schedule.js retains the last few feed "days"
-// (see FEED_RETENTION_DAYS). Point it at any two zips -- typically the two in
-// feeds/, or one of those against a copy banked before a schedule change.
+// SEPTA serves exactly one google_bus.zip and keeps no history,
+// so this is only possible because gtfs-schedule.js retains the last few feed "days" (see FEED_RETENTION_DAYS).
+// Point it at any two zips -- typically the two in feeds/, or one of those against a copy banked before a schedule change.
 //
 // Usage:
 //   node scripts/compare-feeds.js <old.zip> <new.zip> [--route 17] [--days 14]
 //                                 [--from 20260902] [--headsigns] [--stops]
 //
-// Deliberately never reads stop_times.txt: it's ~100MB and nothing here needs
-// per-stop times, so a full comparison runs in a couple of seconds.
+// Deliberately never reads stop_times.txt: it's ~100MB and nothing here needs per-stop times,
+// so a full comparison runs in a couple of seconds.
 
 const fs = require("fs");
 const path = require("path");
@@ -49,8 +48,7 @@ function parseArgs(argv) {
   return opts;
 }
 
-// Minimal CSV: SEPTA quotes some name fields, so handle quotes, but nothing
-// here needs embedded newlines.
+// Minimal CSV: SEPTA quotes some name fields, so handle quotes, but nothing here needs embedded newlines.
 function parseCsv(text) {
   const lines = text.split("\n").filter((line) => line.trim() !== "");
   const header = splitLine(lines[0]).map((h) => h.trim().replace(/^﻿/, ""));
@@ -95,10 +93,9 @@ function loadFeed(zipPath) {
   for (const row of parseCsv(texts["calendar_dates.txt"] || "")) {
     (exceptions[row.service_id] = exceptions[row.service_id] || {})[row.date] = row.exception_type;
   }
-  // directionsPresent is tracked separately from an empty Map -- SEPTA
-  // dropping the file entirely (undefined) is the thing worth a loud
-  // warning about, distinct from a feed that has the file but happens to
-  // list nothing (empty string, still present).
+  // directionsPresent is tracked separately from an empty Map
+  // -- SEPTA dropping the file entirely (undefined) is the thing worth a loud warning about,
+  // distinct from a feed that has the file but happens to list nothing (empty string, still present).
   const directionsPresent = texts["directions.txt"] != null;
   const directions = new Map(
     parseCsv(texts["directions.txt"] || "").map((d) => [`${d.route_id}|${d.direction_id}`, d.direction])
@@ -109,12 +106,11 @@ function loadFeed(zipPath) {
     sizeBytes: buffer.length,
     trips,
     routeNames: new Map(routes.map((r) => [r.route_id, r.route_long_name || r.route_short_name || ""])),
-    // Both the raw route_color and what the display would actually draw from
-    // it. The two differ on purpose: SEPTA can change a raw color that we
-    // deliberately don't draw (an ordinary bus's near-black, a dark shuttle
-    // brand color), and that's worth seeing without implying the screen
-    // changed. resolveRouteLabelColor is imported rather than reimplemented
-    // so this can never drift from what the module renders.
+    // Both the raw route_color and what the display would actually draw from it.
+    // The two differ on purpose: SEPTA can change a raw color that we deliberately don't draw
+    // (an ordinary bus's near-black, a dark shuttle brand color),
+    // and that's worth seeing without implying the screen changed.
+    // resolveRouteLabelColor is imported rather than reimplemented so this can never drift from what the module renders.
     rawColors: new Map(routes.map((r) => [r.route_id, (r.route_color || "").toUpperCase()])),
     labelColors: new Map(routes.map((r) => [r.route_id, resolveRouteLabelColor(r)])),
     stops: new Map(stops.map((s) => [s.stop_id, s.stop_name])),
@@ -178,9 +174,8 @@ function main() {
     );
   }
 
-  // Service coverage -- the thing that actually bites, and the reason the
-  // feed store exists: a feed can be perfectly valid and still answer nothing
-  // for the days you care about.
+  // Service coverage -- the thing that actually bites,
+  // and the reason the feed store exists: a feed can be perfectly valid and still answer nothing for the days you care about.
   console.log("\n" + "-".repeat(72) + "\nSERVICE COVERAGE");
   const start = opts.from
     ? new Date(Number(opts.from.slice(0, 4)), Number(opts.from.slice(4, 6)) - 1, Number(opts.from.slice(6, 8)))
@@ -225,11 +220,10 @@ function main() {
     );
   }
 
-  // directions.txt is what find-stop.js's direction names and
-  // gtfs-schedule.js's permanent-retention rescue (see planFeedRetention's
-  // hasDirectionsVersions) both depend on -- a feed that drops it entirely
-  // is the exact scenario that rescue exists for, so that's called out as a
-  // warning rather than folded silently into the added/removed lists below.
+  // directions.txt is what find-stop.js's direction names and gtfs-schedule.js's permanent-retention rescue
+  // (see planFeedRetention's hasDirectionsVersions) both depend on
+  // -- a feed that drops it entirely is the exact scenario that rescue exists for,
+  // so that's called out as a warning rather than folded silently into the added/removed lists below.
   console.log("\n" + "-".repeat(72) + "\nDIRECTIONS.txt");
   if (!oldFeed.directionsPresent && !newFeed.directionsPresent) {
     console.log("  not present in either feed");
@@ -256,11 +250,9 @@ function main() {
     }
   }
 
-  // routes.txt route_color is where SEPTA marks its frequent bus network
-  // (EF3340) and carries the Metro/trolley brand colors -- it's the source
-  // node_helper.js draws route labels from, so a change here is a change on
-  // screen. Reported in two parts: membership of the frequent network first
-  // (the thing most likely to actually move), then any other color change.
+  // routes.txt route_color is where SEPTA marks its frequent bus network (EF3340) and carries the Metro/trolley brand colors
+  // -- it's the source node_helper.js draws route labels from, so a change here is a change on screen.
+  // Reported in two parts: membership of the frequent network first (the thing most likely to actually move), then any other color change.
   console.log("\n" + "-".repeat(72) + "\nROUTE COLORS (routes.txt)");
   {
     const oldIds = new Set(oldFeed.rawColors.keys());
@@ -282,11 +274,10 @@ function main() {
     }
     if (!gainedRed.length && !lostRed.length) console.log("    no change in frequent-network membership");
 
-    // Everything else: a brand color actually changing value. Split by
-    // whether the display draws it. Since every real color is now drawn, the
-    // "ignores" bucket only catches a route moving to or staying on the
-    // ordinary-bus near-black -- but keeping the split means the report stays
-    // honest if that policy ever narrows again.
+    // Everything else: a brand color actually changing value.
+    // Split by whether the display draws it.
+    // Since every real color is now drawn, the "ignores" bucket only catches a route moving to or staying on the ordinary-bus near-black
+    // -- but keeping the split means the report stays honest if that policy ever narrows again.
     const otherChanges = bothIds
       .filter((r) => oldFeed.rawColors.get(r) !== newFeed.rawColors.get(r))
       .filter((r) => !gainedRed.includes(r) && !lostRed.includes(r));
@@ -311,9 +302,8 @@ function main() {
     }
     if (!visible.length && !invisible.length) console.log("  no other route_color changes");
 
-    // A route appearing/disappearing is already covered by the ROUTES
-    // section above; only its color is worth noting here, and only when it
-    // is one the display would draw.
+    // A route appearing/disappearing is already covered by the ROUTES section above;
+    // only its color is worth noting here, and only when it is one the display would draw.
     const addedDrawn = [...newIds].filter((r) => !oldIds.has(r) && newFeed.labelColors.get(r)).sort();
     const removedDrawn = [...oldIds].filter((r) => !newIds.has(r) && oldFeed.labelColors.get(r)).sort();
     if (addedDrawn.length) {

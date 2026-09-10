@@ -1,15 +1,13 @@
 #!/usr/bin/env node
 "use strict";
 
-// Measures how well inferDetourSpanStops guesses, by running it against the
-// detours where SEPTA *did* publish skipped_stops -- the one population where
-// there's a ground truth to score against.
+// Measures how well inferDetourSpanStops guesses, by running it against the detours where SEPTA *did* publish skipped_stops
+// -- the one population where there's a ground truth to score against.
 //
-// Production deliberately never infers for those (findInferredDetourCandidates
-// drops any detour carrying skipped_stops, because SEPTA's own list is better).
-// This script inverts exactly that one filter and keeps the rest, so what it
-// scores is the same geometry the mirror runs, on the only detours that can
-// be marked right or wrong.
+// Production deliberately never infers for those
+// (findInferredDetourCandidates drops any detour carrying skipped_stops, because SEPTA's own list is better).
+// This script inverts exactly that one filter and keeps the rest,
+// so what it scores is the same geometry the mirror runs, on the only detours that can be marked right or wrong.
 //
 // Two numbers matter, and they pull against each other:
 //   containment -- did the inferred span include every stop SEPTA listed?
@@ -23,9 +21,9 @@
 // Usage:
 //   node scripts/measure-detour-inference.js [--route 17] [--json out.json]
 //
-// Detour coverage is time-of-day dependent -- overnight, most routes aren't
-// running and few detours are active -- so a single run is a snapshot, not a
-// verdict. Compare runs taken at comparable times.
+// Detour coverage is time-of-day dependent -- overnight, most routes aren't running and few detours are active
+// -- so a single run is a snapshot, not a verdict.
+// Compare runs taken at comparable times.
 
 const fs = require("fs");
 const path = require("path");
@@ -42,9 +40,8 @@ const {
   orderFeedsNewestFirst,
 } = require("../gtfs-schedule.js");
 
-// Matches findInferredDetourCandidates. Kept in sync by hand rather than
-// imported, because this needs the opposite skipped_stops test and importing
-// would mean threading a flag through production code for a diagnostic.
+// Matches findInferredDetourCandidates.
+// Kept in sync by hand rather than imported, because this needs the opposite skipped_stops test and importing would mean threading a flag through production code for a diagnostic.
 const MAX_DAYS = 28;
 const CONCURRENCY = 4;
 
@@ -64,9 +61,8 @@ function newestFeedPath() {
   return feedZipPath(entries[0].version);
 }
 
-// Ground-truth population: active now, short enough that production would
-// still consider it news, at least two turn points to locate, AND a
-// non-empty skipped_stops to score against.
+// Ground-truth population: active now, short enough that production would still consider it news,
+// at least two turn points to locate, AND a non-empty skipped_stops to score against.
 function isScorable(detour, now) {
   if (!detour) return false;
   if (detourSkippedStopIds(detour).length === 0) return false;
@@ -123,8 +119,7 @@ async function main() {
     .filter(Boolean);
   const targets = opts.route ? [opts.route] : routeIds;
 
-  // Unfiltered by route: the switch to route_stops.txt made building every
-  // route's path cheap enough to just do (no stop_times.txt scan at all).
+  // Unfiltered by route: the switch to route_stops.txt made building every route's path cheap enough to just do (no stop_times.txt scan at all).
   const cache = { routeStopPaths: parseRouteStopPaths(routeStopsText.toString("utf8"), routeIds, stopLatLon) };
 
   const now = new Date();

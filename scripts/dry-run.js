@@ -1,19 +1,17 @@
 #!/usr/bin/env node
 "use strict";
 
-// Live smoke test: runs the exact same pollRoute() code path node_helper.js
-// uses, against the real SEPTA API, and logs each cycle to the console. No
-// MagicMirror install required — useful for verifying connectivity/behavior
-// on a new machine, or after editing septa-client.js.
+// Live smoke test: runs the exact same pollRoute() code path node_helper.js uses,
+// against the real SEPTA API, and logs each cycle to the console.
+// No MagicMirror install required — useful for verifying connectivity/behavior on a new machine, or after editing septa-client.js.
 //
 // Usage:
 //   node scripts/dry-run.js [--route 17] [--stop 21289] [--direction Northbound]
 //                            [--interval 20] [--retry 10] [--cycles Infinity]
 //
-// NOTE: --interval defaults to a short 20s purely so you don't have to wait
-// long to see it work. Real MagicMirror config should use something like
-// 120s (SEPTA's own data doesn't update much faster than that anyway) —
-// do not copy this script's default interval into your config.js.
+// NOTE: --interval defaults to a short 20s purely so you don't have to wait long to see it work.
+// Real MagicMirror config should use something like 120s
+// (SEPTA's own data doesn't update much faster than that anyway) — do not copy this script's default interval into your config.js.
 
 const { pollRoute } = require("../septa-client.js");
 

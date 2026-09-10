@@ -1,11 +1,10 @@
 /* global Module, config */
 "use strict";
 
-// Frontend module: renders upcoming SEPTA bus arrivals for a configured list
-// of routes/stops. All the actual SEPTA polling happens in node_helper.js;
-// this file only renders whatever it was last told and re-renders the "N
-// min" countdowns client-side between polls (no extra backend calls needed
-// just to tick a countdown down).
+// Frontend module: renders upcoming SEPTA bus arrivals for a configured list of routes/stops.
+// All the actual SEPTA polling happens in node_helper.js;
+// this file only renders whatever it was last told and re-renders the "N min" countdowns client-side between polls
+// (no extra backend calls needed just to tick a countdown down).
 
 function septaRouteKey(route) {
   return `${route.routeId}:${route.stopId}:${route.direction}`;
@@ -16,30 +15,26 @@ function septaIsFresh(lastFetchTime, refreshIntervalSeconds, now) {
   return (now - lastFetchTime) / 1000 <= refreshIntervalSeconds * 3;
 }
 
-// Rounds *down*, deliberately. "3m" should mean at least three minutes, not
-// 2m30s dressed up as 3m: overstating the wait by up to 59 seconds is exactly
-// the error that makes you miss a bus, and the number on screen is already up
-// to countdownTickSeconds (15s by default) stale on top of whatever lag
-// SEPTA's own eta carries. Under-promising is the safe direction to be wrong
-// in. A bus less than a minute out therefore reads "0m" -- go now.
+// Rounds *down*, deliberately.
+// "3m" should mean at least three minutes, not 2m30s dressed up as 3m: overstating the wait by up to 59 seconds is exactly the error that makes you miss a bus,
+// and the number on screen is already up to countdownTickSeconds (15s by default) stale on top of whatever lag SEPTA's own eta carries.
+// Under-promising is the safe direction to be wrong in.
+// A bus less than a minute out therefore reads "0m" -- go now.
 //
-// The two thresholds fed from this -- warnMinutes (urgent styling) and
-// countdownWithinMinutes (countdown vs clock time) -- consequently trip up to
-// a minute earlier than they did under rounding, in the same safe direction.
+// The two thresholds fed from this -- warnMinutes (urgent styling) and countdownWithinMinutes (countdown vs clock time)
+// -- consequently trip up to a minute earlier than they did under rounding, in the same safe direction.
 function septaMinutesUntil(etaSeconds, nowMs) {
   return Math.max(0, Math.floor((etaSeconds * 1000 - nowMs) / 60000));
 }
 
-// Joins rendered arrival times, using "/" between two that belong to the same
-// trip and ", " otherwise. Two arrivals sharing a trip_id are one physical
-// vehicle serving this stop twice -- a mid-route loop or an out-and-back spur,
-// e.g. route 107 serves Marshall Rd & Sloan St at sequence 22 and again at 33
-// six minutes later. Comma-separating those reads as two different buses.
+// Joins rendered arrival times, using "/" between two that belong to the same trip and ", " otherwise.
+// Two arrivals sharing a trip_id are one physical vehicle serving this stop twice
+// -- a mid-route loop or an out-and-back spur, e.g. route 107 serves Marshall Rd & Sloan St at sequence 22 and again at 33 six minutes later.
+// Comma-separating those reads as two different buses.
 //
-// Only *adjacent* pairs are joined: arrivals are ordered by time, so if
-// another bus falls between a trip's two visits, a slash spanning it would
-// claim something untrue. Returns the joined html plus whether any slash was
-// used, so the caller can explain the notation only when it appears.
+// Only *adjacent* pairs are joined: arrivals are ordered by time,
+// so if another bus falls between a trip's two visits, a slash spanning it would claim something untrue.
+// Returns the joined html plus whether any slash was used, so the caller can explain the notation only when it appears.
 function septaJoinArrivalTimes(rendered) {
   let sameTripJoined = false;
   const html = rendered
@@ -48,12 +43,11 @@ function septaJoinArrivalTimes(rendered) {
       const previous = rendered[index - 1];
       const sameTrip = Boolean(item.tripId) && item.tripId === previous.tripId;
       if (sameTrip) sameTripJoined = true;
-      // A comma separates two independent buses, so it stays unstyled --
-      // punctuation between entries. A slash means the opposite: the two
-      // times are one vehicle, so it belongs to that entry and wears the
-      // preceding time's styling (urgency color, the "first bus" bold, and
-      // the untracked treatment). Left plain, it renders in the row's
-      // default color and reads as a stray glyph dropped between them.
+      // A comma separates two independent buses, so it stays unstyled -- punctuation between entries.
+      // A slash means the opposite: the two times are one vehicle,
+      // so it belongs to that entry and wears the preceding time's styling
+      // (urgency color, the "first bus" bold, and the untracked treatment).
+      // Left plain, it renders in the row's default color and reads as a stray glyph dropped between them.
       const separator = sameTrip ? `<span class="${previous.className}">/</span>` : ", ";
       return separator + item.html;
     })
@@ -63,12 +57,11 @@ function septaJoinArrivalTimes(rendered) {
 
 const SAME_TRIP_NOTE = "Stops separated by a slash are the same vehicle/trip";
 
-// Wording for the "detour inferred stops" feature: a detour SEPTA published
-// without a stop list, whose bypassed stretch of route we inferred from its
-// turn coordinates (see gtfs-schedule.js's inferDetourSpanStops). Kept
-// visibly hedgier than the confident "Detour skips stop at X" used when SEPTA
-// does list the stops, because the inference misses roughly one detour in
-// nine and shouldn't be read as certainty.
+// Wording for the "detour inferred stops" feature: a detour SEPTA published without a stop list,
+// whose bypassed stretch of route we inferred from its turn coordinates
+// (see gtfs-schedule.js's inferDetourSpanStops).
+// Kept visibly hedgier than the confident "Detour skips stop at X" used when SEPTA does list the stops,
+// because the inference misses roughly one detour in nine and shouldn't be read as certainty.
 function septaInferredDetourNote(which, secondaryStopName) {
   if (which === "secondary" && secondaryStopName) {
     return `Detour near ${septaEscapeHtml(secondaryStopName)} (SEPTA didn't list exact stops)`;
@@ -76,60 +69,49 @@ function septaInferredDetourNote(which, secondaryStopName) {
   return "Detour near here (SEPTA didn't list exact stops)";
 }
 
-// How long a burst of SEPTA_UPDATEs must go quiet before it's rendered, and
-// the hard ceiling on how long that wait can be extended. See
-// scheduleDataRender for why a burst happens at all.
+// How long a burst of SEPTA_UPDATEs must go quiet before it's rendered, and the hard ceiling on how long that wait can be extended.
+// See scheduleDataRender for why a burst happens at all.
 //
-// Coupled to node_helper.js's ROUTE_STAGGER_MAX_GAP_MS (1500ms), which is
-// what keeps successive routes in one cycle closer together than this window
+// Coupled to node_helper.js's ROUTE_STAGGER_MAX_GAP_MS (1500ms),
+// which is what keeps successive routes in one cycle closer together than this window
 // -- that's the condition for the whole cycle collapsing into a single fade.
 // Lowering this below that constant means a cycle fades once per route again.
 const DATA_RENDER_QUIET_MS = 2000;
 const DATA_RENDER_MAX_WAIT_MS = 10000;
 
-// detourReason/stopName/headsign come from SEPTA's API, not our own config,
-// so escape them before dropping them into innerHTML.
+// detourReason/stopName/headsign come from SEPTA's API, not our own config, so escape them before dropping them into innerHTML.
 function septaEscapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text;
   return div.innerHTML;
 }
 
-// Classic footnote marker sequence, minus "‖" (it reads badly on the mirror):
-// five singles, then the same five doubled. The highest index needed is a
-// stop's distinct-headsign count, not maxArrivals -- septaGroupByDestination
-// assigns from headsignOrder's full positions, and route 14 northbound at
-// Roosevelt Blvd & Conwell Av has ten, exactly the length of this list.
+// Classic footnote marker sequence, minus "‖" (it reads badly on the mirror): five singles, then the same five doubled.
+// The highest index needed is a stop's distinct-headsign count, not maxArrivals
+// -- septaGroupByDestination assigns from headsignOrder's full positions,
+// and route 14 northbound at Roosevelt Blvd & Conwell Av has ten, exactly the length of this list.
 // "[N]" past 10.
 const FOOTNOTE_MARKERS = ["*", "†", "‡", "§", "¶", "**", "††", "‡‡", "§§", "¶¶"];
 function septaFootnoteMarker(index) {
   return FOOTNOTE_MARKERS[index] || `[${index + 1}]`;
 }
 
-// Groups shown arrivals by destination. With 0 or 1 distinct headsign among
-// them, returns { mixed: false, headsign } (headsign may be null if none is
-// known yet) -- rendered as a single "-> Destination" line, no per-arrival
-// markers. With 2+ distinct headsigns, returns { mixed: true, markerFor,
-// order } so each arrival's time can carry its own footnote marker and the
-// label-sub line can list every destination alongside its marker instead of
-// a vague "Mixed destinations".
+// Groups shown arrivals by destination.
+// With 0 or 1 distinct headsign among them, returns { mixed: false, headsign } (headsign may be null if none is known yet)
+// -- rendered as a single "-> Destination" line, no per-arrival markers.
+// With 2+ distinct headsigns, returns { mixed: true, markerFor,
+// order } so each arrival's time can carry its own footnote marker and the label-sub line can list every destination alongside its marker instead of a vague "Mixed destinations".
 //
-// headsignOrder (from node_helper, derived from the full day's schedule,
-// most-frequently-scheduled headsign first -- see gtfs-schedule.js's
-// getAllHeadsignsForStop) fixes which marker goes with which destination.
-// Markers are assigned from headsignOrder's full, fixed positions --
-// unfiltered by which headsigns happen to be shown this cycle -- so a given
-// destination's marker never shifts depending on which *other* headsigns
-// happen to be showing alongside it right now (a route with 3+ headsigns
-// and a small maxArrivals window routinely shows a different subset from
-// one poll to the next). `order` (the shown subset, in that same fixed
-// sequence) is what the caller should actually iterate to print destination
-// lines, so print order matches marker order too. allArrivals is the full
-// pre-maxArrivals-cutoff pool (not just what's shown), so an off-schedule
-// headsign missing from headsignOrder entirely -- schedule cache not loaded
-// yet, or a genuine off-schedule trip -- still gets a slot that doesn't
-// depend on the slice either, appended after the schedule-known ones in
-// first-seen order.
+// headsignOrder (from node_helper, derived from the full day's schedule, most-frequently-scheduled headsign first
+// -- see gtfs-schedule.js's getAllHeadsignsForStop) fixes which marker goes with which destination.
+// Markers are assigned from headsignOrder's full, fixed positions -- unfiltered by which headsigns happen to be shown this cycle
+// -- so a given destination's marker never shifts depending on which *other* headsigns happen to be showing alongside it right now
+// (a route with 3+ headsigns and a small maxArrivals window routinely shows a different subset from one poll to the next).
+// `order` (the shown subset, in that same fixed sequence) is what the caller should actually iterate to print destination lines, so print order matches marker order too.
+// allArrivals is the full pre-maxArrivals-cutoff pool (not just what's shown),
+// so an off-schedule headsign missing from headsignOrder entirely
+// -- schedule cache not loaded yet, or a genuine off-schedule trip
+// -- still gets a slot that doesn't depend on the slice either, appended after the schedule-known ones in first-seen order.
 function septaGroupByDestination(shownArrivals, allArrivals, headsignOrder) {
   if (!Array.isArray(shownArrivals) || shownArrivals.length === 0) return { mixed: false, headsign: null };
   const shown = new Set();
@@ -146,24 +128,20 @@ function septaGroupByDestination(shownArrivals, allArrivals, headsignOrder) {
   return { mixed: true, markerFor, order };
 }
 
-// "Northbound" -> "NB", "Southbound" -> "SB", etc; falls back to the
-// original string for anything that doesn't fit the "___bound" pattern.
+// "Northbound" -> "NB", "Southbound" -> "SB", etc; falls back to the original string for anything that doesn't fit the "___bound" pattern.
 function septaAbbreviateDirection(direction) {
   if (typeof direction !== "string") return "";
   const match = /^(.)\S*bound$/i.exec(direction.trim());
   return match ? `${match[1].toUpperCase()}B` : direction;
 }
 
-// route-config.js's parseRouteIds/resolveDirectionForRoute, reimplemented
-// here rather than shared: this file runs in the browser (MagicMirror loads
-// it as a plain <script>, no require()), while route-config.js is a
-// Node-only CommonJS module used by node_helper.js. Both copies are
-// intentionally tiny (a handful of lines) and kept in sync by hand.
+// route-config.js's parseRouteIds/resolveDirectionForRoute, reimplemented here rather than shared: this file runs in the browser
+// (MagicMirror loads it as a plain <script>, no require()), while route-config.js is a Node-only CommonJS module used by node_helper.js.
+// Both copies are intentionally tiny (a handful of lines) and kept in sync by hand.
 //
 // Splits a configured routeId into the list of route_ids it actually means
-// -- a comma-separated string ("T2,T3,T4,T5") is the primary, documented
-// merged-route syntax, a bare JSON array an undocumented equivalent. A
-// single, unmerged routeId ("17") still comes back as a one-element array.
+// -- a comma-separated string ("T2,T3,T4,T5") is the primary, documented merged-route syntax, a bare JSON array an undocumented equivalent.
+// A single, unmerged routeId ("17") still comes back as a one-element array.
 function septaParseRouteIds(routeId) {
   if (Array.isArray(routeId)) return routeId.map(String);
   return String(routeId)
@@ -172,10 +150,9 @@ function septaParseRouteIds(routeId) {
     .filter(Boolean);
 }
 
-// Resolves the configured `direction` for one sub-routeId of a (possibly
-// merged) route entry -- a plain string applies to every sub-route
-// uniformly, a {routeId: directionString} map resolves per sub-route (see
-// README's "Merging routes" section for why a merge sometimes needs this).
+// Resolves the configured `direction` for one sub-routeId of a (possibly merged) route entry
+// -- a plain string applies to every sub-route uniformly, a {routeId: directionString} map resolves per sub-route
+// (see README's "Merging routes" section for why a merge sometimes needs this).
 function septaResolveDirectionForRoute(direction, routeId) {
   if (direction && typeof direction === "object" && !Array.isArray(direction)) {
     return direction[routeId];
@@ -183,22 +160,21 @@ function septaResolveDirectionForRoute(direction, routeId) {
   return direction;
 }
 
-// SEPTA Metro (its branding for every rail/subway-el/trolley line -- the
-// Broad Street Line, Market-Frankford Line, Norristown High-Speed Line, and
-// every trolley) always uses a route_id of one letter (L/G/B/T/D/M) followed
-// by a digit; an ordinary bus route_id is bare digits with no letter at
-// all. A merged row shows "METRO" if any of its sub-routes matches that
-// shape, "BUS" otherwise. Pattern-based rather than an enumerated list of
-// known IDs -- SEPTA already adds new IDs within a lettered line (e.g. a
-// future T6) without any code change needed here; a hardcoded list would
-// silently miss those. Not derived from a route's color: an ordinary
-// trolley also gets a real brand color from the feed's routes.txt, so color
-// alone can't tell a Metro line apart from a bus. Now doubly so: a
-// Metro-replacement bus is drawn in the *exact* color of the line it stands
-// in for (M1_BUS in M1's purple, L1_OWL in L1's blue), so color can't even
-// separate a Metro line from its own substitute bus -- which is precisely
-// what this label has to distinguish. See gtfs-schedule.js's
-// resolveRouteLabelColor.
+// SEPTA Metro (its branding for every rail/subway-el/trolley line
+// -- the Broad Street Line, Market-Frankford Line, Norristown High-Speed Line,
+// and every trolley) always uses a route_id of one letter (L/G/B/T/D/M) followed by a digit;
+// an ordinary bus route_id is bare digits with no letter at all.
+// A merged row shows "METRO" if any of its sub-routes matches that shape, "BUS" otherwise.
+// Pattern-based rather than an enumerated list of known IDs
+// -- SEPTA already adds new IDs within a lettered line
+// (e.g. a future T6) without any code change needed here; a hardcoded list would silently miss those.
+// Not derived from a route's color: an ordinary trolley also gets a real brand color from the feed's routes.txt,
+// so color alone can't tell a Metro line apart from a bus.
+// Now doubly so: a Metro-replacement bus is drawn in the *exact* color of the line it stands in for
+// (M1_BUS in M1's purple, L1_OWL in L1's blue),
+// so color can't even separate a Metro line from its own substitute bus
+// -- which is precisely what this label has to distinguish.
+// See gtfs-schedule.js's resolveRouteLabelColor.
 const METRO_ROUTE_ID_PATTERN = /^[LGBTDM]\d+$/i;
 function septaMergedRouteTypeLabel(subRouteIds) {
   return subRouteIds.some((id) => METRO_ROUTE_ID_PATTERN.test(id)) ? "METRO" : "BUS";
@@ -206,14 +182,12 @@ function septaMergedRouteTypeLabel(subRouteIds) {
 
 const CARDINAL_ORDER = ["N", "S", "E", "W"];
 
-// Combines each sub-route's own direction abbreviation into one compact
-// code for a merged row's header, e.g. ["NB", "NB"] -> "NB" (the common
-// case -- every sub-route shares one cardinal direction), ["NB", "EB"] ->
-// "NEB", in fixed N/S/E/W order regardless of input order. Falls back to
-// joining the raw abbreviations with "/" if any of them doesn't fit the
-// single-letter-cardinal shape (e.g. septaAbbreviateDirection's fallback
-// for a direction string that isn't "___bound") -- safer than guessing at a
-// combined code from something that isn't one.
+// Combines each sub-route's own direction abbreviation into one compact code for a merged row's header, e.g. ["NB", "NB"] -> "NB"
+// (the common case -- every sub-route shares one cardinal direction),
+// ["NB", "EB"] -> "NEB", in fixed N/S/E/W order regardless of input order.
+// Falls back to joining the raw abbreviations with "/" if any of them doesn't fit the single-letter-cardinal shape (e.g.
+// septaAbbreviateDirection's fallback for a direction string that isn't "___bound")
+// -- safer than guessing at a combined code from something that isn't one.
 function septaCombineDirectionAbbreviations(abbreviations) {
   const distinct = [...new Set(abbreviations.filter(Boolean))];
   if (distinct.length <= 1) return distinct[0] || "";
@@ -228,22 +202,17 @@ function septaCombineDirectionAbbreviations(abbreviations) {
 }
 
 // Like septaGroupByDestination, but for a merged route's combined arrivals,
-// and deliberately NOT like it in one important way: it never re-indexes
-// based on which headsigns happen to be shown this cycle. Every headsign
-// gets a fixed marker up front, from its position in headsignOrder (the
-// combined per-sub-route orders, concatenated and deduped by the caller),
-// whether or not it's currently contributing an arrival. Markers are always
-// on for a merged row (unlike septaGroupByDestination, which collapses to
-// unmarked below 2 distinct shown headsigns) for the same reason: with
-// several sub-routes and a maxArrivals cap, it's common for one sub-route
-// to simply not make the cut some cycle -- filtering the order down to only
-// "currently shown" first (as septaGroupByDestination does, harmlessly
-// there) would shift every later headsign's marker down to fill the gap,
-// so a route's marker would drift depending on which siblings happened to
-// contribute that cycle. allArrivals is the full merged pool, not the
-// maxArrivals-sliced shown list, so even an off-schedule headsign missing
-// from headsignOrder entirely gets a slot that doesn't depend on the slice
-// either.
+// and deliberately NOT like it in one important way: it never re-indexes based on which headsigns happen to be shown this cycle.
+// Every headsign gets a fixed marker up front, from its position in headsignOrder
+// (the combined per-sub-route orders, concatenated and deduped by the caller), whether or not it's currently contributing an arrival.
+// Markers are always on for a merged row (unlike septaGroupByDestination,
+// which collapses to unmarked below 2 distinct shown headsigns) for the same reason: with several sub-routes and a maxArrivals cap,
+// it's common for one sub-route to simply not make the cut some cycle
+// -- filtering the order down to only "currently shown" first
+// (as septaGroupByDestination does, harmlessly there) would shift every later headsign's marker down to fill the gap,
+// so a route's marker would drift depending on which siblings happened to contribute that cycle.
+// allArrivals is the full merged pool, not the maxArrivals-sliced shown list,
+// so even an off-schedule headsign missing from headsignOrder entirely gets a slot that doesn't depend on the slice either.
 function septaAssignMergedMarkers(allArrivals, headsignOrder) {
   const order = Array.isArray(headsignOrder) ? [...headsignOrder] : [];
   for (const arrival of allArrivals) {
@@ -252,20 +221,17 @@ function septaAssignMergedMarkers(allArrivals, headsignOrder) {
   return new Map(order.map((headsign, index) => [headsign, septaFootnoteMarker(index)]));
 }
 
-// Wraps a merged row's sub-route id in the same color-only styling hook the
-// single-route label uses (routeColor, from the feed's routes.txt -- see
-// gtfs-schedule.js's resolveRouteLabelColor) -- no font-size/weight of
-// its own, so it picks up whatever the surrounding context (the label cell
-// up top, or a muted .septa-full-width row below) already provides and only
-// ever changes color.
+// Wraps a merged row's sub-route id in the same color-only styling hook the single-route label uses
+// (routeColor, from the feed's routes.txt -- see gtfs-schedule.js's resolveRouteLabelColor)
+// -- no font-size/weight of its own, so it picks up whatever the surrounding context
+// (the label cell up top, or a muted .septa-full-width row below) already provides and only ever changes color.
 function septaColoredRouteLabel(id, routeColor) {
   const style = routeColor ? ` style="color:${septaEscapeHtml(routeColor)}"` : "";
   return `<span class="septa-route-number"${style}>${id}</span>`;
 }
 
-// Beyond countdownWithinMinutes, a clock time ("5:47 PM") is more useful than
-// a big minute count; respects the mirror's global 12h/24h config.timeFormat
-// if present (falls back to the browser's locale default otherwise).
+// Beyond countdownWithinMinutes, a clock time ("5:47 PM") is more useful than a big minute count;
+// respects the mirror's global 12h/24h config.timeFormat if present (falls back to the browser's locale default otherwise).
 function septaFormatClockTime(etaSeconds) {
   const timeFormat = typeof config !== "undefined" ? config.timeFormat : undefined;
   const hour12 = timeFormat === 24 ? false : timeFormat === 12 ? true : undefined;
@@ -282,36 +248,31 @@ Module.register("MMM-septa", {
     countdownWithinMinutes: 30, // arrivals at/under this show "N min"; farther out show clock time
     countdownTickSeconds: 15, // client-side re-render cadence, no network
     animationSpeed: 1000,
-    // Supplement live-tracked arrivals with SEPTA trips it hasn't started
-    // GPS-tracking yet (and, later, static-schedule arrivals) instead of
-    // showing only fully GPS-confirmed buses.
+    // Supplement live-tracked arrivals with SEPTA trips it hasn't started GPS-tracking yet
+    // (and, later, static-schedule arrivals) instead of showing only fully GPS-confirmed buses.
     useScheduleSupplement: true,
-    // How many minutes ahead the static-schedule supplement reaches. How far
-    // SEPTA's own live feed reaches varies a lot -- mostly with how close the
-    // stop is to the start of a route or route variant -- and this fills in
-    // whatever it doesn't cover. Larger shows arrivals farther out (still
-    // capped by maxArrivals); smaller keeps the display shorter-term. Only has
-    // an effect when useScheduleSupplement is true, and only past the furthest
-    // live arrival, which is what the supplement merges in after. Capped at
-    // MAX_SCHEDULE_HORIZON_MINUTES (12h) -- see route-config.js.
+    // How many minutes ahead the static-schedule supplement reaches.
+    // How far SEPTA's own live feed reaches varies a lot
+    // -- mostly with how close the stop is to the start of a route or route variant -- and this fills in whatever it doesn't cover.
+    // Larger shows arrivals farther out (still capped by maxArrivals); smaller keeps the display shorter-term.
+    // Only has an effect when useScheduleSupplement is true,
+    // and only past the furthest live arrival, which is what the supplement merges in after.
+    // Capped at MAX_SCHEDULE_HORIZON_MINUTES (12h) -- see route-config.js.
     scheduleHorizonMinutes: 60,
-    // Set false to hide the destination line(s) below each route and the
-    // footnote markers on mixed-destination arrivals. When a route also has
-    // a secondaryStopId, trips that skip it structurally (by headsign) are
-    // hidden entirely instead of just flagged, replaced by a single muted
-    // note -- trips skipping it due to an active detour still show, in
-    // orange, unchanged. See README's "Secondary stop" section.
+    // Set false to hide the destination line(s) below each route and the footnote markers on mixed-destination arrivals.
+    // When a route also has a secondaryStopId, trips that skip it structurally
+    // (by headsign) are hidden entirely instead of just flagged, replaced by a single muted note
+    // -- trips skipping it due to an active detour still show, in orange, unchanged.
+    // See README's "Secondary stop" section.
     showHeadsigns: true,
   },
 
   start() {
     this.routeStates = {}; // routeKey -> latest SEPTA_UPDATE payload
-    // outerHTML of the DOM we last handed to updateDom, so a re-render that
-    // would produce byte-identical markup can be skipped -- see
-    // renderIfChanged.
+    // outerHTML of the DOM we last handed to updateDom,
+    // so a re-render that would produce byte-identical markup can be skipped -- see renderIfChanged.
     this.lastRenderSignature = null;
-    // Debounce state for coalescing a burst of SEPTA_UPDATEs into a single
-    // animated render -- see scheduleDataRender.
+    // Debounce state for coalescing a burst of SEPTA_UPDATEs into a single animated render -- see scheduleDataRender.
     this.pendingRenderTimer = null;
     this.pendingRenderSince = null;
 
@@ -324,36 +285,31 @@ Module.register("MMM-septa", {
       scheduleHorizonMinutes: this.config.scheduleHorizonMinutes,
     });
 
-    // Client-side countdown tick -- re-renders the "Nm" values between polls,
-    // no network traffic. Deliberately *unanimated* (speed 0, an instant
-    // swap). With several arrivals on screen at once, at least one countdown
-    // digit changes on roughly 4 out of 5 ticks, so animating this would fade
-    // the whole module about every 18 seconds -- which is what made the
-    // display look like it was constantly refreshing. The fade is reserved
-    // for genuinely new data arriving from node_helper (see
-    // scheduleDataRender), so it means "SEPTA told us something new" rather
-    // than "a clock ticked".
+    // Client-side countdown tick -- re-renders the "Nm" values between polls, no network traffic.
+    // Deliberately *unanimated* (speed 0, an instant swap).
+    // With several arrivals on screen at once, at least one countdown digit changes on roughly 4 out of 5 ticks,
+    // so animating this would fade the whole module about every 18 seconds
+    // -- which is what made the display look like it was constantly refreshing.
+    // The fade is reserved for genuinely new data arriving from node_helper (see scheduleDataRender),
+    // so it means "SEPTA told us something new" rather than "a clock ticked".
     setInterval(() => {
-      // A pending data render owns the next paint. Without this, the tick
-      // would swap new arrivals in unanimated first, and the debounced render
-      // would then find nothing changed and skip the fade entirely.
+      // A pending data render owns the next paint.
+      // Without this, the tick would swap new arrivals in unanimated first,
+      // and the debounced render would then find nothing changed and skip the fade entirely.
       if (this.pendingRenderTimer) return;
       this.renderIfChanged(0);
     }, this.config.countdownTickSeconds * 1000);
   },
 
   getHeader() {
-    // Falls back to "SEPTA tracking" unless the user set their own `header`
-    // on this module's entry in config.js.
+    // Falls back to "SEPTA tracking" unless the user set their own `header` on this module's entry in config.js.
     return this.data.header || "SEPTA tracking";
   },
 
   getStyles() {
-    // MagicMirror's loader only prefixes the module's own path onto
-    // getStyles() entries that DON'T contain a "/" (see loader.js
-    // loadFileForModule) -- a slash makes it treat the string as an
-    // already-resolved path instead. Since our CSS lives in a css/
-    // subfolder, resolve it ourselves via this.file() first.
+    // MagicMirror's loader only prefixes the module's own path onto getStyles() entries that DON'T contain a "/" (see loader.js loadFileForModule)
+    // -- a slash makes it treat the string as an already-resolved path instead.
+    // Since our CSS lives in a css/ subfolder, resolve it ourselves via this.file() first.
     return [this.file("css/MMM-septa.css")];
   },
 
@@ -364,14 +320,13 @@ Module.register("MMM-septa", {
     this.scheduleDataRender();
   },
 
-  // Renders only when doing so would actually change the screen. getDom() has
-  // no side effects (it reads this.routeStates/this.config and builds a fresh
-  // table), so building it twice -- once here to compare, once again inside
-  // updateDom -- is safe, and trivial for a table this size.
+  // Renders only when doing so would actually change the screen.
+  // getDom() has no side effects (it reads this.routeStates/this.config and builds a fresh table), so building it twice
+  // -- once here to compare, once again inside updateDom -- is safe, and trivial for a table this size.
   //
-  // Worth it even on the data path: a poll cycle that returns the same
-  // arrivals as the last one is common (SEPTA's own data doesn't necessarily
-  // move in 120 seconds), and there's no reason to fade the module for it.
+  // Worth it even on the data path: a poll cycle that returns the same arrivals as the last one is common
+  // (SEPTA's own data doesn't necessarily move in 120 seconds),
+  // and there's no reason to fade the module for it.
   renderIfChanged(speed) {
     const signature = this.getDom().outerHTML;
     if (signature === this.lastRenderSignature) return;
@@ -379,14 +334,11 @@ Module.register("MMM-septa", {
     this.updateDom(speed);
   },
 
-  // Each configured row polls on its own timer, and node_helper deliberately
-  // spreads those across a few seconds within each cycle (see its
-  // ROUTE_STAGGER_SPREAD_MS), so one refresh arrives as a short burst of
-  // SEPTA_UPDATEs rather than a single event. Rendering each one separately
-  // would fade the module once per row per cycle, so instead wait for the
-  // burst to go quiet (DATA_RENDER_QUIET_MS with no further updates) and fade
-  // once for the whole batch. DATA_RENDER_MAX_WAIT_MS caps the total wait, so
-  // routes updating in a steady trickle can't defer the render indefinitely.
+  // Each configured row polls on its own timer, and node_helper deliberately spreads those across a few seconds within each cycle (see its ROUTE_STAGGER_SPREAD_MS),
+  // so one refresh arrives as a short burst of SEPTA_UPDATEs rather than a single event.
+  // Rendering each one separately would fade the module once per row per cycle,
+  // so instead wait for the burst to go quiet (DATA_RENDER_QUIET_MS with no further updates) and fade once for the whole batch.
+  // DATA_RENDER_MAX_WAIT_MS caps the total wait, so routes updating in a steady trickle can't defer the render indefinitely.
   scheduleDataRender() {
     const now = Date.now();
     if (this.pendingRenderSince == null) this.pendingRenderSince = now;
@@ -410,21 +362,17 @@ Module.register("MMM-septa", {
 
     const now = Date.now();
     // Tracks the stopId of the header row most recently actually printed,
-    // so two routes configured with the same stopId back-to-back (e.g. two
-    // different routes/directions that happen to share a physical stop)
-    // don't repeat an identical header between them. Only adjacent repeats
-    // are deduped -- a different stopId in between resets this, so the
-    // header intentionally reprints rather than silently grouping
-    // non-adjacent routes out of the order they were configured in.
+    // so two routes configured with the same stopId back-to-back
+    // (e.g. two different routes/directions that happen to share a physical stop) don't repeat an identical header between them.
+    // Only adjacent repeats are deduped -- a different stopId in between resets this,
+    // so the header intentionally reprints rather than silently grouping non-adjacent routes out of the order they were configured in.
     let lastHeaderStopId = null;
 
-    // One module-wide note when the static GTFS feed doesn't cover today, so
-    // the thin, live-only arrivals that result (SEPTA's live feed alone only
-    // reaches ~15 min out) read as a known temporary gap rather than a broken
-    // module. scheduleUnavailable is a feed-wide fact node_helper computes per
-    // route (see its runCycle); every route agrees, so any one being true is
-    // enough. Rendered at the very top, above the first route, so it's clear
-    // the note applies to every route below it, not just an adjacent one.
+    // One module-wide note when the static GTFS feed doesn't cover today,
+    // so the thin, live-only arrivals that result (SEPTA's live feed alone only reaches ~15 min out) read as a known temporary gap rather than a broken module.
+    // scheduleUnavailable is a feed-wide fact node_helper computes per route (see its runCycle);
+    // every route agrees, so any one being true is enough.
+    // Rendered at the very top, above the first route, so it's clear the note applies to every route below it, not just an adjacent one.
     const scheduleUnavailable = Object.values(this.routeStates).some((s) => s && s.scheduleUnavailable);
     if (scheduleUnavailable) {
       const noteRow = document.createElement("tr");
@@ -444,14 +392,11 @@ Module.register("MMM-septa", {
       }
       const state = this.routeStates[septaRouteKey(route)];
 
-      // An invalid stopId (see node_helper's validateStopIds) never
-      // resolves a stop name, from live data or the schedule cache, so
-      // without a fallback the header row would silently vanish and take
-      // the row's context with it. Show the raw configured stopId there
-      // instead, so the block keeps its normal shape and the note below
-      // has something to point at. Only on a definite invalid verdict --
-      // during the startup window (stopIdValid still null) a nameless
-      // route keeps its existing header-less treatment.
+      // An invalid stopId (see node_helper's validateStopIds) never resolves a stop name, from live data or the schedule cache,
+      // so without a fallback the header row would silently vanish and take the row's context with it.
+      // Show the raw configured stopId there instead, so the block keeps its normal shape and the note below has something to point at.
+      // Only on a definite invalid verdict -- during the startup window
+      // (stopIdValid still null) a nameless route keeps its existing header-less treatment.
       const invalidStopId = Boolean(state) && state.stopIdValid === false;
       const stopName = (state && state.stopName) || (invalidStopId ? String(route.stopId) : null);
       if (stopName && route.stopId !== lastHeaderStopId) {
@@ -468,32 +413,26 @@ Module.register("MMM-septa", {
       const row = document.createElement("tr");
       row.className = "septa-row";
 
-      // secondaryStopId (route config): headsigns that structurally never
-      // reach it come from the static schedule (secondaryStopSkippedHeadsigns);
-      // an active detour skipping it applies route-wide regardless of
-      // headsign (secondaryStopDetour). Both default to "no effect" when the
-      // route has no secondaryStopId configured or state hasn't arrived yet.
+      // secondaryStopId (route config): headsigns that structurally never reach it come from the static schedule (secondaryStopSkippedHeadsigns);
+      // an active detour skipping it applies route-wide regardless of headsign (secondaryStopDetour).
+      // Both default to "no effect" when the route has no secondaryStopId configured or state hasn't arrived yet.
       const secondaryStopSkippedHeadsigns = (state && state.secondaryStopSkippedHeadsigns) || [];
       const secondaryStopDetour = Boolean(state && state.secondaryStopDetour);
       const secondaryStopDisplayName =
         (state && state.secondaryStopName) || (route.secondaryStopId != null ? String(route.secondaryStopId) : "");
-      // Per-route warnMinutes/showHeadsigns override the global config value,
-      // which in turn overrides the module default -- MagicMirror already
-      // merges the global-vs-default step via this.config, so only the
-      // route-level override needs handling here.
+      // Per-route warnMinutes/showHeadsigns override the global config value, which in turn overrides the module default
+      // -- MagicMirror already merges the global-vs-default step via this.config, so only the route-level override needs handling here.
       const warnMinutes = typeof route.warnMinutes === "number" ? route.warnMinutes : this.config.warnMinutes;
       const showHeadsigns =
         typeof route.showHeadsigns === "boolean" ? route.showHeadsigns : this.config.showHeadsigns;
 
       const allEtas = state && Array.isArray(state.etas) ? state.etas : [];
-      // With showHeadsigns off, a secondary-stop-configured route hides
-      // trips that structurally skip it (by headsign/pattern) instead of
-      // just flagging them -- filtered out of the full known list, before
-      // it's cut down to maxArrivals, so the display still fills up with
-      // maxArrivals genuine trips rather than just showing fewer. A trip
-      // skipped by an active detour is a different, real-time situation and
-      // is never filtered here (secondaryStopDetour applies route-wide, so
-      // this can't fire while a detour is in effect anyway).
+      // With showHeadsigns off, a secondary-stop-configured route hides trips that structurally skip it
+      // (by headsign/pattern) instead of just flagging them
+      // -- filtered out of the full known list, before it's cut down to maxArrivals,
+      // so the display still fills up with maxArrivals genuine trips rather than just showing fewer.
+      // A trip skipped by an active detour is a different, real-time situation and is never filtered here
+      // (secondaryStopDetour applies route-wide, so this can't fire while a detour is in effect anyway).
       let omittedSecondaryStopTrips = false;
       const etasForDisplay =
         !showHeadsigns && route.secondaryStopId != null
@@ -517,30 +456,23 @@ Module.register("MMM-septa", {
       const labelMain = document.createElement("div");
       labelMain.className = "septa-label-main";
       const abbrev = septaAbbreviateDirection(route.direction);
-      // routeColor (node_helper.js, from the static feed's routes.txt):
-      // whatever color SEPTA gives the route -- a Metro/trolley brand color,
-      // the frequent-network red (EF3340), or a Metro-replacement bus's own
-      // -- or null (default label color) for an ordinary bus route, the only
-      // case the feed has no real color for. See gtfs-schedule.js's
-      // resolveRouteLabelColor.
-      // Scoped to just the route number span, not the direction abbreviation
-      // next to it, which keeps its own muted styling regardless.
+      // routeColor (node_helper.js, from the static feed's routes.txt): whatever color SEPTA gives the route
+      // -- a Metro/trolley brand color, the frequent-network red (EF3340), or a Metro-replacement bus's own
+      // -- or null (default label color) for an ordinary bus route, the only case the feed has no real color for.
+      // See gtfs-schedule.js's resolveRouteLabelColor.
+      // Scoped to just the route number span, not the direction abbreviation next to it, which keeps its own muted styling regardless.
       const routeColor = state && state.routeColor;
       const routeNumberStyle = routeColor ? ` style="color:${septaEscapeHtml(routeColor)}"` : "";
       labelMain.innerHTML =
         `<span class="septa-route-number"${routeNumberStyle}>${route.label || route.routeId}</span> ` +
         `<span class="septa-direction-abbrev">${abbrev}</span>`;
       labelCell.appendChild(labelMain);
-      // Every destination line -- whether there's one or several, flagged
-      // or not -- always renders as a full-width colspan=2 row below the
-      // route (appended after this route's main row, same pattern as the
-      // stop-name header row above), never stacked in the narrow label
-      // column. That's true even for a single, unflagged destination: a
-      // long headsign name or a flagged neighbor elsewhere in the table
-      // would otherwise still stretch that shared column for every row, and
-      // keeping the rule unconditional means there's no special case where
-      // a destination's location (label column vs. below) depends on
-      // whether *anything* happens to be flagged.
+      // Every destination line -- whether there's one or several, flagged or not
+      // -- always renders as a full-width colspan=2 row below the route
+      // (appended after this route's main row, same pattern as the stop-name header row above), never stacked in the narrow label column.
+      // That's true even for a single, unflagged destination: a long headsign name or a flagged neighbor elsewhere in the table would otherwise still stretch that shared column for every row,
+      // and keeping the rule unconditional means there's no special case where a destination's location
+      // (label column vs. below) depends on whether *anything* happens to be flagged.
       const fullWidthRows = [];
       if (destinationInfo.mixed) {
         for (const headsign of destinationInfo.order) {
@@ -566,8 +498,7 @@ Module.register("MMM-septa", {
           html: `(Note: Some trips omitted that don't stop at ${septaEscapeHtml(secondaryStopDisplayName)})`,
         });
       }
-      // Inferred detours never replace the reported note below -- if SEPTA
-      // told us the stop is skipped, that statement is strictly better.
+      // Inferred detours never replace the reported note below -- if SEPTA told us the stop is skipped, that statement is strictly better.
       const inferredDetourNear = state && state.inferredDetourNear;
       if (inferredDetourNear && !secondaryStopDetour) {
         fullWidthRows.push({
@@ -581,10 +512,9 @@ Module.register("MMM-septa", {
           html: `Detour skips stop at ${septaEscapeHtml(secondaryStopDisplayName)}`,
         });
       }
-      // Everything above stays exactly as it would be for a working route
-      // -- route number, direction, an empty "--" arrivals cell -- and this
-      // just names the reason it will never fill in, so a config typo reads
-      // as a config typo rather than as a route with nothing running.
+      // Everything above stays exactly as it would be for a working route -- route number, direction, an empty "--" arrivals cell
+      // -- and this just names the reason it will never fill in,
+      // so a config typo reads as a config typo rather than as a route with nothing running.
       if (invalidStopId) {
         fullWidthRows.push({ flagged: false, configError: true, html: "Invalid stop ID configured" });
       }
@@ -592,8 +522,7 @@ Module.register("MMM-septa", {
 
       const arrivalsCell = document.createElement("td");
       arrivalsCell.className = "septa-arrivals";
-      // Set by septaJoinArrivalTimes below, and only then; drives the
-      // explanatory note appended after the arrivals row.
+      // Set by septaJoinArrivalTimes below, and only then; drives the explanatory note appended after the arrivals row.
       let sameTripJoined = false;
 
       if (!state) {
@@ -608,25 +537,22 @@ Module.register("MMM-septa", {
         } else if (shownArrivals.length === 0) {
           arrivalsCell.innerHTML = "&ndash;&ndash;";
         } else {
-          // A bare space between entries reads as visually ambiguous once
-          // there's more than one, especially with mixed countdown-/clock-
-          // style formatting (e.g. "6m 20m 2:55pm"). Comma-separate
-          // whenever there's more than one, tracked or not -- except between
-          // two arrivals from the same trip, which septaJoinArrivalTimes
-          // joins with a slash instead.
+          // A bare space between entries reads as visually ambiguous once there's more than one,
+          // especially with mixed countdown-/clock- style formatting (e.g.
+          // "6m 20m 2:55pm").
+          // Comma-separate whenever there's more than one, tracked or not
+          // -- except between two arrivals from the same trip, which septaJoinArrivalTimes joins with a slash instead.
           const renderedArrivals = shownArrivals
             .map((arrival, index) => {
               const minutes = septaMinutesUntil(arrival.eta, now);
-              // Arrivals that skip the secondary stop -- via an active
-              // detour, via this specific trip's own live stop_times (ground
-              // truth, when known -- see septa-client.js's tripReachesStop;
-              // some headsigns cover more than one physical pattern, e.g.
-              // route 17's "Broad-Pattison" is both a normal trip and a much
-              // longer weekend Navy Yard extension, so this is checked per
-              // trip rather than trusting the headsign alone), or otherwise
-              // via the headsign-level static-schedule fallback -- read as
-              // orange instead of red/green urgency. Untracked ("~")
-              // arrivals keep their existing tilde/italic/opacity treatment
+              // Arrivals that skip the secondary stop -- via an active detour, via this specific trip's own live stop_times
+              // (ground truth, when known -- see septa-client.js's tripReachesStop;
+              // some headsigns cover more than one physical pattern,
+              // e.g. route 17's "Broad-Pattison" is both a normal trip and a much longer weekend Navy Yard extension,
+              // so this is checked per trip rather than trusting the headsign alone),
+              // or otherwise via the headsign-level static-schedule fallback
+              // -- read as orange instead of red/green urgency.
+              // Untracked ("~") arrivals keep their existing tilde/italic/opacity treatment
               // (added via untrackedClass below) on top of this color.
               const skipsSecondaryStop =
                 secondaryStopDetour ||
@@ -637,11 +563,9 @@ Module.register("MMM-septa", {
                 : minutes <= warnMinutes
                   ? "septa-urgent"
                   : "septa-normal";
-              // Bold is reserved for a genuinely confirmed "next bus" --
-              // the first shown arrival only earns it if it's tracked, not
-              // just because it's chronologically first. An all-untracked
-              // row has no bold entry at all rather than overstating
-              // confidence in a guess.
+              // Bold is reserved for a genuinely confirmed "next bus"
+              // -- the first shown arrival only earns it if it's tracked, not just because it's chronologically first.
+              // An all-untracked row has no bold entry at all rather than overstating confidence in a guess.
               const tierClass = index === 0 && arrival.tracked !== false ? "septa-first" : "septa-later";
               const untrackedClass = arrival.tracked === false ? " septa-untracked" : "";
               const prefix = arrival.tracked === false ? "~" : "";
@@ -651,8 +575,7 @@ Module.register("MMM-septa", {
                 destinationInfo.mixed && destinationInfo.markerFor.has(arrival.headsign)
                   ? destinationInfo.markerFor.get(arrival.headsign)
                   : "";
-              // className is also what a following same-trip slash copies;
-              // see septaJoinArrivalTimes.
+              // className is also what a following same-trip slash copies; see septaJoinArrivalTimes.
               const className = `${urgencyClass} ${tierClass}${untrackedClass}`;
               return {
                 tripId: arrival.tripId,
@@ -677,9 +600,8 @@ Module.register("MMM-septa", {
       row.appendChild(arrivalsCell);
       wrapper.appendChild(row);
 
-      // Explains the slash notation, and only when a slash is actually on
-      // screen -- a standing legend for something that shows up on a handful
-      // of routes would be noise on every other row.
+      // Explains the slash notation, and only when a slash is actually on screen
+      // -- a standing legend for something that shows up on a handful of routes would be noise on every other row.
       if (sameTripJoined) fullWidthRows.push({ flagged: false, html: SAME_TRIP_NOTE });
 
       for (const entry of fullWidthRows) {
@@ -700,26 +622,22 @@ Module.register("MMM-septa", {
     return wrapper;
   },
 
-  // Renders one merged route entry (routeId parsed into 2+ sub-routeIds --
-  // e.g. "T2,T3,T4,T5") as a single combined row instead of one row per
-  // sub-route. Each sub-routeId polls fully independently on the backend
-  // (see node_helper.js's registerConfig) -- this only ever combines
-  // already-resolved routeStates at display time, same principle as the
-  // rest of getDom(). Returns the (possibly updated) lastHeaderStopId so
-  // getDom()'s loop can keep threading it through, the same way its own
-  // inline stop-header dedup logic does.
+  // Renders one merged route entry (routeId parsed into 2+ sub-routeIds
+  // -- e.g. "T2,T3,T4,T5") as a single combined row instead of one row per sub-route.
+  // Each sub-routeId polls fully independently on the backend (see node_helper.js's registerConfig)
+  // -- this only ever combines already-resolved routeStates at display time, same principle as the rest of getDom().
+  // Returns the (possibly updated) lastHeaderStopId so getDom()'s loop can keep threading it through,
+  // the same way its own inline stop-header dedup logic does.
   //
-  // See README's "Merging routes" section for the full behavior this
-  // implements.
+  // See README's "Merging routes" section for the full behavior this implements.
   renderMergedRouteRow(wrapper, route, subRouteIds, now, lastHeaderStopId) {
     const warnMinutes = typeof route.warnMinutes === "number" ? route.warnMinutes : this.config.warnMinutes;
     const showHeadsigns =
       typeof route.showHeadsigns === "boolean" ? route.showHeadsigns : this.config.showHeadsigns;
 
-    // One entry per sub-route that has live state at all -- a sub-route
-    // MagicMirror hasn't heard from yet (still loading on first start)
-    // simply contributes nothing this cycle, same treatment as one that's
-    // mid-detour.
+    // One entry per sub-route that has live state at all
+    // -- a sub-route MagicMirror hasn't heard from yet
+    // (still loading on first start) simply contributes nothing this cycle, same treatment as one that's mid-detour.
     const subRoutes = subRouteIds.map((subRouteId) => {
       const direction = septaResolveDirectionForRoute(route.direction, subRouteId);
       const state = this.routeStates[septaRouteKey({ routeId: subRouteId, stopId: route.stopId, direction })];
@@ -728,14 +646,12 @@ Module.register("MMM-septa", {
     const knownSubRoutes = subRoutes.filter((s) => s.state);
     const routeColorFor = new Map(subRoutes.map((s) => [s.subRouteId, s.state && s.state.routeColor]));
 
-    // A merged group shares one configured stopId, so an invalid one is
-    // only really invalid when *every* sub-route fails to find it -- a
-    // single sub-route missing it means that route doesn't belong in the
-    // merged list, not that the stop is wrong (node_helper's validateStopIds
-    // warns about that case separately, and it already degrades gracefully:
-    // that sub-route just contributes no arrivals). Sub-routes still
-    // awaiting a verdict (stopIdValid null, the startup window) don't count
-    // as failures, so the note can't flash on at restart.
+    // A merged group shares one configured stopId, so an invalid one is only really invalid when *every* sub-route fails to find it
+    // -- a single sub-route missing it means that route doesn't belong in the merged list,
+    // not that the stop is wrong (node_helper's validateStopIds warns about that case separately,
+    // and it already degrades gracefully: that sub-route just contributes no arrivals).
+    // Sub-routes still awaiting a verdict (stopIdValid null,
+    // the startup window) don't count as failures, so the note can't flash on at restart.
     const invalidStopId =
       knownSubRoutes.length > 0 && knownSubRoutes.every((s) => s.state.stopIdValid === false);
     const stopName =
@@ -781,19 +697,15 @@ Module.register("MMM-septa", {
     if (!fresh) row.className += " septa-stale";
     const hasTripError = knownSubRoutes.some((s) => s.state.hasTripError);
 
-    // A merged row only shows a full DETOUR banner when literally every
-    // sub-route is detoured around the primary stop this cycle -- a detour
-    // on just one leg simply contributes zero arrivals from that sub-route
+    // A merged row only shows a full DETOUR banner when literally every sub-route is detoured around the primary stop this cycle
+    // -- a detour on just one leg simply contributes zero arrivals from that sub-route
     // (pollRoute's existing detour handling is all-or-nothing per route),
-    // no different in effect from that sub-route having nothing scheduled
-    // right now.
+    // no different in effect from that sub-route having nothing scheduled right now.
     const allDetoured = knownSubRoutes.every((s) => s.state.detour);
 
-    // secondaryStopId is one shared config value for the whole merged
-    // group, not per sub-route -- each sub-route resolves its own skip
-    // status against it independently, exactly like the single-route case
-    // in getDom() above, and those per-arrival flags travel through the
-    // merge below.
+    // secondaryStopId is one shared config value for the whole merged group, not per sub-route
+    // -- each sub-route resolves its own skip status against it independently, exactly like the single-route case in getDom() above,
+    // and those per-arrival flags travel through the merge below.
     const secondaryStopDisplayName =
       knownSubRoutes.map((s) => s.state.secondaryStopName).find(Boolean) ||
       (route.secondaryStopId != null ? String(route.secondaryStopId) : "");
@@ -829,25 +741,20 @@ Module.register("MMM-septa", {
     mergedArrivals.sort((a, b) => a.eta - b.eta);
     const shownArrivals = mergedArrivals.slice(0, this.config.maxArrivals);
 
-    // Two different marker schemes depending on showHeadsigns, matching the
-    // two different jobs a marker does in each mode. With showHeadsigns
-    // false, headsigns are deliberately hidden -- a marker's only job is to
-    // trace a top-row time back to *which route* it came from, so it's one
-    // marker per sub-route, fixed by that sub-route's position in the
-    // configured routeId list (not by which sub-routes happen to have
-    // arrivals this cycle, for the same stability reason headsignOrder
-    // exists below -- so a route's marker never changes cycle to cycle).
-    // With showHeadsigns true, headsigns are shown, so a marker instead
-    // traces a time back to *which destination*, same as the single-route
-    // case -- one marker per distinct headsign, via septaAssignMergedMarkers.
+    // Two different marker schemes depending on showHeadsigns, matching the two different jobs a marker does in each mode.
+    // With showHeadsigns false, headsigns are deliberately hidden
+    // -- a marker's only job is to trace a top-row time back to *which route* it came from,
+    // so it's one marker per sub-route, fixed by that sub-route's position in the configured routeId list
+    // (not by which sub-routes happen to have arrivals this cycle, for the same stability reason headsignOrder exists below
+    // -- so a route's marker never changes cycle to cycle).
+    // With showHeadsigns true, headsigns are shown, so a marker instead traces a time back to *which destination*, same as the single-route case
+    // -- one marker per distinct headsign, via septaAssignMergedMarkers.
     const markerForSubRoute = new Map(subRouteIds.map((id, index) => [id, septaFootnoteMarker(index)]));
     let markerFor; // Map<headsign, marker>, only populated/used when showHeadsigns is true
     if (showHeadsigns) {
-      // Each sub-route's own headsignOrder (from node_helper.js, stable
-      // across polls -- see septaGroupByDestination's doc comment),
-      // concatenated in sub-route configuration order and deduped, so a
-      // given destination's marker doesn't change just because a different
-      // sub-route's trip happens to be next.
+      // Each sub-route's own headsignOrder (from node_helper.js, stable across polls -- see septaGroupByDestination's doc comment),
+      // concatenated in sub-route configuration order and deduped,
+      // so a given destination's marker doesn't change just because a different sub-route's trip happens to be next.
       const combinedHeadsignOrder = [];
       for (const { state } of knownSubRoutes) {
         for (const headsign of state.headsignOrder || []) {
@@ -906,16 +813,13 @@ Module.register("MMM-septa", {
     row.appendChild(arrivalsCell);
     wrapper.appendChild(row);
 
-    // Second row(s): built from shownArrivals (what's actually in the top
-    // countdown, post-maxArrivals-cutoff), not the full merged pool -- a
-    // sub-route/headsign with nothing currently in that window doesn't get
-    // a row of its own, same "only what's actually shown" principle as the
-    // single-route case above.
+    // Second row(s): built from shownArrivals (what's actually in the top countdown, post-maxArrivals-cutoff), not the full merged pool
+    // -- a sub-route/headsign with nothing currently in that window doesn't get a row of its own,
+    // same "only what's actually shown" principle as the single-route case above.
     const fullWidthRows = [];
     if (!showHeadsigns) {
-      // One marker per contributing sub-route (markerForSubRoute is a
-      // fixed 1:1 mapping, so there's never more than one to resolve here)
-      // -- e.g. "T2(*), T4(†), T5(‡)".
+      // One marker per contributing sub-route (markerForSubRoute is a fixed 1:1 mapping,
+      // so there's never more than one to resolve here) -- e.g. "T2(*), T4(†), T5(‡)".
       const contributingSubRouteIds = new Set(shownArrivals.map((a) => a.subRouteId));
       const parts = subRouteIds
         .filter((id) => contributingSubRouteIds.has(id))
@@ -923,9 +827,8 @@ Module.register("MMM-septa", {
       if (parts.length > 0) fullWidthRows.push({ flagged: false, html: parts.join(", ") });
     } else {
       // Which headsigns each sub-route is currently showing, per subRouteId
-      // -- a Set, not an array, since print order comes from markerFor's own
-      // stable key order below (see septaAssignMergedMarkers), not from
-      // whichever arrival happens to be chronologically first this cycle.
+      // -- a Set, not an array, since print order comes from markerFor's own stable key order below (see septaAssignMergedMarkers),
+      // not from whichever arrival happens to be chronologically first this cycle.
       const shownHeadsignsBySubRoute = new Map();
       for (const arrival of shownArrivals) {
         if (!shownHeadsignsBySubRoute.has(arrival.subRouteId)) shownHeadsignsBySubRoute.set(arrival.subRouteId, new Set());
@@ -954,9 +857,8 @@ Module.register("MMM-septa", {
         html: `(Note: Some trips omitted that don't stop at ${septaEscapeHtml(secondaryStopDisplayName)})`,
       });
     }
-    // One note for the whole merged row: sub-routes share a stop, so a detour
-    // inferred near one of them is inferred near all of them. "primary" wins
-    // over "secondary" for the same reason it does in the single-route case.
+    // One note for the whole merged row: sub-routes share a stop, so a detour inferred near one of them is inferred near all of them.
+    // "primary" wins over "secondary" for the same reason it does in the single-route case.
     const anyInferredDetour = knownSubRoutes.some((s) => s.state.inferredDetourNear === "primary")
       ? "primary"
       : knownSubRoutes.some((s) => s.state.inferredDetourNear === "secondary")
@@ -974,14 +876,12 @@ Module.register("MMM-septa", {
         html: `Detour skips stop at ${septaEscapeHtml(secondaryStopDisplayName)}`,
       });
     }
-    // Same treatment as the single-route case in getDom() -- the merged row
-    // above keeps its usual shape and this names why it's empty.
+    // Same treatment as the single-route case in getDom() -- the merged row above keeps its usual shape and this names why it's empty.
     if (invalidStopId) {
       fullWidthRows.push({ flagged: false, configError: true, html: "Invalid stop ID configured" });
     }
-    // See the single-route path: only shown when a slash is actually on
-    // screen. On a merged row the same trip_id can only come from one
-    // sub-route, so the note needs no per-route qualification.
+    // See the single-route path: only shown when a slash is actually on screen.
+    // On a merged row the same trip_id can only come from one sub-route, so the note needs no per-route qualification.
     if (sameTripJoined) fullWidthRows.push({ flagged: false, html: SAME_TRIP_NOTE });
 
     for (const entry of fullWidthRows) {

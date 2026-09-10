@@ -1,19 +1,15 @@
 "use strict";
 
-// Lightweight, dependency-free fallback to SEPTA's static GTFS schedule, used
-// to fill in arrivals beyond what /trips/ currently knows about (see
-// septa-client.js's isTripTracked/useScheduleSupplement). No native modules,
-// no full-feed database -- the (large) static feed is only ever
-// downloaded/parsed rarely (see node_helper.js's once-daily refresh), never
-// on the hot per-route polling path.
+// Lightweight, dependency-free fallback to SEPTA's static GTFS schedule, used to fill in arrivals beyond what /trips/ currently knows about
+// (see septa-client.js's isTripTracked/useScheduleSupplement).
+// No native modules, no full-feed database -- the (large) static feed is only ever downloaded/parsed rarely
+// (see node_helper.js's once-daily refresh), never on the hot per-route polling path.
 //
-// Only trips.txt, stop_times.txt, calendar.txt, calendar_dates.txt, and
-// (as of the stopNames addition below) stops.txt are read out of the zip;
-// shapes.txt/etc are still never touched. The result is filtered immediately
-// down to the user's configured (routeId, stopId) pairs, so what actually
-// stays resident/cached is tiny (dozens to low hundreds of rows), even
-// though scanning stop_times.txt itself means streaming through every row in
-// the feed (confirmed live: ~1s for 2 million rows).
+// Only trips.txt, stop_times.txt, calendar.txt, calendar_dates.txt,
+// and (as of the stopNames addition below) stops.txt are read out of the zip; shapes.txt/etc are still never touched.
+// The result is filtered immediately down to the user's configured (routeId, stopId) pairs,
+// so what actually stays resident/cached is tiny
+// (dozens to low hundreds of rows), even though scanning stop_times.txt itself means streaming through every row in the feed (confirmed live: ~1s for 2 million rows).
 
 const zlib = require("zlib");
 const fs = require("fs");
@@ -22,56 +18,45 @@ const path = require("path");
 const GTFS_URL = "https://www3.septa.org/developer/google_bus.zip";
 const DEFAULT_CACHE_PATH = path.join(__dirname, "gtfs-cache.json");
 const FEED_CACHE_PATH = path.join(__dirname, "find-stop-feed-cache.json");
-// How long a cached download of the raw feed (see fetchRouteStopPatterns)
-// stays valid before a re-run re-downloads instead of reusing it -- 24h to
-// match the runtime schedule cache's own refresh cadence (SEPTA republishes
-// this feed at most about that often anyway).
+// How long a cached download of the raw feed (see fetchRouteStopPatterns) stays valid before a re-run re-downloads instead of reusing it
+// -- 24h to match the runtime schedule cache's own refresh cadence (SEPTA republishes this feed at most about that often anyway).
 const FEED_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const NEEDED_FILES = ["trips.txt", "stop_times.txt", "calendar.txt", "calendar_dates.txt", "stops.txt"];
-// Read separately from NEEDED_FILES and tolerated as missing: it identifies a
-// feed rather than describing service, and a feed without it is still usable
-// for everything except retention.
+// Read separately from NEEDED_FILES and tolerated as missing: it identifies a feed rather than describing service,
+// and a feed without it is still usable for everything except retention.
 const FEED_INFO_FILE = "feed_info.txt";
-// Also read separately from NEEDED_FILES and tolerated as missing, same as
-// FEED_INFO_FILE -- a feed without it is still fully usable, just with no
-// direction names resolvable (see buildScheduleCache's directionNames). Never
-// add this to NEEDED_FILES: that would turn a currently-optional extension
-// into a hard requirement, and a future feed dropping it (the exact scenario
-// planFeedRetention's hasDirectionsVersions rescue exists for) would then
-// fail the *entire* schedule cache build instead of just direction names.
+// Also read separately from NEEDED_FILES and tolerated as missing, same as FEED_INFO_FILE
+// -- a feed without it is still fully usable, just with no direction names resolvable (see buildScheduleCache's directionNames).
+// Never add this to NEEDED_FILES: that would turn a currently-optional extension into a hard requirement,
+// and a future feed dropping it (the exact scenario planFeedRetention's hasDirectionsVersions rescue exists for) would then fail the *entire* schedule cache build instead of just direction names.
 const DIRECTIONS_FILE = "directions.txt";
-// Optional in exactly the same way as DIRECTIONS_FILE, and never in
-// NEEDED_FILES for the same reason: a feed without it still builds a normal
-// cache, just with every route falling back to the default label color.
+// Optional in exactly the same way as DIRECTIONS_FILE,
+// and never in NEEDED_FILES for the same reason: a feed without it still builds a normal cache,
+// just with every route falling back to the default label color.
 const ROUTES_FILE = "routes.txt";
-// Optional in the same way, and also non-standard GTFS: a feed without it
-// still builds a normal cache, just with no inferred detour spans (see
-// parseRouteStopPaths).
+// Optional in the same way, and also non-standard GTFS: a feed without it still builds a normal cache,
+// just with no inferred detour spans (see parseRouteStopPaths).
 const ROUTE_STOPS_FILE = "route_stops.txt";
-// Enough of a feed to decide whether to keep it, whether it covers a given
-// date, and whether it has directions.txt, without the 100MB stop_times.txt
-// scan a full parse needs. directions.txt itself is tiny (tens of KB).
+// Enough of a feed to decide whether to keep it, whether it covers a given date,
+// and whether it has directions.txt, without the 100MB stop_times.txt scan a full parse needs. directions.txt itself is tiny (tens of KB).
 const FEED_SELECTION_FILES = [FEED_INFO_FILE, "calendar.txt", "calendar_dates.txt", DIRECTIONS_FILE];
 const FEEDS_DIR = path.join(__dirname, "feeds");
 const FEED_INDEX_PATH = path.join(FEEDS_DIR, "index.json");
 // How many distinct feed *days* to retain by age -- see feedDayFromVersion.
-// Two is the minimum that survives SEPTA's habit of publishing the next
-// service period's feed days early: the incoming one, plus the outgoing one
-// that's still the only thing covering today. SEPTA serves no feed history,
-// so an evicted feed is gone for good.
+// Two is the minimum that survives SEPTA's habit of publishing the next service period's feed days early: the incoming one,
+// plus the outgoing one that's still the only thing covering today.
+// SEPTA serves no feed history, so an evicted feed is gone for good.
 //
-// This is a floor, not a cap. planFeedRetention will hold a third feed rather
-// than evict the last one covering the current date -- without that, two
-// forward-dated feeds arriving back to back (holding 20260823 and 20260906,
-// then receiving 20260907 on Sept 3) would evict the only feed answering for
-// today and reopen the exact gap this exists to close. The store falls back
-// to two days on its own once a retained feed within the window covers the
-// date again.
+// This is a floor, not a cap.
+// planFeedRetention will hold a third feed rather than evict the last one covering the current date
+// -- without that, two forward-dated feeds arriving back to back
+// (holding 20260823 and 20260906, then receiving 20260907 on Sept 3) would evict the only feed answering for today and reopen the exact gap this exists to close.
+// The store falls back to two days on its own once a retained feed within the window covers the date again.
 const FEED_RETENTION_DAYS = 2;
 const DOW_KEYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]; // index by Date#getDay()
 
-// --- ZIP reading (central directory only; plain 32-bit fields, no ZIP64 --
-// SEPTA's feed is ~20MB, nowhere near the 4GB threshold that would need it) ---
+// --- ZIP reading (central directory only; plain 32-bit fields, no ZIP64
+// -- SEPTA's feed is ~20MB, nowhere near the 4GB threshold that would need it) ---
 
 function readZipEntries(buffer, wantedNames) {
   const wanted = new Set(wantedNames);
@@ -122,11 +107,9 @@ function readZipEntries(buffer, wantedNames) {
   return found;
 }
 
-// --- CSV parsing ---
-// stop_times.txt rows are all plain numeric/time fields (no commas/quotes
-// expected), so a fast plain split is used for it -- it's by far the
-// largest file. trips.txt's trip_headsign is free text and could in
-// principle contain a comma, so it gets a real quote-aware parser.
+// --- CSV parsing --- stop_times.txt rows are all plain numeric/time fields
+// (no commas/quotes expected), so a fast plain split is used for it
+// -- it's by far the largest file. trips.txt's trip_headsign is free text and could in principle contain a comma, so it gets a real quote-aware parser.
 
 function splitCsvLineSimple(line) {
   return line.split(",");
@@ -177,8 +160,7 @@ function parseCsv(text, splitLine) {
   return rows;
 }
 
-// trips.txt filtered to a set of route_ids ->
-// Map<trip_id, {routeId, serviceId, headsign, directionId}>
+// trips.txt filtered to a set of route_ids -> Map<trip_id, {routeId, serviceId, headsign, directionId}>
 function parseTripsForRoutes(text, routeIds) {
   const targetRoutes = new Set(routeIds.map(String));
   const trips = new Map();
@@ -194,11 +176,10 @@ function parseTripsForRoutes(text, routeIds) {
   return trips;
 }
 
-// stops.txt -> Map<stop_id, stop_name>. Passing stopIds filters to just
-// those stops (used by buildScheduleCache to keep the runtime cache's
-// stopNames tiny, the same way parseStopTimesForTrips filters); omit it to
-// keep every stop (used by scripts/find-stop.js, which doesn't know its
-// stop_ids up front).
+// stops.txt -> Map<stop_id, stop_name>.
+// Passing stopIds filters to just those stops (used by buildScheduleCache to keep the runtime cache's stopNames tiny,
+// the same way parseStopTimesForTrips filters);
+// omit it to keep every stop (used by scripts/find-stop.js, which doesn't know its stop_ids up front).
 function parseStops(text, stopIds) {
   const targetStops = stopIds ? new Set(stopIds.map(String)) : null;
   const stops = new Map();
@@ -210,11 +191,8 @@ function parseStops(text, stopIds) {
   return stops;
 }
 
-// stops.txt -> Map<stop_id, {lat, lon}>, dropping any row with a missing or
-// non-numeric coordinate. Kept separate from parseStops (whose Map<id, name>
-// shape is relied on directly by buildScheduleCache/node_helper.js and their
-// tests) since this is only needed by scripts/find-stop.js's geography sanity
-// check.
+// stops.txt -> Map<stop_id, {lat, lon}>, dropping any row with a missing or non-numeric coordinate.
+// Kept separate from parseStops (whose Map<id, name> shape is relied on directly by buildScheduleCache/node_helper.js and their tests) since this is only needed by scripts/find-stop.js's geography sanity check.
 function parseStopLatLon(text) {
   const stops = new Map();
   for (const row of parseCsv(text, splitCsvLineQuoted)) {
@@ -234,13 +212,12 @@ function timeToSeconds(value) {
   return h * 3600 + m * 60 + s;
 }
 
-// stop_times.txt filtered to trips in tripsById, and (if stopIds is given)
-// stops in stopIds -> array of {routeId, stopId, stopSequence, tripId,
-// serviceId, arrivalTimeSeconds, headsign, directionId}. Passing no stopIds
-// (or null) keeps every stop for every known trip -- used by
-// scripts/find-stop.js's buildRouteStopPatterns to see a trip's full stop
-// sequence; the runtime schedule cache always passes a real (small) stopIds
-// set, so this stays off the hot path.
+// stop_times.txt filtered to trips in tripsById, and
+// (if stopIds is given) stops in stopIds -> array of {routeId, stopId,
+// stopSequence, tripId, serviceId, arrivalTimeSeconds, headsign, directionId}.
+// Passing no stopIds (or null) keeps every stop for every known trip
+// -- used by scripts/find-stop.js's buildRouteStopPatterns to see a trip's full stop sequence;
+// the runtime schedule cache always passes a real (small) stopIds set, so this stays off the hot path.
 function parseStopTimesForTrips(text, tripsById, stopIds) {
   const targetStops = stopIds ? new Set(stopIds.map(String)) : null;
   const entries = [];
@@ -254,9 +231,8 @@ function parseStopTimesForTrips(text, tripsById, stopIds) {
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
     if (!line) continue;
-    // Cheap pre-check before splitting: skip lines that can't possibly
-    // reference one of our (comparatively few) target stop_ids. Skipped
-    // entirely when unfiltered (targetStops === null).
+    // Cheap pre-check before splitting: skip lines that can't possibly reference one of our (comparatively few) target stop_ids.
+    // Skipped entirely when unfiltered (targetStops === null).
     if (targetStops) {
       let matchesStop = false;
       for (const stopId of targetStops) {
@@ -327,10 +303,9 @@ function formatYYYYMMDD(date) {
   return `${y}${m}${d}`;
 }
 
-// Is this service_id running on this calendar date, per calendar.txt's
-// day-of-week/date-range rule, overridden by any calendar_dates.txt
-// exception for that exact date (added=1 always active, removed=2 always
-// inactive, regardless of what calendar.txt alone would say).
+// Is this service_id running on this calendar date, per calendar.txt's day-of-week/date-range rule,
+// overridden by any calendar_dates.txt exception for that exact date
+// (added=1 always active, removed=2 always inactive, regardless of what calendar.txt alone would say).
 function isServiceActiveOn(calendar, calendarExceptions, serviceId, date) {
   const dateStr = formatYYYYMMDD(date);
   const exceptionsForService = calendarExceptions[serviceId];
@@ -343,20 +318,16 @@ function isServiceActiveOn(calendar, calendarExceptions, serviceId, date) {
   return Boolean(cal[DOW_KEYS[date.getDay()]]);
 }
 
-// Does the static feed cover `date` at all -- i.e. is *any* service_id active
-// that day? SEPTA occasionally publishes a google_bus.zip whose calendar
-// starts a day or two in the future (seen 2026-07-24, ahead of the Aug 23
-// New Bus Network: every service_id started 20260726, leaving today/tomorrow
-// uncovered). When that happens getScheduledArrivals correctly returns
-// nothing for today, so the schedule supplement silently contributes zero and
-// the display collapses to SEPTA's short live-only window -- which looks
-// alarmingly like a breakage. node_helper.js uses this to log and surface a
-// note when it happens. Checks both calendar.txt service_ids and any that
-// exist only as calendar_dates.txt additions (a date-specific service with no
-// regular calendar.txt row). Global by design (not scoped to one route): "the
-// feed doesn't cover today" is a feed-wide fact, distinct from "this
-// particular route just isn't running / has nothing in the next hour," which
-// is normal and must NOT trigger the note.
+// Does the static feed cover `date` at all -- i.e. is *any* service_id active that day?
+// SEPTA occasionally publishes a google_bus.zip whose calendar starts a day or two in the future
+// (seen 2026-07-24, ahead of the Aug 23 New Bus Network: every service_id started 20260726, leaving today/tomorrow uncovered).
+// When that happens getScheduledArrivals correctly returns nothing for today,
+// so the schedule supplement silently contributes zero and the display collapses to SEPTA's short live-only window -- which looks alarmingly like a breakage.
+// node_helper.js uses this to log and surface a note when it happens.
+// Checks both calendar.txt service_ids and any that exist only as calendar_dates.txt additions
+// (a date-specific service with no regular calendar.txt row).
+// Global by design (not scoped to one route): "the feed doesn't cover today" is a feed-wide fact,
+// distinct from "this particular route just isn't running / has nothing in the next hour," which is normal and must NOT trigger the note.
 function hasActiveServiceOn(cache, date) {
   if (!cache || !cache.calendar) return false;
   const exceptions = cache.calendarExceptions || {};
@@ -367,41 +338,33 @@ function hasActiveServiceOn(cache, date) {
   return false;
 }
 
-// Builds the full (unfiltered-by-date) cache object from raw zip file
-// contents. Pure given the extracted text -- no I/O, easy to unit test.
-// stopNames is filtered down to just stopIds (like entries is) so a
-// configured stop's name is always resolvable from the daily schedule
-// refresh, not just whenever a live trip happens to pass through it (which a
-// structurally-skipping headsign, e.g. a secondary stop, might never do) --
-// stops.txt in fileTexts is optional so callers that don't need names (or
-// don't have it, e.g. NEEDED_FILES-less test fixtures) still work.
-// One ordered, coordinate-bearing stop list per configured (routeId,
-// directionId) -- the geometric backbone the inferred-detour span test needs
-// (see inferDetourSpanStops). Deliberately separate from `entries`, which is
-// filtered down to the user's configured stops and so can't say what lies
-// between them.
+// Builds the full (unfiltered-by-date) cache object from raw zip file contents.
+// Pure given the extracted text -- no I/O, easy to unit test.
+// stopNames is filtered down to just stopIds (like entries is) so a configured stop's name is always resolvable from the daily schedule refresh,
+// not just whenever a live trip happens to pass through it (which a structurally-skipping headsign, e.g. a secondary stop, might never do)
+// -- stops.txt in fileTexts is optional so callers that don't need names
+// (or don't have it, e.g. NEEDED_FILES-less test fixtures) still work.
+// One ordered, coordinate-bearing stop list per configured (routeId, directionId)
+// -- the geometric backbone the inferred-detour span test needs (see inferDetourSpanStops).
+// Deliberately separate from `entries`, which is filtered down to the user's configured stops and so can't say what lies between them.
 //
-// Read straight from route_stops.txt, which is SEPTA's own answer to "what
-// stops does this route serve, in order". This replaced a reconstruction that
-// sampled 20 trips per route/direction and kept the longest: that made the
-// path only as complete as one real trip, so a branchy route lost every stop
-// its representative trip didn't serve (route 63 southbound: 102 stops
-// reconstructed vs 121 in route_stops.txt). It also cost a second full scan
-// of the ~100MB stop_times.txt on every refresh, which this doesn't.
+// Read straight from route_stops.txt, which is SEPTA's own answer to "what stops does this route serve, in order".
+// This replaced a reconstruction that sampled 20 trips per route/direction and kept the longest: that made the path only as complete as one real trip,
+// so a branchy route lost every stop its representative trip didn't serve
+// (route 63 southbound: 102 stops reconstructed vs 121 in route_stops.txt).
+// It also cost a second full scan of the ~100MB stop_times.txt on every refresh, which this doesn't.
 //
-// One known difference, accepted: route_stops.txt lists a stop once even when
-// a trip serves it twice, so it is a deduplicated union rather than a literal
-// traversal. Measured on feed v202609060, that affects 7 of 327
-// route/direction pairs (routes 95, 107, 114, 117, 310 and both LUCY loops),
-// covering 0.81% of trips. On those the inferred span may differ from the old
-// reconstruction -- not necessarily for the worse, since nearest-stop matching
-// could pick either occurrence anyway. Detour-stop inference is a best-effort
-// fallback for when SEPTA omits skipped_stops at all, so a different guess on
-// a handful of loop routes doesn't warrant carrying two code paths.
+// One known difference, accepted: route_stops.txt lists a stop once even when a trip serves it twice,
+// so it is a deduplicated union rather than a literal traversal.
+// Measured on feed v202609060, that affects 7 of 327 route/direction pairs
+// (routes 95, 107, 114, 117, 310 and both LUCY loops), covering 0.81% of trips.
+// On those the inferred span may differ from the old reconstruction
+// -- not necessarily for the worse, since nearest-stop matching could pick either occurrence anyway.
+// Detour-stop inference is a best-effort fallback for when SEPTA omits skipped_stops at all,
+// so a different guess on a handful of loop routes doesn't warrant carrying two code paths.
 //
-// Filtered to the configured routes, unlike parseRouteLabelColors: these
-// entries carry coordinates, so keeping all 327 would put ~1MB in the cache
-// against ~23KB for a typical config.
+// Filtered to the configured routes, unlike parseRouteLabelColors: these entries carry coordinates,
+// so keeping all 327 would put ~1MB in the cache against ~23KB for a typical config.
 function parseRouteStopPaths(text, routeIds, stopLatLon) {
   const targetRoutes = new Set(routeIds.map(String));
   const ordered = new Map(); // "routeId|directionId" -> [{ stopId, sortOrder }]
@@ -431,31 +394,28 @@ function buildScheduleCache(fileTexts, routeIds, stopIds) {
   const calendarExceptions = parseCalendarDates(fileTexts["calendar_dates.txt"]);
   const stopNames = fileTexts["stops.txt"] ? Object.fromEntries(parseStops(fileTexts["stops.txt"], stopIds)) : {};
   const terminusExclusions = buildTerminusExclusions(fileTexts, entries, routeIds, stopIds);
-  // Which of the requested routeIds trips.txt actually knows about. Recorded
-  // from the trips, not the entries, so it stays independent of stopIds --
-  // a real route configured with a wrong stopId still counts as a real
-  // route, and gets reported as the stop problem it is rather than as a
-  // phantom typo'd routeId. See node_helper.js's validateRouteIds.
+  // Which of the requested routeIds trips.txt actually knows about.
+  // Recorded from the trips, not the entries, so it stays independent of stopIds
+  // -- a real route configured with a wrong stopId still counts as a real route,
+  // and gets reported as the stop problem it is rather than as a phantom typo'd routeId.
+  // See node_helper.js's validateRouteIds.
   const routeIdsWithTrips = [...new Set([...trips.values()].map((trip) => trip.routeId))];
-  // Needs both files: route_stops.txt for the order, stops.txt for the
-  // coordinates. Either one missing just means no inferred detour spans --
-  // inferDetourSpanStops already treats an absent path as "can't tell".
+  // Needs both files: route_stops.txt for the order, stops.txt for the coordinates.
+  // Either one missing just means no inferred detour spans -- inferDetourSpanStops already treats an absent path as "can't tell".
   const routeStopPaths =
     fileTexts["stops.txt"] && fileTexts[ROUTE_STOPS_FILE]
       ? parseRouteStopPaths(fileTexts[ROUTE_STOPS_FILE], routeIds, parseStopLatLon(fileTexts["stops.txt"]))
       : {};
   // Which feed this cache came from, when the caller supplied feed_info.txt.
-  // Purely diagnostic, but the absence of it is what made the 2026-09-02
-  // incident hard to read off the Pi: the cache on disk gave no clue which
-  // feed had produced it.
+  // Purely diagnostic, but the absence of it is what made the 2026-09-02 incident hard to read off the Pi: the cache on disk gave no clue which feed had produced it.
   const feedInfo = parseFeedInfo(fileTexts[FEED_INFO_FILE]);
-  // Optional, like feedInfo -- a feed without directions.txt (an older feed,
-  // or SEPTA dropping the extension entirely) still builds a normal cache,
-  // just with every getDirectionName lookup returning null. See
-  // buildCacheFromBuffer for why this is never in NEEDED_FILES.
+  // Optional, like feedInfo -- a feed without directions.txt
+  // (an older feed, or SEPTA dropping the extension entirely) still builds a normal cache,
+  // just with every getDirectionName lookup returning null.
+  // See buildCacheFromBuffer for why this is never in NEEDED_FILES.
   const directionNames = fileTexts[DIRECTIONS_FILE] ? parseDirectionNamesForRoutes(fileTexts[DIRECTIONS_FILE], routeIds) : {};
-  // Optional, like feedInfo and directionNames. Unfiltered by routeIds on
-  // purpose -- see parseRouteLabelColors.
+  // Optional, like feedInfo and directionNames.
+  // Unfiltered by routeIds on purpose -- see parseRouteLabelColors.
   const routeColors = fileTexts[ROUTES_FILE] ? parseRouteLabelColors(fileTexts[ROUTES_FILE]) : {};
   return {
     builtAt: Date.now(),
@@ -473,12 +433,10 @@ function buildScheduleCache(fileTexts, routeIds, stopIds) {
   };
 }
 
-// Every trip on a route, stop-by-stop with names, straight from the static
-// schedule -- so a short-turn pattern with no currently-running trip still
-// shows up (unlike scripts/find-stop.js's old live-only approach, which
-// could only ever show whichever trip happened to be running). Pure given
-// the extracted GTFS text; requires stops.txt in fileTexts (the runtime
-// schedule cache never fetches it -- see parseStops).
+// Every trip on a route, stop-by-stop with names, straight from the static schedule
+// -- so a short-turn pattern with no currently-running trip still shows up
+// (unlike scripts/find-stop.js's old live-only approach, which could only ever show whichever trip happened to be running).
+// Pure given the extracted GTFS text; requires stops.txt in fileTexts (the runtime schedule cache never fetches it -- see parseStops).
 function buildRouteStopPatterns(fileTexts, routeId) {
   const trips = parseTripsForRoutes(fileTexts["trips.txt"], [routeId]);
   const stopNames = parseStops(fileTexts["stops.txt"]);
@@ -531,57 +489,49 @@ function parseDirectionNamesForRoutes(text, routeIds) {
   return names;
 }
 
-// null when the cache has no directions.txt data at all (an older/future
-// feed without the extension, or a route/direction_id it doesn't list) --
-// callers must treat that the same as "unresolved", never as an error, since
-// directions.txt is deliberately optional (see buildCacheFromBuffer).
+// null when the cache has no directions.txt data at all
+// (an older/future feed without the extension, or a route/direction_id it doesn't list)
+// -- callers must treat that the same as "unresolved", never as an error,
+// since directions.txt is deliberately optional (see buildCacheFromBuffer).
 function getDirectionName(cache, routeId, directionId) {
   if (!cache || !cache.directionNames) return null;
   return cache.directionNames[`${routeId}|${directionId}`] || null;
 }
 
-// The red SEPTA marks its frequent bus network with -- the same red that's
-// now on the physical signage at those stops. Carried in routes.txt as a
-// literal route_color on exactly the frequent routes (25 of them as of feed
-// v202609060: 3, 6, 17, 18, 21, 23, 25, 33, 46, 47, 48, 51, 52, 56, 57, 58,
-// 60, 63, 64, 66, 70, 79, 82, 108, 113). Nothing below branches on it any
-// more -- it is drawn because it is a color, like every other -- but it is
-// exported and named because "which routes are frequent" is a question worth
-// being able to ask, and scripts/compare-feeds.js reports movement in it.
+// The red SEPTA marks its frequent bus network with -- the same red that's now on the physical signage at those stops.
+// Carried in routes.txt as a literal route_color on exactly the frequent routes
+// (25 of them as of feed v202609060: 3, 6, 17, 18, 21, 23, 25, 33, 46, 47, 48, 51, 52, 56, 57, 58, 60, 63, 64, 66, 70, 79, 82, 108, 113).
+// Nothing below branches on it any more -- it is drawn because it is a color, like every other
+// -- but it is exported and named because "which routes are frequent" is a question worth being able to ask,
+// and scripts/compare-feeds.js reports movement in it.
 //
 // This is what replaced the /api/v2/routes/ endpoint's is_frequent_bus flag,
-// which looked authoritative and wasn't: every entry it serves is stamped
-// release_name "20240318", a frozen March 2024 snapshot. Measured against
-// feed v202609060 on 2026-09-09, and after accounting for the New Bus
-// Network's relettering (G -> 63, L -> 51, R -> 82), it missed three routes
-// SEPTA now marks frequent (25, 57, 64) and still flagged one it doesn't
-// (45). Route 64 reading as an ordinary route on the mirror surfaced it.
+// which looked authoritative and wasn't: every entry it serves is stamped release_name "20240318", a frozen March 2024 snapshot.
+// Measured against feed v202609060 on 2026-09-09,
+// and after accounting for the New Bus Network's relettering
+// (G -> 63, L -> 51, R -> 82), it missed three routes SEPTA now marks frequent (25, 57, 64) and still flagged one it doesn't (45).
+// Route 64 reading as an ordinary route on the mirror surfaced it.
 const FREQUENT_BUS_COLOR = "EF3340";
 
-// The generic near-black routes.txt hands every ordinary bus route (116 of
-// them in v202609060). It is not a brand color of any kind, and drawing it on
-// the mirror's black background would render the route number invisible, so
-// it is the one value that always resolves to "no override".
+// The generic near-black routes.txt hands every ordinary bus route (116 of them in v202609060).
+// It is not a brand color of any kind, and drawing it on the mirror's black background would render the route number invisible,
+// so it is the one value that always resolves to "no override".
 const ORDINARY_BUS_COLOR = "1A1818";
 
 const HEX_COLOR_RE = /^[0-9a-fA-F]{6}$/;
 
-// One routes.txt row -> the "#rrggbb" its route number should be drawn in, or
-// null for "no override, use the default label color".
+// One routes.txt row -> the "#rrggbb" its route number should be drawn in, or null for "no override, use the default label color".
 //
-// Every real color in the file is drawn, whatever the route_type: the
-// rail/trolley brand colors, the frequent-bus red, and the twelve
-// Metro-replacement and loop services that carry a brand color of their own
+// Every real color in the file is drawn, whatever the route_type: the rail/trolley brand colors, the frequent-bus red,
+// and the twelve Metro-replacement and loop services that carry a brand color of their own
 // (L1_OWL and B1_OWL in their parent line's color, T_BUS, D1_BUS/D2_BUS,
 // M1_BUS, the LUCY loops, BLVDDIR, and the FXCB/NOR_BUS/WTR_BUS shuttles).
-// Six of those twelve deliberately duplicate the color of the line they
-// substitute for -- M1_BUS really is meant to read as M1 -- so a shared
-// color here is SEPTA's intent, not a collision to design around.
+// Six of those twelve deliberately duplicate the color of the line they substitute for
+// -- M1_BUS really is meant to read as M1 -- so a shared color here is SEPTA's intent, not a collision to design around.
 //
-// route_type is deliberately not consulted. It used to be, back when bus
-// route_color was believed to be meaningless and only rail/trolley colors
-// were trusted; now the only value that means "no color" is the ordinary-bus
-// near-black, and that is a value test, not a type test.
+// route_type is deliberately not consulted.
+// It used to be, back when bus route_color was believed to be meaningless and only rail/trolley colors were trusted;
+// now the only value that means "no color" is the ordinary-bus near-black, and that is a value test, not a type test.
 function resolveRouteLabelColor(routeMeta) {
   if (!routeMeta) return null;
   const color = String(routeMeta.route_color || "").trim();
@@ -590,22 +540,18 @@ function resolveRouteLabelColor(routeMeta) {
   return `#${color.toLowerCase()}`;
 }
 
-// routes.txt -> {routeId: "#rrggbb"} for every route that gets a non-default
-// label color. Routes resolving to null are omitted rather than stored as
-// null, which keeps this to a few dozen entries.
+// routes.txt -> {routeId: "#rrggbb"} for every route that gets a non-default label color.
+// Routes resolving to null are omitted rather than stored as null, which keeps this to a few dozen entries.
 //
-// Unlike parseDirectionNamesForRoutes, this is deliberately NOT filtered to
-// the configured routeIds. The whole file is 168 rows and the kept result is
-// a couple of KB, and staying unfiltered preserves the one genuinely nice
-// property the /routes/ endpoint had: a route added to config gets its color
-// on the very first render, rather than defaulting to white until the next
-// schedule refresh has pulled it into a config-scoped cache.
+// Unlike parseDirectionNamesForRoutes, this is deliberately NOT filtered to the configured routeIds.
+// The whole file is 168 rows and the kept result is a couple of KB,
+// and staying unfiltered preserves the one genuinely nice property the /routes/ endpoint had: a route added to config gets its color on the very first render,
+// rather than defaulting to white until the next schedule refresh has pulled it into a config-scoped cache.
 function parseRouteLabelColors(text) {
   const colors = {};
-  // Quote-aware, per the rule at the top of the CSV section: route_long_name
-  // is free text and could gain a comma in a future feed, which a plain split
-  // would silently shift into the route_color column. The file is 168 rows,
-  // so the slower parser costs nothing here.
+  // Quote-aware, per the rule at the top of the CSV section: route_long_name is free text and could gain a comma in a future feed,
+  // which a plain split would silently shift into the route_color column.
+  // The file is 168 rows, so the slower parser costs nothing here.
   for (const row of parseCsv(text, splitCsvLineQuoted)) {
     const color = resolveRouteLabelColor(row);
     if (color) colors[row.route_id] = color;
@@ -613,48 +559,38 @@ function parseRouteLabelColors(text) {
   return colors;
 }
 
-// null when the cache predates routeColors, came from a feed without
-// routes.txt, or simply has no override for this route -- all three mean the
-// same thing to a caller: use the default label color.
+// null when the cache predates routeColors, came from a feed without routes.txt, or simply has no override for this route
+// -- all three mean the same thing to a caller: use the default label color.
 function getRouteLabelColor(cache, routeId) {
   if (!cache || !cache.routeColors) return null;
   return cache.routeColors[String(routeId)] || null;
 }
 
-// Merges same-direction stop patterns (one per headsign -- see
-// scripts/find-stop.js's pickRepresentativePatterns, which reduces
-// buildRouteStopPatterns' one-per-trip output down to this first) into a
-// single deduped, ordered view instead of printing each headsign's full
-// stop list separately. Used by scripts/find-stop.js to keep its output
-// short even for a route with many headsigns/short-turns.
+// Merges same-direction stop patterns (one per headsign
+// -- see scripts/find-stop.js's pickRepresentativePatterns,
+// which reduces buildRouteStopPatterns' one-per-trip output down to this first) into a single deduped,
+// ordered view instead of printing each headsign's full stop list separately.
+// Used by scripts/find-stop.js to keep its output short even for a route with many headsigns/short-turns.
 //
-// The longest pattern becomes the "reference". Every other pattern is
-// walked stop-by-stop and matched against the reference via a
-// monotonically-advancing stopId->index lookup (a match must be at a later
-// reference index than the previous match, so a repeated stop_id -- e.g. a
-// loop -- can't match backwards). Matched stops are "anchors"; stops that
-// don't match anything in the reference are "extra", grouped into
-// contiguous runs and spliced in next to the anchor each run actually
-// adjoins on its own trip: after the anchor it follows, or -- for a run at
-// the very start of a pattern, which has no preceding anchor -- immediately
-// *before* the anchor it runs into. Both readings describe the same
-// adjacency; only a run with no anchor on either side (a pattern sharing no
-// stop with anything placed so far) has nowhere to go but the top of the
-// listing. Anchoring a leading run forward is what puts route 63
-// Northbound's short-turn origin (Baltimore Av & 59th St, where a handful of
-// Overbrook trips start) down at the Baltimore Av crossing it joins, instead
-// of stranding it above the route's first stop miles away in South Philly.
-// Once an extra run has been placed, its stops become anchors too, so a
-// branch that only overlaps an *earlier branch* (not the reference) still
-// lands at the right place -- see gapIndexByStopId below.
+// The longest pattern becomes the "reference".
+// Every other pattern is walked stop-by-stop and matched against the reference via a monotonically-advancing stopId->index lookup
+// (a match must be at a later reference index than the previous match, so a repeated stop_id -- e.g. a loop -- can't match backwards).
+// Matched stops are "anchors"; stops that don't match anything in the reference are "extra",
+// grouped into contiguous runs and spliced in next to the anchor each run actually adjoins on its own trip: after the anchor it follows, or
+// -- for a run at the very start of a pattern, which has no preceding anchor -- immediately *before* the anchor it runs into.
+// Both readings describe the same adjacency; only a run with no anchor on either side
+// (a pattern sharing no stop with anything placed so far) has nowhere to go but the top of the listing.
+// Anchoring a leading run forward is what puts route 63 Northbound's short-turn origin
+// (Baltimore Av & 59th St, where a handful of Overbrook trips start) down at the Baltimore Av crossing it joins,
+// instead of stranding it above the route's first stop miles away in South Philly.
+// Once an extra run has been placed, its stops become anchors too,
+// so a branch that only overlaps an *earlier branch* (not the reference) still lands at the right place -- see gapIndexByStopId below.
 //
-// A pattern with zero extra stops is fully contained in the reference (SEPTA
-// often just runs a shorter/truncated version of the same route) and
-// contributes nothing beyond its headsign name. Patterns are processed in
-// alphabetical-headsign order (not whatever order they happened to arrive
-// in) so a shared extra stop always gets credited to the same pattern on
-// every run, and no stop is ever repeated in the output even if multiple
-// patterns would otherwise both claim it.
+// A pattern with zero extra stops is fully contained in the reference
+// (SEPTA often just runs a shorter/truncated version of the same route) and contributes nothing beyond its headsign name.
+// Patterns are processed in alphabetical-headsign order
+// (not whatever order they happened to arrive in) so a shared extra stop always gets credited to the same pattern on every run,
+// and no stop is ever repeated in the output even if multiple patterns would otherwise both claim it.
 //
 // Returns { headsigns: string[], rows: [{ type: "stop"|"alt", stopId,
 // stopSequence, stopName }] } -- rows is the reference's own stops in
@@ -672,22 +608,16 @@ function mergeDirectionPatterns(directionPatterns) {
     if (!referenceIndexByStopId.has(stop.stopId)) referenceIndexByStopId.set(stop.stopId, index);
   });
 
-  // gapRuns key: the reference index an extra run follows (-1 = before the
-  // reference's own first stop). Value: extra stops (in order) to insert
-  // there.
+  // gapRuns key: the reference index an extra run follows (-1 = before the reference's own first stop).
+  // Value: extra stops (in order) to insert there.
   const gapRuns = new Map();
   const alreadyIncluded = new Set(reference.stops.map((stop) => stop.stopId));
   // stopId -> the gapRuns key an already-placed extra stop was flushed into,
-  // so a *later* pattern can anchor on it the same way it anchors on a
-  // reference stop. Without this, a pattern whose only overlap with
-  // everything seen so far is an extra stop claimed by an earlier pattern
-  // has no anchor at all: lastMatchedIndex never leaves -1 and its entire
-  // stop list flushes to the leading gap, printing a mid-route or trailing
-  // branch as if it ran before the reference's first stop. Confirmed live on
-  // route 44 Westbound, where the short "Ardmore via Montgomery Ave"
-  // short-turn starts at 54th St & City Av (not a reference stop, and
-  // already claimed by "54th-City") and so dumped its whole 24-stop Ardmore
-  // tail above the reference instead of at the City Av divergence point.
+  // so a *later* pattern can anchor on it the same way it anchors on a reference stop.
+  // Without this, a pattern whose only overlap with everything seen so far is an extra stop claimed by an earlier pattern has no anchor at all: lastMatchedIndex never leaves -1 and its entire stop list flushes to the leading gap,
+  // printing a mid-route or trailing branch as if it ran before the reference's first stop.
+  // Confirmed live on route 44 Westbound, where the short "Ardmore via Montgomery Ave" short-turn starts at 54th St & City Av
+  // (not a reference stop, and already claimed by "54th-City") and so dumped its whole 24-stop Ardmore tail above the reference instead of at the City Av divergence point.
   const gapIndexByStopId = new Map();
 
   const others = directionPatterns.filter((p) => p !== reference).sort((a, b) => a.headsign.localeCompare(b.headsign));
@@ -703,32 +633,25 @@ function mergeDirectionPatterns(directionPatterns) {
     };
     for (const stop of pattern.stops) {
       const refIndex = referenceIndexByStopId.get(stop.stopId);
-      // An extra stop's gap index is only consulted when the stop isn't on
-      // the reference at all -- a reference stop that failed the
-      // monotonicity check above is a backwards match (a loop), and must
-      // stay rejected rather than get a second chance here.
+      // An extra stop's gap index is only consulted when the stop isn't on the reference at all
+      // -- a reference stop that failed the monotonicity check above is a backwards match (a loop),
+      // and must stay rejected rather than get a second chance here.
       const anchorIndex = refIndex != null ? refIndex : gapIndexByStopId.get(stop.stopId);
       if (anchorIndex != null && anchorIndex > lastMatchedIndex) {
-        // Normally a run is placed after the anchor it followed. A run with
-        // no preceding anchor at all (lastMatchedIndex still -1: the pattern
-        // *starts* off the reference) is instead placed immediately before
-        // the anchor it runs into, since that's the only adjacency the trip
-        // actually demonstrates -- see the doc comment above.
+        // Normally a run is placed after the anchor it followed.
+        // A run with no preceding anchor at all (lastMatchedIndex still -1: the pattern *starts* off the reference) is instead placed immediately before the anchor it runs into,
+        // since that's the only adjacency the trip actually demonstrates -- see the doc comment above.
         flushPending(lastMatchedIndex === -1 ? anchorIndex - 1 : lastMatchedIndex);
         lastMatchedIndex = anchorIndex;
       } else if (!alreadyIncluded.has(stop.stopId)) {
         pending.push(stop);
         alreadyIncluded.add(stop.stopId);
       }
-      // else: already represented (on the reference itself, just not
-      // reachable monotonically from here -- e.g. a loop -- or already
-      // claimed by an earlier pattern's extra run at a position we've
-      // already passed) -- never repeat it.
+      // else: already represented (on the reference itself, just not reachable monotonically from here -- e.g. a loop
+      // -- or already claimed by an earlier pattern's extra run at a position we've already passed) -- never repeat it.
     }
-    // A trailing run has an anchor before it but none after, so it can only
-    // go after its last anchor; if the pattern never matched anything at
-    // all, lastMatchedIndex is still -1 and it lands above the reference's
-    // own first stop, which is the only placement left.
+    // A trailing run has an anchor before it but none after, so it can only go after its last anchor;
+    // if the pattern never matched anything at all, lastMatchedIndex is still -1 and it lands above the reference's own first stop, which is the only placement left.
     flushPending(lastMatchedIndex);
   }
 
@@ -744,20 +667,16 @@ function mergeDirectionPatterns(directionPatterns) {
     appendGapRun(index);
   });
 
-  // A run of adjacent "alt" rows reads as "these stops follow one another on
-  // some trip" -- but a single gap run can hold extra stops from several
-  // different patterns (each contributes one contiguous run, appended in
-  // turn), and even one pattern's own run can have an interior stop dropped
-  // (already claimed by an earlier pattern, or a backwards loop match), so
-  // that reading isn't always true. Mark the rows where it breaks down, so
-  // callers can separate them visually the same way they already separate
-  // stop-vs-alt transitions.
+  // A run of adjacent "alt" rows reads as "these stops follow one another on some trip"
+  // -- but a single gap run can hold extra stops from several different patterns (each contributes one contiguous run, appended in turn),
+  // and even one pattern's own run can have an interior stop dropped
+  // (already claimed by an earlier pattern, or a backwards loop match), so that reading isn't always true.
+  // Mark the rows where it breaks down, so callers can separate them visually the same way they already separate stop-vs-alt transitions.
   //
-  // The test is literal rather than structural (e.g. "did these two come
-  // from the same flush?"): a pair is consecutive if *any* pattern in this
-  // direction runs one stop straight into the other. That's exactly the
-  // assumption a reader is making, and it correctly stays silent when two
-  // separate patterns' runs happen to abut at a genuinely consecutive pair.
+  // The test is literal rather than structural (e.g.
+  // "did these two come from the same flush?"): a pair is consecutive if *any* pattern in this direction runs one stop straight into the other.
+  // That's exactly the assumption a reader is making,
+  // and it correctly stays silent when two separate patterns' runs happen to abut at a genuinely consecutive pair.
   const consecutivePairs = new Set();
   for (const pattern of directionPatterns) {
     for (let i = 1; i < pattern.stops.length; i++) {
@@ -767,9 +686,8 @@ function mergeDirectionPatterns(directionPatterns) {
   for (let i = 1; i < rows.length; i++) {
     const previous = rows[i - 1];
     const row = rows[i];
-    // Only within an alt run -- a stop/alt transition is already a visible
-    // boundary for callers, and reference stops are consecutive by
-    // definition.
+    // Only within an alt run -- a stop/alt transition is already a visible boundary for callers,
+    // and reference stops are consecutive by definition.
     if (previous.type !== "alt" || row.type !== "alt") continue;
     if (!consecutivePairs.has(`${previous.stopId}|${row.stopId}`)) row.breakBefore = true;
   }
@@ -777,29 +695,21 @@ function mergeDirectionPatterns(directionPatterns) {
   return { headsigns, rows };
 }
 
-// Returns scheduled arrivals for one route/stop within the next
-// horizonMinutes, each shaped to match septa-client.js's etas entries
-// (minus `tracked`, which callers should set to false -- these are always
-// schedule-only by definition). Checks "tomorrow", "today", and "yesterday"
-// as the service-day basis: "yesterday" so post-midnight arrival_time values
-// (GTFS allows times >= 24:00:00 for trips that start the previous service
-// day) resolve correctly, and "tomorrow" so that in the final horizonMinutes
-// of a day the window can reach forward into the next service day's early
-// arrivals (e.g. a 00:10 trip is visible from 23:35). No time-of-day gating
-// is needed -- the horizon filter itself means the tomorrow/yesterday bases
-// only ever contribute near a midnight boundary. Adjacent bases are exactly
-// 24h apart, so at most one of the three can fall within a 60-minute-scale
-// horizon and no double-counting is possible.
+// Returns scheduled arrivals for one route/stop within the next horizonMinutes, each shaped to match septa-client.js's etas entries
+// (minus `tracked`, which callers should set to false -- these are always schedule-only by definition).
+// Checks "tomorrow", "today", and "yesterday" as the service-day basis: "yesterday" so post-midnight arrival_time values
+// (GTFS allows times >= 24:00:00 for trips that start the previous service day) resolve correctly,
+// and "tomorrow" so that in the final horizonMinutes of a day the window can reach forward into the next service day's early arrivals (e.g. a 00:10 trip is visible from 23:35).
+// No time-of-day gating is needed -- the horizon filter itself means the tomorrow/yesterday bases only ever contribute near a midnight boundary.
+// Adjacent bases are exactly 24h apart, so at most one of the three can fall within a 60-minute-scale horizon and no double-counting is possible.
 //
-// directionId, when given, filters to just that direction -- some stop_ids
-// are (rarely, but confirmed live -- e.g. route 2 stop 40) served by both
-// directions of the same route, and without this a schedule-supplement
-// arrival or headsign from the *opposite* configured direction would leak
-// into the display. Omit it (undefined/null) to fall back to the old
-// unfiltered behavior -- used when the caller hasn't yet resolved which
-// directionId corresponds to the configured direction (see
-// septa-client.js's pollRoute), since that's the common case (a stop used
-// by only one direction) and unfiltered is still correct there.
+// directionId, when given, filters to just that direction
+// -- some stop_ids are (rarely, but confirmed live -- e.g. route 2 stop 40) served by both directions of the same route,
+// and without this a schedule-supplement arrival or headsign from the *opposite* configured direction would leak into the display.
+// Omit it (undefined/null) to fall back to the old unfiltered behavior
+// -- used when the caller hasn't yet resolved which directionId corresponds to the configured direction
+// (see septa-client.js's pollRoute), since that's the common case
+// (a stop used by only one direction) and unfiltered is still correct there.
 function getScheduledArrivals(cache, routeId, stopId, now, horizonMinutes, directionId) {
   const targetRouteId = String(routeId);
   const targetStopId = Number(stopId);
@@ -824,23 +734,19 @@ function getScheduledArrivals(cache, routeId, stopId, now, horizonMinutes, direc
   return results;
 }
 
-// Every distinct headsign scheduled to serve this route/stop at any point in
-// the day (not just the next horizonMinutes), most-frequently-scheduled
-// first (ties broken alphabetically, for a fully deterministic order) --
-// used to assign footnote markers to destinations consistently, rather than
-// by whichever trip happens to be next right now (that would make the same
-// destination's marker change from one poll to the next as different trips
-// rotate through) or by name (that would hand the friendliest, most
-// recognizable marker to whichever headsign's name happens to sort first,
-// even if it's a rarely-run pattern that a rider would see mismatched to it
-// most of the time). Frequency here just means "how many scheduled
-// stop_times entries this headsign has at this stop" -- unweighted by which
-// calendar days are active, same as the rest of this function already
-// ignores day-of-week -- which is a fine proxy for "how often a rider
-// actually sees this one".
+// Every distinct headsign scheduled to serve this route/stop at any point in the day
+// (not just the next horizonMinutes), most-frequently-scheduled first (ties broken alphabetically, for a fully deterministic order)
+// -- used to assign footnote markers to destinations consistently,
+// rather than by whichever trip happens to be next right now
+// (that would make the same destination's marker change from one poll to the next as different trips rotate through) or by name
+// (that would hand the friendliest, most recognizable marker to whichever headsign's name happens to sort first,
+// even if it's a rarely-run pattern that a rider would see mismatched to it most of the time).
+// Frequency here just means "how many scheduled stop_times entries this headsign has at this stop"
+// -- unweighted by which calendar days are active, same as the rest of this function already ignores day-of-week
+// -- which is a fine proxy for "how often a rider actually sees this one".
 //
-// directionId filtering: see getScheduledArrivals's doc comment -- same
-// reasoning, same rare-but-real cross-direction leak this guards against.
+// directionId filtering: see getScheduledArrivals's doc comment
+// -- same reasoning, same rare-but-real cross-direction leak this guards against.
 function getAllHeadsignsForStop(cache, routeId, stopId, directionId) {
   const targetRouteId = String(routeId);
   const targetStopId = Number(stopId);
@@ -855,61 +761,47 @@ function getAllHeadsignsForStop(cache, routeId, stopId, directionId) {
   return [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a) || a.localeCompare(b));
 }
 
-// Every distinct direction_id structurally scheduled to stop at
-// (routeId, stopId) -- independent of any live data, so it's available even
-// for a route whose live /trips/ feed never gives a usable direction_name
-// (confirmed live: route 63). Most stops are exclusive to one direction (a
-// street's two curbs get two different stop_ids), so this usually comes
-// back with exactly one entry -- which is enough, on its own, to know which
-// direction_id a configured stop means, with no direction_name needed at
-// all. It can come back with more than one (some stops really are served by
-// both directions of the same route, e.g. route 2 stop 40) or zero (nothing
-// in the schedule cache matches).
-// The route_ids from the last feed build that actually had trips, or null
-// for "this cache can't answer" -- either it predates the field (loaded from
-// a disk cache written by an older version) or it's malformed. Callers must
-// treat null as "don't know", never as "no routes exist": SEPTA's own
-// /routes/ endpoint is not usable for this (it omits real bus routes -- 41,
-// 51, 63, 71, 72, 76, 81, 82 and several OWL/BUS variants as of 2026-08-25 --
-// while listing 33 ids with no trips at all), which is why this exists.
+// Every distinct direction_id structurally scheduled to stop at (routeId, stopId)
+// -- independent of any live data, so it's available even for a route whose live /trips/ feed never gives a usable direction_name (confirmed live: route 63).
+// Most stops are exclusive to one direction (a street's two curbs get two different stop_ids),
+// so this usually comes back with exactly one entry
+// -- which is enough, on its own, to know which direction_id a configured stop means, with no direction_name needed at all.
+// It can come back with more than one (some stops really are served by both directions of the same route,
+// e.g. route 2 stop 40) or zero (nothing in the schedule cache matches).
+// The route_ids from the last feed build that actually had trips, or null for "this cache can't answer"
+// -- either it predates the field (loaded from a disk cache written by an older version) or it's malformed.
+// Callers must treat null as "don't know", never as "no routes exist": SEPTA's own /routes/ endpoint is not usable for this
+// (it omits real bus routes -- 41, 51, 63, 71, 72, 76, 81, 82 and several OWL/BUS variants as of 2026-08-25
+// -- while listing 33 ids with no trips at all), which is why this exists.
 function getScheduledRouteIds(cache) {
   if (!cache || !Array.isArray(cache.routeIdsWithTrips)) return null;
   return cache.routeIdsWithTrips.map(String);
 }
 
-// The stop_sequence at which tripId serves stopId on routeId, or null when
-// the cache has nothing for that trip. Callers MUST treat null as "no
-// information" rather than "doesn't serve the stop" -- the cache only knows
-// the feed it was built from, so a trip_id newer than the last daily refresh
-// legitimately isn't in it.
+// The stop_sequence at which tripId serves stopId on routeId, or null when the cache has nothing for that trip.
+// Callers MUST treat null as "no information" rather than "doesn't serve the stop"
+// -- the cache only knows the feed it was built from, so a trip_id newer than the last daily refresh legitimately isn't in it.
 //
-// Returns the LAST occurrence when a trip serves the same stop more than
-// once. That's rare but real: 405 of 2.1M (trip, stop) pairs in the
-// 2026-09-02 feed, e.g. route 95's "Willow Grove" trips hit stop 5909 at
-// sequences 38 and 40 either side of a Metroplex Shopping Center spur, and
-// LUCYGR's "Green Loop" opens at stop 28325 sequence 1 and closes at that
-// same stop at sequence 21, 34 minutes later. septa-client's isTripPastStop
-// uses this to decide whether a bus has already gone by, so taking the first
-// occurrence would write off a Green Loop bus as "past" 30th St for the
-// entire lap that ends there.
-// --- Inferred detour spans (see node_helper.js's inferred-detour handling) ---
+// Returns the LAST occurrence when a trip serves the same stop more than once.
+// That's rare but real: 405 of 2.1M (trip, stop) pairs in the 2026-09-02 feed,
+// e.g. route 95's "Willow Grove" trips hit stop 5909 at sequences 38 and 40 either side of a Metroplex Shopping Center spur,
+// and LUCYGR's "Green Loop" opens at stop 28325 sequence 1 and closes at that same stop at sequence 21,
+// 34 minutes later. septa-client's isTripPastStop uses this to decide whether a bus has already gone by,
+// so taking the first occurrence would write off a Green Loop bus as "past" 30th St for the entire lap that ends there. --- Inferred detour spans
+// (see node_helper.js's inferred-detour handling) ---
 
 // How many stops either side of the detected deviation to treat as affected,
-// covering for the fact that the deviation's endpoints are approximate (see
-// inferDetourSpanStops -- they're derived from turn coordinates, which don't
-// always sit where the bus actually leaves or rejoins the route).
+// covering for the fact that the deviation's endpoints are approximate
+// (see inferDetourSpanStops -- they're derived from turn coordinates,
+// which don't always sit where the bus actually leaves or rejoins the route).
 //
-// Measured against the 45 detours where SEPTA did list its skipped stops, the
-// span fully contains them in 26 cases at +/-0, 29 at +/-1, and 31 at +/-2;
-// past that it stops improving (31 at +/-3 and +/-5) while the span keeps
-// growing, from 9% of the route to 22%.
+// Measured against the 45 detours where SEPTA did list its skipped stops,
+// the span fully contains them in 26 cases at +/-0, 29 at +/-1, and 31 at +/-2;
+// past that it stops improving (31 at +/-3 and +/-5) while the span keeps growing, from 9% of the route to 22%.
 //
-// Set to 1 on Josh's call, 2026-09-02, after reading the actual stop list it
-// produced for the live route 17 southbound detour: +/-2 reached 19th &
-// Moravian and 19th & Federal, neither plausibly affected, and the tighter
-// margin still covers every stop that detour genuinely bypasses. Costs 2 of
-// 45 detours their full containment and cuts alerts from 6.0% to 4.9% of
-// stops on affected routes.
+// Set to 1 on Josh's call, 2026-09-02, after reading the actual stop list it produced for the live route 17 southbound detour: +/-2 reached 19th & Moravian and 19th & Federal, neither plausibly affected,
+// and the tighter margin still covers every stop that detour genuinely bypasses.
+// Costs 2 of 45 detours their full containment and cuts alerts from 6.0% to 4.9% of stops on affected routes.
 const DETOUR_SPAN_MARGIN_STOPS = 1;
 
 const EARTH_RADIUS_METERS = 6371000;
@@ -923,21 +815,19 @@ function haversineMeters(a, b) {
   return 2 * EARTH_RADIUS_METERS * Math.asin(Math.sqrt(h));
 }
 
-// Where a detour's turn-by-turn coordinates sit, in order. SEPTA gives these
-// in coordinate_detail_from_message keyed by the intersection text ("18th st.
-// and locust st."), and object key order follows the message, so the values
-// are already the path in travel order. Entries can carry a third element
-// (a stop name) and can be missing coordinates entirely, so both are guarded.
+// Where a detour's turn-by-turn coordinates sit, in order.
+// SEPTA gives these in coordinate_detail_from_message keyed by the intersection text ("18th st. and locust st."),
+// and object key order follows the message, so the values are already the path in travel order.
+// Entries can carry a third element (a stop name) and can be missing coordinates entirely, so both are guarded.
 function detourTurnPoints(detour) {
   const detail = detour && detour.coordinate_detail_from_message;
   if (!detail || typeof detail !== "object") return [];
   const points = [];
   for (const value of Object.values(detail)) {
     if (!Array.isArray(value) || value.length < 2) continue;
-    // Explicit null/empty guard before Number(): Number(null) and Number("")
-    // are both 0, which would place a missing coordinate at 0,0 and pull the
-    // nearest-stop search thousands of miles off. Mirrors septa-client.js's
-    // isUsableCoordinatePair.
+    // Explicit null/empty guard before Number(): Number(null) and Number("") are both 0,
+    // which would place a missing coordinate at 0,0 and pull the nearest-stop search thousands of miles off.
+    // Mirrors septa-client.js's isUsableCoordinatePair.
     if ([value[0], value[1]].some((part) => part === null || part === undefined || part === "")) continue;
     const lat = Number(value[0]);
     const lon = Number(value[1]);
@@ -946,19 +836,14 @@ function detourTurnPoints(detour) {
   return points;
 }
 
-// The stops a no-skipped-stops detour plausibly bypasses: everything between
-// where its path leaves the route and where it rejoins, widened by
-// DETOUR_SPAN_MARGIN_STOPS. Returns null when the detour can't be localized
-// at all, which the caller must treat as "say nothing" rather than "affects
-// nothing" -- an un-localizable detour is the common case (39 of 73 active
-// ones on 2026-09-02 carry no coordinates) and alerting route-wide for those
-// would drown the useful ones.
+// The stops a no-skipped-stops detour plausibly bypasses: everything between where its path leaves the route and where it rejoins, widened by DETOUR_SPAN_MARGIN_STOPS.
+// Returns null when the detour can't be localized at all, which the caller must treat as "say nothing" rather than "affects nothing"
+// -- an un-localizable detour is the common case
+// (39 of 73 active ones on 2026-09-02 carry no coordinates) and alerting route-wide for those would drown the useful ones.
 //
-// Null is returned when: the detour has fewer than two turn points; the cache
-// has no stop path for this route/direction (an older cache, or a route whose
-// trips weren't sampled); or the deviation resolves to a single stop, which
-// means the endpoints didn't separate and the "span" is an artifact rather
-// than a bypass.
+// Null is returned when: the detour has fewer than two turn points;
+// the cache has no stop path for this route/direction (an older cache, or a route whose trips weren't sampled);
+// or the deviation resolves to a single stop, which means the endpoints didn't separate and the "span" is an artifact rather than a bypass.
 function inferDetourSpanStops(cache, routeId, directionId, detour, margin = DETOUR_SPAN_MARGIN_STOPS) {
   const points = detourTurnPoints(detour);
   if (points.length < 2) return null;
@@ -1016,44 +901,36 @@ function getDirectionIdsForStop(cache, routeId, stopId) {
   return [...directionIds].sort();
 }
 
-// For a (routeId, stopId) that getDirectionIdsForStop found ambiguous (2
-// direction_ids -- e.g. a tunnel-portal terminus like T1-T5's 13th St, stop
-// 283, where one direction's patterns all end there and the other's all
-// start there), determines whether it's safe to resolve anyway without any
-// live direction_name -- which some routes (confirmed live: T1-T5, route 63,
-// B1/B2/B3/L1) never provide a usable one for, making the normal
-// direction_name fallback (see septa-client.js's filterGoodTrips) permanently
-// dead at a stop like this.
+// For a (routeId, stopId) that getDirectionIdsForStop found ambiguous
+// (2 direction_ids -- e.g. a tunnel-portal terminus like T1-T5's 13th St, stop 283,
+// where one direction's patterns all end there and the other's all start there),
+// determines whether it's safe to resolve anyway without any live direction_name
+// -- which some routes (confirmed live: T1-T5, route 63,
+// B1/B2/B3/L1) never provide a usable one for, making the normal direction_name fallback
+// (see septa-client.js's filterGoodTrips) permanently dead at a stop like this.
 //
-// A direction is "uniformly terminal" at this stop if every one of its
-// patterns that reaches stopId does so only as that pattern's own last stop
-// -- i.e. no rider could ever board here and continue somewhere on a trip
-// from that direction (patterns that don't reach the stop at all don't count
-// against it either way). When exactly one of the two directions is
-// uniformly terminal and the other isn't, the other is the one anyone
-// waiting at this stop actually wants -- returned here as a plain
-// direction_id, usable exactly like a normal single-direction stop's
-// structuralDirectionId (see node_helper.js's runCycle). The kept
-// direction doesn't need to itself be uniform in any way -- some of its
-// patterns can have the stop as their first stop, others as a plain
-// mid-route stop; either way every one of them is a real, boardable,
-// continuing trip.
+// A direction is "uniformly terminal" at this stop if every one of its patterns that reaches stopId does so only as that pattern's own last stop
+// -- i.e. no rider could ever board here and continue somewhere on a trip from that direction
+// (patterns that don't reach the stop at all don't count against it either way).
+// When exactly one of the two directions is uniformly terminal and the other isn't,
+// the other is the one anyone waiting at this stop actually wants
+// -- returned here as a plain direction_id, usable exactly like a normal single-direction stop's structuralDirectionId (see node_helper.js's runCycle).
+// The kept direction doesn't need to itself be uniform in any way
+// -- some of its patterns can have the stop as their first stop, others as a plain mid-route stop;
+// either way every one of them is a real, boardable, continuing trip.
 //
-// Returns null when the shape doesn't hold -- neither direction is uniformly
-// terminal, so both have at least one genuinely continuing pattern and there
-// is no direction safe to rule out. See README's "Known limitations" for why
-// that residual case (and its mirror -- wanting the terminal side on purpose)
-// is left unresolved rather than guessed at.
+// Returns null when the shape doesn't hold -- neither direction is uniformly terminal,
+// so both have at least one genuinely continuing pattern and there is no direction safe to rule out.
+// See README's "Known limitations" for why that residual case
+// (and its mirror -- wanting the terminal side on purpose) is left unresolved rather than guessed at.
 //
-// fileTexts must include an unfiltered-by-stopId "stop_times.txt" -- the
-// cache's own `entries` are pre-filtered to just the stops actually
-// configured (see buildScheduleCache), so they can't answer "does this trip
-// continue past here". This re-parses stop_times.txt for just this one
-// route's trips (same approach as buildRouteStopPatterns/find-stop.js, just
-// scoped to a single ambiguous route/stop instead of a whole route's
-// listing) -- only worth its cost (a full pass over the already-downloaded
-// feed text) because it's called rarely, once per daily schedule refresh,
-// only for routeId/stopId pairs already known to be ambiguous.
+// fileTexts must include an unfiltered-by-stopId "stop_times.txt"
+// -- the cache's own `entries` are pre-filtered to just the stops actually configured (see buildScheduleCache),
+// so they can't answer "does this trip continue past here".
+// This re-parses stop_times.txt for just this one route's trips
+// (same approach as buildRouteStopPatterns/find-stop.js, just scoped to a single ambiguous route/stop instead of a whole route's listing)
+// -- only worth its cost (a full pass over the already-downloaded feed text) because it's called rarely,
+// once per daily schedule refresh, only for routeId/stopId pairs already known to be ambiguous.
 function resolveTerminusExclusion(fileTexts, routeId, stopId, directionIds) {
   const trips = parseTripsForRoutes(fileTexts["trips.txt"], [routeId]);
   const allStopTimes = parseStopTimesForTrips(fileTexts["stop_times.txt"], trips);
@@ -1080,14 +957,12 @@ function resolveTerminusExclusion(fileTexts, routeId, stopId, directionIds) {
   return nonTerminal.length === 1 ? nonTerminal[0] : null;
 }
 
-// Precomputes resolveTerminusExclusion for every (routeId, stopId) pair
-// among the configured routeIds/stopIds that getDirectionIdsForStop finds
-// ambiguous -- cheap to check (entries is already small), expensive to
-// resolve (a full stop_times.txt pass per ambiguous route), so this only
-// pays that cost for pairs that actually need it. Returns a plain {
-// "routeId:stopId": keptDirectionId } map, persisted as part of the cache
-// (see buildScheduleCache) so it survives a disk-cache reload same as
-// everything else in it.
+// Precomputes resolveTerminusExclusion for every
+// (routeId, stopId) pair among the configured routeIds/stopIds that getDirectionIdsForStop finds ambiguous
+// -- cheap to check (entries is already small), expensive to resolve (a full stop_times.txt pass per ambiguous route),
+// so this only pays that cost for pairs that actually need it.
+// Returns a plain { "routeId:stopId": keptDirectionId } map, persisted as part of the cache
+// (see buildScheduleCache) so it survives a disk-cache reload same as everything else in it.
 function buildTerminusExclusions(fileTexts, entries, routeIds, stopIds) {
   const exclusions = {};
   for (const routeId of routeIds) {
@@ -1101,57 +976,45 @@ function buildTerminusExclusions(fileTexts, entries, routeIds, stopIds) {
   return exclusions;
 }
 
-// Looks up a precomputed resolveTerminusExclusion result -- null (not just
-// "falls through to the direction_name fallback") when this routeId/stopId
-// pair either isn't ambiguous or didn't resolve, so callers can treat it
-// exactly like any other "no structural signal" case.
+// Looks up a precomputed resolveTerminusExclusion result
+// -- null (not just "falls through to the direction_name fallback") when this routeId/stopId pair either isn't ambiguous or didn't resolve,
+// so callers can treat it exactly like any other "no structural signal" case.
 function getTerminusExclusionDirectionId(cache, routeId, stopId) {
   const key = `${routeId}:${stopId}`;
   return (cache.terminusExclusions && cache.terminusExclusions[key]) ?? null;
 }
 
-// Among a stop's ambiguous candidate direction_ids (see
-// getDirectionIdsForStop), the one directions.txt calls exactly `direction`
-// -- or null when zero or more than one candidate matches (a config typo, a
-// route directions.txt has no data for, or -- vanishingly unlikely -- two
-// direction_ids sharing one name all leave this unresolved rather than
-// guessing).
+// Among a stop's ambiguous candidate direction_ids (see getDirectionIdsForStop), the one directions.txt calls exactly `direction`
+// -- or null when zero or more than one candidate matches
+// (a config typo, a route directions.txt has no data for, or -- vanishingly unlikely
+// -- two direction_ids sharing one name all leave this unresolved rather than guessing).
 //
-// Unlike getTerminusExclusionDirectionId, this depends on what the caller
-// configured, not on the stop's own pattern shape -- so node_helper.js's
-// validateDirections must never use it to validate the very same
-// `direction` string it resolves from, which would make the check
-// tautological. It exists for node_helper.js's runCycle instead, where the
-// property that actually matters is resolving structuralDirectionId with no
-// live trip needed, regardless of which signal supplied it.
+// Unlike getTerminusExclusionDirectionId, this depends on what the caller configured, not on the stop's own pattern shape
+// -- so node_helper.js's validateDirections must never use it to validate the very same `direction` string it resolves from, which would make the check tautological.
+// It exists for node_helper.js's runCycle instead,
+// where the property that actually matters is resolving structuralDirectionId with no live trip needed, regardless of which signal supplied it.
 function resolveDirectionIdByName(cache, routeId, directionIds, direction) {
   if (typeof direction !== "string" || !direction) return null;
   const matches = directionIds.filter((id) => getDirectionName(cache, routeId, id) === direction);
   return matches.length === 1 ? matches[0] : null;
 }
 
-// Headsigns scheduled at (routeId, primaryStopId) that are never scheduled at
-// (routeId, secondaryStopId) -- i.e. destinations whose pattern structurally
-// never stops at the secondary stop (a short-turn trip, a trip that starts
-// further along the route than an earlier secondary stop, etc), independent
-// of any detour or of which side of the primary stop the secondary one is
-// on. Used to flag "this headsign doesn't stop at the secondary stop"
-// regardless of which specific trip happens to be next. directionId is
-// applied to both lookups -- see getScheduledArrivals's doc comment.
-// Headsigns that reach `secondaryStopId` *later in the trip* than
-// `primaryStopId` -- the static-schedule counterpart to septa-client.js's
-// tripReachesStopAfter, and order-aware for the same reason. A pattern that
-// serves the secondary stop only before the primary one is no use to someone
-// boarding at the primary stop, and on a looping route the same stop_id
-// appears on both sides of it (LUCYGR's "Green Loop" serves stop 28325 at
-// sequence 1 and again at sequence 21). Comparing headsign *sets*, as this
-// used to, counted the earlier visit and reported such a pattern as reaching
-// a stop the rider can't actually get to.
+// Headsigns scheduled at (routeId, primaryStopId) that are never scheduled at (routeId, secondaryStopId)
+// -- i.e. destinations whose pattern structurally never stops at the secondary stop
+// (a short-turn trip, a trip that starts further along the route than an earlier secondary stop, etc),
+// independent of any detour or of which side of the primary stop the secondary one is on.
+// Used to flag "this headsign doesn't stop at the secondary stop" regardless of which specific trip happens to be next.
+// directionId is applied to both lookups -- see getScheduledArrivals's doc comment.
+// Headsigns that reach `secondaryStopId` *later in the trip* than `primaryStopId`
+// -- the static-schedule counterpart to septa-client.js's tripReachesStopAfter, and order-aware for the same reason.
+// A pattern that serves the secondary stop only before the primary one is no use to someone boarding at the primary stop,
+// and on a looping route the same stop_id appears on both sides of it
+// (LUCYGR's "Green Loop" serves stop 28325 at sequence 1 and again at sequence 21).
+// Comparing headsign *sets*, as this used to, counted the earlier visit and reported such a pattern as reaching a stop the rider can't actually get to.
 //
-// A headsign qualifies if *any* of its trips manages it, and each trip is
-// judged on its own earliest primary visit against its own latest secondary
-// visit -- the most permissive reading, so a genuine connection is never
-// flagged as a skip.
+// A headsign qualifies if *any* of its trips manages it,
+// and each trip is judged on its own earliest primary visit against its own latest secondary visit
+// -- the most permissive reading, so a genuine connection is never flagged as a skip.
 function getHeadsignsReachingStopAfter(cache, routeId, primaryStopId, secondaryStopId, directionId) {
   const targetRouteId = String(routeId);
   const primary = Number(primaryStopId);
@@ -1190,26 +1053,23 @@ function getHeadsignsSkippingStop(cache, routeId, primaryStopId, secondaryStopId
 }
 
 // Downloads the live feed and extracts just the requested files as text.
-// I/O-only helper shared by fetchScheduleCache (the runtime cache's small
-// NEEDED_FILES set) and fetchRouteStopPatterns (find-stop.js's heavier,
-// stops.txt-inclusive one-off set) -- so both stay unit-testable without a
-// network call, and the runtime path's file list is untouched by the
-// script's needs.
-// --- Feed store: retain the last FEED_RETENTION_DAYS feed "days" ---
+// I/O-only helper shared by fetchScheduleCache (the runtime cache's small NEEDED_FILES set) and fetchRouteStopPatterns
+// (find-stop.js's heavier, stops.txt-inclusive one-off set)
+// -- so both stay unit-testable without a network call,
+// and the runtime path's file list is untouched by the script's needs. --- Feed store: retain the last FEED_RETENTION_DAYS feed "days" ---
 
-// A feed's *day* is the date prefix of its feed_version: "v202609060" ->
-// "20260906". SEPTA can republish the same service period more than once
-// (v202609060, v202609061, ...), and those are revisions of one feed rather
-// than separate ones -- retaining both would waste a slot and could evict the
-// outgoing feed that's still covering today, which is the whole thing we're
-// trying to keep.
+// A feed's *day* is the date prefix of its feed_version: "v202609060" -> "20260906".
+// SEPTA can republish the same service period more than once (v202609060, v202609061, ...),
+// and those are revisions of one feed rather than separate ones
+// -- retaining both would waste a slot and could evict the outgoing feed that's still covering today,
+// which is the whole thing we're trying to keep.
 function feedDayFromVersion(version) {
   const match = /^v?(\d{8})/.exec(String(version || "").trim());
   return match ? match[1] : null;
 }
 
-// feed_info.txt -> { version, day, feedStartDate, feedEndDate }, or null when
-// the file is absent or has no feed_version (retention then can't apply).
+// feed_info.txt -> { version, day, feedStartDate, feedEndDate },
+// or null when the file is absent or has no feed_version (retention then can't apply).
 function parseFeedInfo(text) {
   if (!text) return null;
   const rows = parseCsv(text, splitCsvLineSimple);
@@ -1224,9 +1084,8 @@ function parseFeedInfo(text) {
   };
 }
 
-// Which retained feeds survive once `incoming` arrives. Same day replaces (a
-// revision supersedes what it revises); otherwise the oldest days fall off
-// once more than maxDays remain.
+// Which retained feeds survive once `incoming` arrives.
+// Same day replaces (a revision supersedes what it revises); otherwise the oldest days fall off once more than maxDays remain.
 //
 // Up to two feeds are exempt from ageing out, one per protection reason
 // below -- each independently rescues at most the single newest feed
@@ -1248,9 +1107,8 @@ function parseFeedInfo(text) {
 // Omitting either disables that protection, which is only correct when the
 // caller genuinely has no date/directions.txt signal to protect.
 //
-// `evict` lists only *previously stored* entries whose zips should be
-// deleted -- if `incoming` itself is older than everything retained it simply
-// won't appear in `keep`, and the caller should not store it.
+// `evict` lists only *previously stored* entries whose zips should be deleted
+// -- if `incoming` itself is older than everything retained it simply won't appear in `keep`, and the caller should not store it.
 function planFeedRetention(entries, incoming, options = {}) {
   const maxDays = options.maxDays || FEED_RETENTION_DAYS;
   const withoutSameDay = entries.filter((entry) => entry.day !== incoming.day);
@@ -1275,10 +1133,10 @@ function planFeedRetention(entries, incoming, options = {}) {
   return { keep, evict: entries.filter((entry) => !keptVersions.has(entry.version)) };
 }
 
-// Does this feed have any service on `date`? Reads only calendar.txt and
-// calendar_dates.txt (tens to low thousands of rows) so a candidate feed can
-// be screened without the full-feed parse buildScheduleCache does. Same rule
-// as hasActiveServiceOn, which screens the already-built cache.
+// Does this feed have any service on `date`?
+// Reads only calendar.txt and calendar_dates.txt
+// (tens to low thousands of rows) so a candidate feed can be screened without the full-feed parse buildScheduleCache does.
+// Same rule as hasActiveServiceOn, which screens the already-built cache.
 function feedHasServiceOn(fileTexts, date) {
   const calendar = parseCalendar(fileTexts["calendar.txt"] || "");
   const exceptions = parseCalendarDates(fileTexts["calendar_dates.txt"] || "");
@@ -1307,9 +1165,8 @@ function saveFeedIndex(entries, feedsDir = FEEDS_DIR) {
   fs.writeFileSync(path.join(feedsDir, "index.json"), JSON.stringify(entries, null, 2));
 }
 
-// `options.optional` lists names that are simply left out of the returned
-// fileTexts (rather than throwing) when the feed doesn't have them -- see
-// fetchRouteStopPatterns's use for DIRECTIONS_FILE.
+// `options.optional` lists names that are simply left out of the returned fileTexts (rather than throwing) when the feed doesn't have them
+// -- see fetchRouteStopPatterns's use for DIRECTIONS_FILE.
 async function downloadGtfsFiles(fileNames, fetchImpl = fetch, options = {}) {
   const optional = new Set(options.optional || []);
   const response = await fetchImpl(GTFS_URL);
@@ -1349,12 +1206,12 @@ function readSelectionTexts(buffer) {
   return texts;
 }
 
-// Downloads the live feed unless the server says it's unchanged. SEPTA's zip
-// serves an ETag and answers If-None-Match with a bare 304 (verified
-// 2026-09-02), which matters because every MagicMirror restart triggers a
-// refresh 60s later -- six restarts in half an hour otherwise means six 21MB
-// downloads. Last-Modified is deliberately not used: the freshly published
-// v202609060 reported 2026-08-28, i.e. when it was built, not when it went up.
+// Downloads the live feed unless the server says it's unchanged.
+// SEPTA's zip serves an ETag and answers If-None-Match with a bare 304 (verified 2026-09-02),
+// which matters because every MagicMirror restart triggers a refresh 60s later
+// -- six restarts in half an hour otherwise means six 21MB downloads.
+// Last-Modified is deliberately not used: the freshly published v202609060 reported 2026-08-28,
+// i.e. when it was built, not when it went up.
 async function downloadFeed(fetchImpl = fetch, etag = null) {
   const options = etag ? { headers: { "If-None-Match": etag } } : undefined;
   const response = await fetchImpl(GTFS_URL, options);
@@ -1367,28 +1224,26 @@ async function downloadFeed(fetchImpl = fetch, etag = null) {
   return { buffer, etag: responseEtag };
 }
 
-// Fetches the live feed and folds it into the retained set. Returns the index
-// as it now stands. A feed with no readable feed_version can't take part in
-// retention (there's nothing to key a day on), so it's used for this refresh
-// but not stored -- rather than being stored under a synthetic id that would
-// later masquerade as a real feed day.
+// Fetches the live feed and folds it into the retained set.
+// Returns the index as it now stands.
+// A feed with no readable feed_version can't take part in retention (there's nothing to key a day on),
+// so it's used for this refresh but not stored
+// -- rather than being stored under a synthetic id that would later masquerade as a real feed day.
 async function refreshFeedStore(fetchImpl = fetch, feedsDir = FEEDS_DIR, date = new Date()) {
   const entries = loadFeedIndex(feedsDir);
   const newest = orderFeedsNewestFirst(entries)[0] || null;
   const { unchanged, buffer, etag } = await downloadFeed(fetchImpl, newest ? newest.etag : null);
-  // Returning here means retention -- and therefore eviction -- is evaluated
-  // only when SEPTA actually publishes something, not on the daily refresh
-  // (which normally 304s) and not at a service-day rollover (which only
-  // re-selects; see rebuildScheduleCacheForDate). That laziness is
-  // deliberate, not an oversight of the early return: eviction deletes the
-  // zip, and an evicted feed is unrecoverable because SEPTA serves no
-  // history. So a feed held back by the coverage rule can outlive its
-  // usefulness by days -- kept until something actually needs its slot,
-  // which is also exactly when it's still useful to
-  // scripts/compare-feeds.js. The cost is one spare ~21MB zip.
+  // Returning here means retention -- and therefore eviction
+  // -- is evaluated only when SEPTA actually publishes something,
+  // not on the daily refresh (which normally 304s) and not at a service-day rollover
+  // (which only re-selects; see rebuildScheduleCacheForDate).
+  // That laziness is deliberate, not an oversight of the early return: eviction deletes the zip,
+  // and an evicted feed is unrecoverable because SEPTA serves no history.
+  // So a feed held back by the coverage rule can outlive its usefulness by days
+  // -- kept until something actually needs its slot, which is also exactly when it's still useful to scripts/compare-feeds.js.
+  // The cost is one spare ~21MB zip.
   //
-  // If eviction is ever made eager, note that it would start destroying
-  // irreplaceable feeds sooner, which is the trade being made.
+  // If eviction is ever made eager, note that it would start destroying irreplaceable feeds sooner, which is the trade being made.
   if (unchanged) return { entries, downloaded: false, transientBuffer: null };
 
   const incomingTexts = readSelectionTexts(buffer);
@@ -1397,12 +1252,10 @@ async function refreshFeedStore(fetchImpl = fetch, feedsDir = FEEDS_DIR, date = 
 
   const incoming = { ...meta, etag: etag || null, downloadedAt: Date.now() };
 
-  // Which feeds can answer for `date`, and which have a directions.txt, so
-  // retention knows what it must not throw away. Both are read straight from
-  // each entry's own already-small selection texts (see FEED_SELECTION_FILES
-  // and readSelectionTexts) -- no extra zip read beyond what the date check
-  // already required -- and only on a cycle that actually downloaded
-  // something, so this costs nothing on the common unchanged-feed path.
+  // Which feeds can answer for `date`, and which have a directions.txt, so retention knows what it must not throw away.
+  // Both are read straight from each entry's own already-small selection texts (see FEED_SELECTION_FILES and readSelectionTexts)
+  // -- no extra zip read beyond what the date check already required
+  // -- and only on a cycle that actually downloaded something, so this costs nothing on the common unchanged-feed path.
   const coveringVersions = [];
   const hasDirectionsVersions = [];
   for (const entry of entries) {
@@ -1436,8 +1289,8 @@ async function refreshFeedStore(fetchImpl = fetch, feedsDir = FEEDS_DIR, date = 
   return { entries: keep, downloaded: true, transientBuffer: null, stored: incoming, evicted: evict };
 }
 
-// The newest retained feed that actually has service on `date`, screened with
-// calendar.txt/calendar_dates.txt rather than feed_info's declared date range
+// The newest retained feed that actually has service on `date`,
+// screened with calendar.txt/calendar_dates.txt rather than feed_info's declared date range
 // -- the declared range says what a feed is *for*, not what it can answer.
 // Returns null when nothing retained covers the date.
 function selectFeedForDate(entries, date, feedsDir = FEEDS_DIR) {
@@ -1463,8 +1316,7 @@ function buildCacheFromBuffer(buffer, routeIds, stopIds) {
   }
   const feedInfo = zipEntries.get(FEED_INFO_FILE);
   if (feedInfo) fileTexts[FEED_INFO_FILE] = feedInfo.toString("utf8");
-  // Optional, same as feedInfo -- see DIRECTIONS_FILE's own comment for why
-  // this must never join the NEEDED_FILES throw-if-missing loop above.
+  // Optional, same as feedInfo -- see DIRECTIONS_FILE's own comment for why this must never join the NEEDED_FILES throw-if-missing loop above.
   const directions = zipEntries.get(DIRECTIONS_FILE);
   if (directions) fileTexts[DIRECTIONS_FILE] = directions.toString("utf8");
   // Optional for the same reason as directions.txt above.
@@ -1475,15 +1327,12 @@ function buildCacheFromBuffer(buffer, routeIds, stopIds) {
   return buildScheduleCache(fileTexts, routeIds, stopIds);
 }
 
-// Refreshes the retained feeds, then builds the runtime cache from whichever
-// retained feed covers today -- not necessarily the newest one. SEPTA
-// republishes the next service period's feed several days before it starts
-// (see FEED_RETENTION_DAYS), and during that window the newest feed answers
-// nothing while the previous one still answers everything.
+// Refreshes the retained feeds, then builds the runtime cache from whichever retained feed covers today -- not necessarily the newest one.
+// SEPTA republishes the next service period's feed several days before it starts (see FEED_RETENTION_DAYS),
+// and during that window the newest feed answers nothing while the previous one still answers everything.
 //
-// Falls back to the newest retained feed when none covers today, which
-// reproduces the old behavior: node_helper then reports the supplement as
-// unavailable and the display drops to live-only data.
+// Falls back to the newest retained feed when none covers today,
+// which reproduces the old behavior: node_helper then reports the supplement as unavailable and the display drops to live-only data.
 async function fetchScheduleCache(routeIds, stopIds, fetchImpl = fetch, options = {}) {
   const feedsDir = options.feedsDir || FEEDS_DIR;
   const date = options.now || new Date();
@@ -1499,10 +1348,9 @@ async function fetchScheduleCache(routeIds, stopIds, fetchImpl = fetch, options 
   return buildCacheFromBuffer(fs.readFileSync(feedZipPath(newest.version, feedsDir)), routeIds, stopIds);
 }
 
-// Rebuilds from the retained feeds without touching the network -- used at a
-// service-day rollover, when the feed that was answering yesterday stops
-// covering today and a different retained feed takes over. Returns null when
-// nothing retained covers the date, leaving the caller's current cache alone.
+// Rebuilds from the retained feeds without touching the network
+// -- used at a service-day rollover, when the feed that was answering yesterday stops covering today and a different retained feed takes over.
+// Returns null when nothing retained covers the date, leaving the caller's current cache alone.
 function rebuildScheduleCacheForDate(routeIds, stopIds, date, feedsDir = FEEDS_DIR) {
   const selected = selectFeedForDate(loadFeedIndex(feedsDir), date, feedsDir);
   if (!selected) return null;
@@ -1511,29 +1359,24 @@ function rebuildScheduleCacheForDate(routeIds, stopIds, date, feedsDir = FEEDS_D
 
 const ROUTE_STOP_PATTERN_FILES = ["trips.txt", "stop_times.txt", "stops.txt"];
 
-// Downloads just enough of the feed to list every scheduled stop pattern for
-// one route, plus that route's direction names (see buildRouteStopPatterns
-// and parseDirectionNames) -- used only by scripts/find-stop.js. The raw
-// downloaded files are cached to disk (unfiltered by routeId, so a later run
-// for a *different* route within the cache window benefits too, not just a
-// repeat of the same one) for FEED_CACHE_MAX_AGE_MS -- only the actual
-// network download/decompress is skipped on a cache hit.
-// buildRouteStopPatterns' per-route filtering still runs every time
-// regardless of cache status, and isn't free -- measured ~800ms against a
-// real feed (stop_times.txt alone is over 100MB) -- so callers that want to
-// show a "this may take a moment" message should print it before calling
-// this, not after.
+// Downloads just enough of the feed to list every scheduled stop pattern for one route, plus that route's direction names
+// (see buildRouteStopPatterns and parseDirectionNames) -- used only by scripts/find-stop.js.
+// The raw downloaded files are cached to disk (unfiltered by routeId,
+// so a later run for a *different* route within the cache window benefits too, not just a repeat of the same one) for FEED_CACHE_MAX_AGE_MS
+// -- only the actual network download/decompress is skipped on a cache hit.
+// buildRouteStopPatterns' per-route filtering still runs every time regardless of cache status, and isn't free
+// -- measured ~800ms against a real feed (stop_times.txt alone is over 100MB)
+// -- so callers that want to show a "this may take a moment" message should print it before calling this, not after.
 //
-// DIRECTIONS_FILE is requested alongside ROUTE_STOP_PATTERN_FILES but marked
-// optional -- a feed without it still returns every stop pattern, just with
-// an empty directionNames map (find-stop.js's existing "Unknown Direction"
-// fallback already covers that), rather than the whole command failing.
+// DIRECTIONS_FILE is requested alongside ROUTE_STOP_PATTERN_FILES but marked optional
+// -- a feed without it still returns every stop pattern, just with an empty directionNames map
+// (find-stop.js's existing "Unknown Direction" fallback already covers that), rather than the whole command failing.
 //
 // preloadedCache lets a caller that already called loadCacheFromDisk itself
-// (e.g. find-stop.js, to decide what status message to print before this
-// runs) pass that result straight through, instead of this function reading
-// and JSON-parsing the same (potentially 100MB+) cache file from disk all
-// over again -- measured ~200ms on its own, pure waste when paid twice.
+// (e.g. find-stop.js, to decide what status message to print before this runs) pass that result straight through,
+// instead of this function reading and JSON-parsing the same
+// (potentially 100MB+) cache file from disk all over again
+// -- measured ~200ms on its own, pure waste when paid twice.
 async function fetchRouteStopPatterns(routeId, fetchImpl = fetch, cachePath = FEED_CACHE_PATH, preloadedCache) {
   const cached = preloadedCache !== undefined ? preloadedCache : loadCacheFromDisk(cachePath);
   const cacheFresh = Boolean(cached && Date.now() - cached.downloadedAt < FEED_CACHE_MAX_AGE_MS);
@@ -1547,9 +1390,8 @@ async function fetchRouteStopPatterns(routeId, fetchImpl = fetch, cachePath = FE
   };
 }
 
-// Lets the cache survive a MagicMirror restart without redownloading the
-// feed -- returns null on any read/parse problem (missing file, corrupt
-// JSON, etc), which callers treat the same as "no cache yet".
+// Lets the cache survive a MagicMirror restart without redownloading the feed
+// -- returns null on any read/parse problem (missing file, corrupt JSON, etc), which callers treat the same as "no cache yet".
 function loadCacheFromDisk(cachePath = DEFAULT_CACHE_PATH) {
   try {
     return JSON.parse(fs.readFileSync(cachePath, "utf8"));
