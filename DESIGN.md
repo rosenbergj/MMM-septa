@@ -11,22 +11,21 @@ begins -- so for a few days the only feed you can download has no service for
 today, and the module falls back to "Realtime data only; schedule data
 unavailable".
 
-To survive that, the module keeps the last two feeds it has seen in `feeds/`
-next to the module (about 21MB each, created automatically) and builds its
-schedule from **the newest retained feed that actually covers today** -- which
-during a changeover is the older one. It re-checks at each service-day
-rollover, so the switch to the new feed happens on its own. The feed is only
-re-downloaded when SEPTA's copy actually changes.
+To survive that, the module keeps every feed it has seen in `feeds/` next to
+the module (about 21MB each, created automatically), as a historical record,
+and builds its schedule from **the newest retained feed that actually covers
+today** -- which during a changeover is an older one. It re-checks at each
+service-day rollover, so the switch to the new feed happens on its own. The
+feed is only re-downloaded when SEPTA's copy actually changes.
 
-A feed is never discarded while it's the only retained one covering today, so
-if SEPTA publishes two future-dated feeds in a row the module holds three
-until it no longer needs the oldest. The same protection separately applies
-to `directions.txt`, which supplies direction names everywhere the module needs
-them (see "Resolving direction at a two-direction stop" below): the newest feed
-that has one is held back indefinitely if SEPTA ever ships a feed without it,
-rather than aging out on the usual two-day schedule.
+Feeds are kept one per feed day, the date prefix of `feed_version`
+(`v202609060` is day 20260906). When SEPTA republishes a revision of the same
+day (`v202609061`), the revision replaces the earlier one. Nothing else is
+ever deleted, so `feeds/` grows by one zip each time SEPTA publishes a new
+feed day; prune it by hand (zips and their `feeds/index.json` entries) if disk
+space ever matters.
 
-If both retained feeds are newer than today, the display drops to live-only
+If every retained feed is newer than today, the display drops to live-only
 data and logs why.
 
 `node scripts/compare-feeds.js <old.zip> <new.zip>` prints what changed
@@ -220,8 +219,8 @@ rewrapping the block.
   couple of seconds.
 - `scripts/register-feed.js` — puts a banked `google_bus.zip` back into the
   feed store, reading its real `feed_version` from `feed_info.txt`. It never
-  deletes a zip, and refuses rather than push an existing feed out of the
-  retained set.
+  deletes a zip, and refuses rather than replace another revision of the same
+  feed day.
 - `scripts/measure-detour-inference.js` — scores detour inference against the
   detours where SEPTA *did* list the skipped stops, reporting both containment
   and span width, since containment alone can be gamed by a wider span.

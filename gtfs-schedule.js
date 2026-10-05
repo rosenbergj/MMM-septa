@@ -28,7 +28,7 @@ const FEED_INFO_FILE = "feed_info.txt";
 // Also read separately from NEEDED_FILES and tolerated as missing, same as FEED_INFO_FILE
 // -- a feed without it is still fully usable, just with no direction names resolvable (see buildScheduleCache's directionNames).
 // Never add this to NEEDED_FILES: that would turn a currently-optional extension into a hard requirement,
-// and a future feed dropping it (the exact scenario planFeedRetention's hasDirectionsVersions rescue exists for) would then fail the *entire* schedule cache build instead of just direction names.
+// and a future feed dropping it would then fail the *entire* schedule cache build instead of just direction names.
 const DIRECTIONS_FILE = "directions.txt";
 // Optional in exactly the same way as DIRECTIONS_FILE,
 // and never in NEEDED_FILES for the same reason: a feed without it still builds a normal cache,
@@ -37,22 +37,10 @@ const ROUTES_FILE = "routes.txt";
 // Optional in the same way, and also non-standard GTFS: a feed without it still builds a normal cache,
 // just with no inferred detour spans (see parseRouteStopPaths).
 const ROUTE_STOPS_FILE = "route_stops.txt";
-// Enough of a feed to decide whether to keep it, whether it covers a given date,
-// and whether it has directions.txt, without the 100MB stop_times.txt scan a full parse needs. directions.txt itself is tiny (tens of KB).
-const FEED_SELECTION_FILES = [FEED_INFO_FILE, "calendar.txt", "calendar_dates.txt", DIRECTIONS_FILE];
+// Enough of a feed to identify it and decide whether it covers a given date, without the 100MB stop_times.txt scan a full parse needs.
+const FEED_SELECTION_FILES = [FEED_INFO_FILE, "calendar.txt", "calendar_dates.txt"];
 const FEEDS_DIR = path.join(__dirname, "feeds");
 const FEED_INDEX_PATH = path.join(FEEDS_DIR, "index.json");
-// How many distinct feed *days* to retain by age -- see feedDayFromVersion.
-// Two is the minimum that survives SEPTA's habit of publishing the next service period's feed days early: the incoming one,
-// plus the outgoing one that's still the only thing covering today.
-// SEPTA serves no feed history, so an evicted feed is gone for good.
-//
-// This is a floor, not a cap.
-// planFeedRetention will hold a third feed rather than evict the last one covering the current date
-// -- without that, two forward-dated feeds arriving back to back
-// (holding 20260823 and 20260906, then receiving 20260907 on Sept 3) would evict the only feed answering for today and reopen the exact gap this exists to close.
-// The store falls back to two days on its own once a retained feed within the window covers the date again.
-const FEED_RETENTION_DAYS = 2;
 const DOW_KEYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]; // index by Date#getDay()
 
 // --- ZIP reading (central directory only; plain 32-bit fields, no ZIP64
@@ -1015,13 +1003,11 @@ function getHeadsignsSkippingStop(cache, routeId, primaryStopId, secondaryStopId
 // I/O-only helper shared by fetchScheduleCache (the runtime cache's small NEEDED_FILES set) and fetchRouteStopPatterns
 // (find-stop.js's heavier, stops.txt-inclusive one-off set)
 // -- so both stay unit-testable without a network call,
-// and the runtime path's file list is untouched by the script's needs. --- Feed store: retain the last FEED_RETENTION_DAYS feed "days" ---
+// and the runtime path's file list is untouched by the script's needs. --- Feed store: retain one feed per feed "day", forever ---
 
 // A feed's *day* is the date prefix of its feed_version: "v202609060" -> "20260906".
 // SEPTA can republish the same service period more than once (v202609060, v202609061, ...),
-// and those are revisions of one feed rather than separate ones
-// -- retaining both would waste a slot and could evict the outgoing feed that's still covering today,
-// which is the whole thing we're trying to keep.
+// and those are revisions of one feed rather than separate ones, so only the latest revision of each day is kept.
 function feedDayFromVersion(version) {
   const match = /^v?(\d{8})/.exec(String(version || "").trim());
   return match ? match[1] : null;
@@ -1044,45 +1030,12 @@ function parseFeedInfo(text) {
 }
 
 // Which retained feeds survive once `incoming` arrives.
-// Same day replaces; otherwise the oldest days fall off once more than maxDays remain.
-//
-// Two feeds are exempt from ageing out, one per reason below.
-// Each rescues at most the single newest feed matching its own reason, so one feed protected for both reasons still only occupies one slot.
-//
-//   - `options.coveringVersions`: if the age rule would leave nothing covering
-//     the current date, the newest feed that does cover it is held back, and
-//     the store carries an extra feed until it isn't needed. Callers derive
-//     this from each feed's calendars -- see feedHasServiceOn.
-//
-//   - `options.hasDirectionsVersions`: if the age rule would leave nothing
-//     carrying directions.txt, the newest feed that has one is held back
-//     *permanently*. Unlike date coverage, a feed's directions.txt never
-//     "becomes covered" by a newer feed, so once this triggers it keeps
-//     triggering for as long as newer feeds lack the file.
-//
-// Omitting either disables that protection, correct only when the caller has no such signal to protect.
+// Every feed day is kept forever, as a historical record: SEPTA serves no feed history, so a deleted feed is gone for good.
+// The only thing ever evicted is an earlier revision of incoming's own day, which incoming replaces.
 //
 // `evict` lists only previously stored entries whose zips should be deleted.
-// An `incoming` older than everything retained simply won't appear in `keep`, and the caller should not store it.
-function planFeedRetention(entries, incoming, options = {}) {
-  const maxDays = options.maxDays || FEED_RETENTION_DAYS;
-  const withoutSameDay = entries.filter((entry) => entry.day !== incoming.day);
-  const merged = [...withoutSameDay, incoming];
-  const days = [...new Set(merged.map((entry) => entry.day))].sort();
-  const keepDays = new Set(days.slice(-maxDays));
-
-  let keep = merged.filter((entry) => keepDays.has(entry.day));
-
-  const rescueBy = (matchingVersions) => {
-    const matching = new Set(matchingVersions || []);
-    if (!matching.size || keep.some((entry) => matching.has(entry.version))) return;
-    // Newest, so the store doesn't end up hoarding the oldest feed it has.
-    const rescued = orderFeedsNewestFirst(merged.filter((entry) => matching.has(entry.version)))[0];
-    if (rescued) keep = [...keep, rescued];
-  };
-  rescueBy(options.coveringVersions);
-  rescueBy(options.hasDirectionsVersions);
-
+function planFeedRetention(entries, incoming) {
+  const keep = [...entries.filter((entry) => entry.day !== incoming.day), incoming];
   keep.sort((a, b) => (a.day < b.day ? -1 : 1));
   const keptVersions = new Set(keep.map((entry) => entry.version));
   return { keep, evict: entries.filter((entry) => !keptVersions.has(entry.version)) };
@@ -1184,21 +1137,10 @@ async function downloadFeed(fetchImpl = fetch, etag = null) {
 // A feed with no readable feed_version can't take part in retention (there's nothing to key a day on),
 // so it's used for this refresh but not stored
 // -- rather than being stored under a synthetic id that would later masquerade as a real feed day.
-async function refreshFeedStore(fetchImpl = fetch, feedsDir = FEEDS_DIR, date = new Date()) {
+async function refreshFeedStore(fetchImpl = fetch, feedsDir = FEEDS_DIR) {
   const entries = loadFeedIndex(feedsDir);
   const newest = orderFeedsNewestFirst(entries)[0] || null;
   const { unchanged, buffer, etag } = await downloadFeed(fetchImpl, newest ? newest.etag : null);
-  // Returning here means retention -- and therefore eviction
-  // -- is evaluated only when SEPTA actually publishes something,
-  // not on the daily refresh (which normally 304s) and not at a service-day rollover
-  // (which only re-selects; see rebuildScheduleCacheForDate).
-  // That laziness is deliberate, not an oversight of the early return: eviction deletes the zip,
-  // and an evicted feed is unrecoverable because SEPTA serves no history.
-  // So a feed held back by the coverage rule can outlive its usefulness by days
-  // -- kept until something actually needs its slot, which is also exactly when it's still useful to scripts/compare-feeds.js.
-  // The cost is one spare ~21MB zip.
-  //
-  // If eviction is ever made eager, note that it would start destroying irreplaceable feeds sooner, which is the trade being made.
   if (unchanged) return { entries, downloaded: false, transientBuffer: null };
 
   const incomingTexts = readSelectionTexts(buffer);
@@ -1207,30 +1149,7 @@ async function refreshFeedStore(fetchImpl = fetch, feedsDir = FEEDS_DIR, date = 
 
   const incoming = { ...meta, etag: etag || null, downloadedAt: Date.now() };
 
-  // Which feeds can answer for `date`, and which have a directions.txt, so retention knows what it must not throw away.
-  // Both are read straight from each entry's own already-small selection texts (see FEED_SELECTION_FILES and readSelectionTexts)
-  // -- no extra zip read beyond what the date check already required
-  // -- and only on a cycle that actually downloaded something, so this costs nothing on the common unchanged-feed path.
-  const coveringVersions = [];
-  const hasDirectionsVersions = [];
-  for (const entry of entries) {
-    try {
-      const texts = readSelectionTexts(fs.readFileSync(feedZipPath(entry.version, feedsDir)));
-      if (feedHasServiceOn(texts, date)) coveringVersions.push(entry.version);
-      if (texts[DIRECTIONS_FILE]) hasDirectionsVersions.push(entry.version);
-    } catch {
-      // indexed but unreadable -- it can't be the feed we protect
-    }
-  }
-  if (feedHasServiceOn(incomingTexts, date)) coveringVersions.push(incoming.version);
-  if (incomingTexts[DIRECTIONS_FILE]) hasDirectionsVersions.push(incoming.version);
-
-  const { keep, evict } = planFeedRetention(entries, incoming, { coveringVersions, hasDirectionsVersions });
-  if (!keep.some((entry) => entry.version === incoming.version)) {
-    // Older than everything already retained -- don't displace newer feeds.
-    return { entries, downloaded: true, transientBuffer: buffer };
-  }
-
+  const { keep, evict } = planFeedRetention(entries, incoming);
   fs.mkdirSync(feedsDir, { recursive: true });
   fs.writeFileSync(feedZipPath(incoming.version, feedsDir), buffer);
   for (const entry of evict) {
@@ -1283,7 +1202,7 @@ function buildCacheFromBuffer(buffer, routeIds, stopIds) {
 }
 
 // Refreshes the retained feeds, then builds the runtime cache from whichever retained feed covers today -- not necessarily the newest one.
-// SEPTA republishes the next service period's feed several days before it starts (see FEED_RETENTION_DAYS),
+// SEPTA republishes the next service period's feed several days before it starts,
 // and during that window the newest feed answers nothing while the previous one still answers everything.
 //
 // Falls back to the newest retained feed when none covers today;
@@ -1291,7 +1210,7 @@ function buildCacheFromBuffer(buffer, routeIds, stopIds) {
 async function fetchScheduleCache(routeIds, stopIds, fetchImpl = fetch, options = {}) {
   const feedsDir = options.feedsDir || FEEDS_DIR;
   const date = options.now || new Date();
-  const { entries, transientBuffer } = await refreshFeedStore(fetchImpl, feedsDir, date);
+  const { entries, transientBuffer } = await refreshFeedStore(fetchImpl, feedsDir);
 
   if (transientBuffer) return buildCacheFromBuffer(transientBuffer, routeIds, stopIds);
 

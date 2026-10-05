@@ -14,7 +14,7 @@
 // and adds it to feeds/index.json under the normal retention rules.
 //
 // Deliberately conservative: it never deletes a zip.
-// If registering would push an existing feed out of the retained set,
+// If registering would replace another revision of the same feed day,
 // it stops and says so rather than silently discarding something SEPTA can no longer serve.
 
 const fs = require("fs");
@@ -63,13 +63,6 @@ function main() {
 
   const incoming = { ...meta, etag: null, downloadedAt: Date.now(), registeredManually: true };
   const { keep, evict } = planFeedRetention(existing, incoming);
-
-  if (!keep.some((entry) => entry.version === meta.version)) {
-    fail(
-      `${meta.version} is older than every retained feed ` +
-        `(${existing.map((e) => e.version).join(", ")}), so registering it would have no effect.`
-    );
-  }
   if (evict.length) {
     fail(
       `registering ${meta.version} would drop ${evict.map((e) => e.version).join(", ")} from the retained set. ` +

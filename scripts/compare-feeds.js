@@ -4,8 +4,8 @@
 // Diffs two banked SEPTA GTFS feeds and prints what changed between them.
 //
 // SEPTA serves exactly one google_bus.zip and keeps no history,
-// so this is only possible because gtfs-schedule.js retains the last few feed "days" (see FEED_RETENTION_DAYS).
-// Point it at any two zips -- typically the two in feeds/, or one of those against a copy banked before a schedule change.
+// so this is only possible because gtfs-schedule.js retains every feed "day" it has downloaded (see planFeedRetention).
+// Point it at any two zips -- typically two in feeds/, or one of those against a copy banked elsewhere.
 //
 // Usage:
 //   node scripts/compare-feeds.js <old.zip> <new.zip> [--route 17] [--days 14]
@@ -220,10 +220,8 @@ function main() {
     );
   }
 
-  // directions.txt is what find-stop.js's direction names and gtfs-schedule.js's permanent-retention rescue
-  // (see planFeedRetention's hasDirectionsVersions) both depend on
-  // -- a feed that drops it entirely is the exact scenario that rescue exists for,
-  // so that's called out as a warning rather than folded silently into the added/removed lists below.
+  // directions.txt is what every direction name, in find-stop.js and on the display, depends on
+  // -- so a feed that drops it entirely is called out as a warning rather than folded silently into the added/removed lists below.
   console.log("\n" + "-".repeat(72) + "\nDIRECTIONS.txt");
   if (!oldFeed.directionsPresent && !newFeed.directionsPresent) {
     console.log("  not present in either feed");
