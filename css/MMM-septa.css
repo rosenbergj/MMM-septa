@@ -135,15 +135,10 @@
   color: #e0a050;
 }
 
+/* Scales everything in a stale row by the same factor, so each part keeps
+   its usual brightness relative to the others: the route number, the
+   dimmer direction, and the even dimmer untracked arrivals. */
 .septa-table .septa-row.septa-stale .septa-label,
 .septa-table .septa-row.septa-stale .septa-arrivals {
-  opacity: 0.5;
-}
-
-/* A stale row's arrivals are mostly schedule fallback, so nearly all of them
-   are untracked. Their own 0.6 would multiply with the row's 0.5 down to
-   0.3; the row dimming alone already says "not live", and at 0.5 it stays
-   a step below an ordinary untracked arrival's 0.6. */
-.septa-table .septa-row.septa-stale .septa-arrivals .septa-untracked {
-  opacity: 1;
+  opacity: 0.8;
 }
