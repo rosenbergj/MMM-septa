@@ -572,6 +572,17 @@ function mergeScheduledArrivals(trackedEtas, scheduledCandidates) {
   return [...trackedEtas, ...survivors].sort((a, b) => a.eta - b.eta);
 }
 
+// What a route shows once its live data has gone stale (see computeIsFresh) and polls keep failing.
+// The last live arrivals are frozen at whatever SEPTA said minutes ago, and would otherwise count down to "0m" one by one.
+// With a schedule available they're replaced by it outright, every arrival tagged tracked:false
+// -- the whole row is a guess now, including trips that were GPS-tracked before the outage.
+// scheduledCandidates is null when the schedule doesn't apply (supplement off, no cache yet, or a detour in effect);
+// then the best left is whichever of the last live arrivals haven't passed yet.
+function staleFallbackEtas(lastEtas, scheduledCandidates, nowSeconds) {
+  if (scheduledCandidates) return scheduledCandidates.map((candidate) => ({ ...candidate, tracked: false }));
+  return lastEtas.filter((arrival) => arrival.eta >= nowSeconds);
+}
+
 module.exports = {
   BASE_URL,
   fetchDetours,
@@ -595,4 +606,5 @@ module.exports = {
   makeCachingFetch,
   pollRoute,
   mergeScheduledArrivals,
+  staleFallbackEtas,
 };

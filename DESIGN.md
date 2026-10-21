@@ -117,6 +117,13 @@ fade rather than one per route.
   rather than shown ahead of it. A trip still at its first stop but with a real
   assigned vehicle is unaffected -- its GPS and delay data are trustworthy,
   just not yet "in progress".
+- **A dimmed row** means its live data is stale: no successful poll for over
+  3x `refreshIntervalSeconds` (six minutes by default), usually because SEPTA's
+  API is down. Rather than keep counting the last live arrivals down to "0m",
+  the row switches to the static schedule, every arrival shown "~" (or, with
+  `useScheduleSupplement` off or a detour in effect, it keeps only those last
+  live arrivals that haven't passed yet). Live arrivals come back on the first
+  successful retry, every `retryIntervalSeconds`.
 
 ## Resolving direction at a two-direction stop
 

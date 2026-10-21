@@ -4,6 +4,8 @@ const NodeHelper = require("node_helper");
 const {
   pollRoute,
   mergeScheduledArrivals,
+  staleFallbackEtas,
+  computeIsFresh,
   alignedDelayMs,
   makeCachingFetch,
 } = require("./septa-client.js");
@@ -475,50 +477,8 @@ module.exports = NodeHelper.create({
       // and the static schedule alone has no direction_name to check against, only a bare direction_id.
       if (result.directionId != null) state.directionId = result.directionId;
 
-      // Live data only reveals a stop's name via a trip that actually passes through it
-      // -- a secondary stop that every currently-running headsign structurally skips might never resolve that way.
-      // The schedule cache's stopNames (see gtfs-schedule.js's buildScheduleCache) covers every configured stop regardless of what's running right now,
-      // so use it as a fallback once live data has had its chance.
-      if (!state.stopName && this.scheduleCache && this.scheduleCache.stopNames) {
-        const scheduleName = this.scheduleCache.stopNames[String(state.config.stopId)];
-        if (scheduleName) state.stopName = scheduleName;
-      }
-      if (!state.secondaryStopName && secondaryStopId && this.scheduleCache && this.scheduleCache.stopNames) {
-        const scheduleName = this.scheduleCache.stopNames[String(secondaryStopId)];
-        if (scheduleName) state.secondaryStopName = scheduleName;
-      }
-
-      // A detour means SEPTA is actively skipping this stop
-      // -- the static schedule has no idea and would just show phantom arrivals,
-      // so only merge in the schedule supplement when there's no detour in effect.
-      if (state.useScheduleSupplement && this.scheduleCache && !result.detour) {
-        const scheduled = getScheduledArrivals(
-          this.scheduleCache,
-          state.config.routeId,
-          state.config.stopId,
-          new Date(),
-          state.scheduleHorizonMinutes,
-          state.directionId
-        );
-        state.etas = mergeScheduledArrivals(result.etas, scheduled);
-      } else {
-        state.etas = result.etas;
-      }
-
-      // Whether the schedule supplement is expected but the static feed doesn't cover today at all (see gtfs-schedule.js's hasActiveServiceOn)
-      // -- the frontend surfaces a single "live data only" note when true.
-      // Only meaningful for a route actually using the supplement, once the cache has loaded
-      // (before that it's a plain startup gap, not a feed problem).
-      // A retained feed other than the active one may cover today: at a service-day rollover the feed that was answering yesterday can stop covering, while a newer retained feed starts.
-      // Cheap to check (this only runs when the active cache has already come up empty for today),
-      // and it re-selects without touching the network.
-      if (state.useScheduleSupplement && this.scheduleCache && !hasActiveServiceOn(this.scheduleCache, new Date())) {
-        this.reselectScheduleFeed();
-      }
-      const scheduleUnavailable =
-        state.useScheduleSupplement &&
-        Boolean(this.scheduleCache) &&
-        !hasActiveServiceOn(this.scheduleCache, new Date());
+      const scheduled = this.scheduledCandidates(state, result.detour);
+      state.etas = scheduled ? mergeScheduledArrivals(result.etas, scheduled) : result.etas;
 
       // "Detour inferred stops": SEPTA publishes plenty of detours with no skipped_stops at all
       // (75 of 121 on 2026-09-02, 73 of them active), so the confident path below can't see them.
@@ -546,46 +506,7 @@ module.exports = NodeHelper.create({
       }
       state.inferredDetourNear = inferredDetourNear;
 
-      // A stable order for footnote-marker assignment (see MMM-septa.js's septaGroupByDestination)
-      // -- every headsign this route/stop is ever scheduled to see, not just whichever trips happen to be next right now,
-      // so a given destination's marker doesn't change as different trips rotate through.
-      const headsignOrder = this.scheduleCache
-        ? getAllHeadsignsForStop(this.scheduleCache, state.config.routeId, state.config.stopId, state.directionId)
-        : [];
-
-      // Structural (schedule-based) secondary-stop skip: headsigns whose pattern never reaches the secondary stop, regardless of any detour.
-      // See septa-client.js's pollRoute for the separate, live detour-based check (state.secondaryStopDetour above).
-      const secondaryStopSkippedHeadsigns =
-        secondaryStopId && this.scheduleCache
-          ? getHeadsignsSkippingStop(
-              this.scheduleCache,
-              state.config.routeId,
-              state.config.stopId,
-              secondaryStopId,
-              state.directionId
-            )
-          : [];
-
-      this.sendSocketNotification("SEPTA_UPDATE", {
-        instanceId: state.instanceId,
-        routeKey: state.routeKey,
-        etas: state.etas,
-        detour: state.detour,
-        detourReason: state.detourReason,
-        stopName: state.stopName,
-        direction: state.direction,
-        hasTripError: state.hasTripError,
-        stopIdValid: state.stopIdValid,
-        lastFetchTime: state.lastFetchTime,
-        refreshIntervalSeconds: state.refreshIntervalSeconds,
-        headsignOrder,
-        secondaryStopDetour: state.secondaryStopDetour,
-        secondaryStopName: state.secondaryStopName,
-        secondaryStopSkippedHeadsigns,
-        inferredDetourNear: state.inferredDetourNear || null,
-        routeColor: getRouteLabelColor(this.scheduleCache, state.config.routeId),
-        scheduleUnavailable,
-      });
+      this.sendUpdate(state);
 
       // Success re-schedules onto the shared grid (offset by this route's own stagger slot);
       // the very first cycle after registration runs immediately and off-grid, so this is where a route snaps into place
@@ -602,6 +523,111 @@ module.exports = NodeHelper.create({
       // rather than waiting out the rest of a slot it isn't currently earning.
       // It rejoins the grid on its next success, via the aligned path above.
       state.timer = setTimeout(() => this.runCycle(fullKey), state.retryIntervalSeconds * 1000);
+
+      // Left alone, the display would count the last live arrivals down until every one of them read "0m".
+      // Once the data is stale, each retry instead sends what the schedule says (see septa-client.js's staleFallbackEtas),
+      // keeping lastFetchTime as it was so the row still reads as stale.
+      // A route that has never succeeded (an outage spanning a restart) gets the same treatment, rather than sitting on "..." indefinitely.
+      if (!computeIsFresh(state.lastFetchTime, state.refreshIntervalSeconds)) {
+        try {
+          state.etas = staleFallbackEtas(state.etas, this.scheduledCandidates(state, state.detour), Date.now() / 1000);
+          this.sendUpdate(state);
+        } catch (fallbackErr) {
+          console.error(`MMM-septa: route ${state.routeKey} stale fallback failed: ${fallbackErr.message}`);
+        }
+      }
     }
+  },
+
+  // The schedule supplement's candidate arrivals for this route, or null when the supplement doesn't apply.
+  // A detour means SEPTA is actively skipping this stop
+  // -- the static schedule has no idea and would just show phantom arrivals,
+  // so only use the schedule when there's no detour in effect.
+  scheduledCandidates(state, detour) {
+    if (!state.useScheduleSupplement || !this.scheduleCache || detour) return null;
+    return getScheduledArrivals(
+      this.scheduleCache,
+      state.config.routeId,
+      state.config.stopId,
+      new Date(),
+      state.scheduleHorizonMinutes,
+      state.directionId
+    );
+  },
+
+  // Sends the display everything it knows about one route, from state plus the schedule cache.
+  // Used both after a successful poll and for a failing route's stale fallback.
+  sendUpdate(state) {
+    // Same rule runCycle applies: a confirmed-invalid secondaryStopId is treated as if none were configured.
+    const secondaryStopId = state.secondaryStopIdValid === false ? undefined : state.config.secondaryStopId;
+
+    // Live data only reveals a stop's name via a trip that actually passes through it
+    // -- a secondary stop that every currently-running headsign structurally skips might never resolve that way.
+    // The schedule cache's stopNames (see gtfs-schedule.js's buildScheduleCache) covers every configured stop regardless of what's running right now,
+    // so use it as a fallback once live data has had its chance.
+    if (!state.stopName && this.scheduleCache && this.scheduleCache.stopNames) {
+      const scheduleName = this.scheduleCache.stopNames[String(state.config.stopId)];
+      if (scheduleName) state.stopName = scheduleName;
+    }
+    if (!state.secondaryStopName && secondaryStopId && this.scheduleCache && this.scheduleCache.stopNames) {
+      const scheduleName = this.scheduleCache.stopNames[String(secondaryStopId)];
+      if (scheduleName) state.secondaryStopName = scheduleName;
+    }
+
+    // Whether the schedule supplement is expected but the static feed doesn't cover today at all (see gtfs-schedule.js's hasActiveServiceOn)
+    // -- the frontend surfaces a single "live data only" note when true.
+    // Only meaningful for a route actually using the supplement, once the cache has loaded
+    // (before that it's a plain startup gap, not a feed problem).
+    // A retained feed other than the active one may cover today: at a service-day rollover the feed that was answering yesterday can stop covering, while a newer retained feed starts.
+    // Cheap to check (this only runs when the active cache has already come up empty for today),
+    // and it re-selects without touching the network.
+    if (state.useScheduleSupplement && this.scheduleCache && !hasActiveServiceOn(this.scheduleCache, new Date())) {
+      this.reselectScheduleFeed();
+    }
+    const scheduleUnavailable =
+      state.useScheduleSupplement &&
+      Boolean(this.scheduleCache) &&
+      !hasActiveServiceOn(this.scheduleCache, new Date());
+
+    // A stable order for footnote-marker assignment (see MMM-septa.js's septaGroupByDestination)
+    // -- every headsign this route/stop is ever scheduled to see, not just whichever trips happen to be next right now,
+    // so a given destination's marker doesn't change as different trips rotate through.
+    const headsignOrder = this.scheduleCache
+      ? getAllHeadsignsForStop(this.scheduleCache, state.config.routeId, state.config.stopId, state.directionId)
+      : [];
+
+    // Structural (schedule-based) secondary-stop skip: headsigns whose pattern never reaches the secondary stop, regardless of any detour.
+    // See septa-client.js's pollRoute for the separate, live detour-based check (state.secondaryStopDetour).
+    const secondaryStopSkippedHeadsigns =
+      secondaryStopId && this.scheduleCache
+        ? getHeadsignsSkippingStop(
+            this.scheduleCache,
+            state.config.routeId,
+            state.config.stopId,
+            secondaryStopId,
+            state.directionId
+          )
+        : [];
+
+    this.sendSocketNotification("SEPTA_UPDATE", {
+      instanceId: state.instanceId,
+      routeKey: state.routeKey,
+      etas: state.etas,
+      detour: state.detour,
+      detourReason: state.detourReason,
+      stopName: state.stopName,
+      direction: state.direction,
+      hasTripError: state.hasTripError,
+      stopIdValid: state.stopIdValid,
+      lastFetchTime: state.lastFetchTime,
+      refreshIntervalSeconds: state.refreshIntervalSeconds,
+      headsignOrder,
+      secondaryStopDetour: state.secondaryStopDetour,
+      secondaryStopName: state.secondaryStopName,
+      secondaryStopSkippedHeadsigns,
+      inferredDetourNear: state.inferredDetourNear || null,
+      routeColor: getRouteLabelColor(this.scheduleCache, state.config.routeId),
+      scheduleUnavailable,
+    });
   },
 });

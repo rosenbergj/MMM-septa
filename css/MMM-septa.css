@@ -137,5 +137,12 @@
 
 .septa-table .septa-row.septa-stale .septa-label,
 .septa-table .septa-row.septa-stale .septa-arrivals {
-  opacity: 0.4;
+  opacity: 0.65;
+}
+
+/* A stale row's arrivals are mostly schedule fallback, so nearly all of them
+   are untracked. Their own 0.6 would multiply with the row's 0.65 down to
+   roughly 0.4; the row dimming alone already says "not live". */
+.septa-table .septa-row.septa-stale .septa-arrivals .septa-untracked {
+  opacity: 1;
 }

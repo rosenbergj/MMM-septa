@@ -20,6 +20,7 @@ const {
   makeCachingFetch,
   pollRoute,
   mergeScheduledArrivals,
+  staleFallbackEtas,
 } = require("../septa-client.js");
 
 function fixture(name) {
@@ -1517,5 +1518,35 @@ test("pollRoute", async (t) => {
     assert.equal(result.directionId, "0");
     assert.ok(result.etas.length > 0);
     assert.deepEqual(logged, []);
+  });
+});
+
+test("staleFallbackEtas", async (t) => {
+  const lastEtas = [
+    { eta: 90, headsign: "A", tracked: true, tripId: "live-1" },
+    { eta: 100, headsign: "A", tracked: true, tripId: "live-2" },
+    { eta: 130, headsign: "A", tracked: false, tripId: "sched-130" },
+  ];
+
+  await t.test("with a schedule, replaces the last live arrivals entirely, all untracked", () => {
+    const candidates = [
+      { eta: 110, headsign: "A", tripId: "live-2" },
+      { eta: 140, headsign: "B", tripId: "sched-140" },
+    ];
+    assert.deepEqual(staleFallbackEtas(lastEtas, candidates, 100), [
+      { eta: 110, headsign: "A", tripId: "live-2", tracked: false },
+      { eta: 140, headsign: "B", tripId: "sched-140", tracked: false },
+    ]);
+  });
+
+  await t.test("an empty schedule (nothing scheduled soon) still wins over the last live arrivals", () => {
+    assert.deepEqual(staleFallbackEtas(lastEtas, [], 100), []);
+  });
+
+  await t.test("without a schedule, keeps only the last live arrivals that haven't passed", () => {
+    assert.deepEqual(
+      staleFallbackEtas(lastEtas, null, 100).map((a) => a.eta),
+      [100, 130]
+    );
   });
 });

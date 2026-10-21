@@ -15,6 +15,12 @@ function septaIsFresh(lastFetchTime, refreshIntervalSeconds, now) {
   return (now - lastFetchTime) / 1000 <= refreshIntervalSeconds * 3;
 }
 
+// A fresh row keeps an arrival whose eta has just passed: the bus may simply be late, and the next poll settles it within a couple of minutes.
+// A stale row has no next poll coming, so a passed arrival there is only ever wrong.
+function septaDropPassedIfStale(etas, stale, nowMs) {
+  return stale ? etas.filter((arrival) => arrival.eta * 1000 >= nowMs) : etas;
+}
+
 // Rounds *down*, deliberately.
 // "3m" should mean at least three minutes, not 2m30s dressed up as 3m: overstating the wait by up to 59 seconds is exactly the error that makes you miss a bus,
 // and the number on screen is already up to countdownTickSeconds (15s by default) stale on top of whatever lag SEPTA's own eta carries.
@@ -426,7 +432,10 @@ Module.register("MMM-septa", {
       const showHeadsigns =
         typeof route.showHeadsigns === "boolean" ? route.showHeadsigns : this.config.showHeadsigns;
 
-      const allEtas = state && Array.isArray(state.etas) ? state.etas : [];
+      // A stale row's arrivals stop being replaced if the backend stops sending altogether,
+      // so drop the ones already past rather than letting them sit at "0m".
+      const stale = Boolean(state) && !septaIsFresh(state.lastFetchTime, state.refreshIntervalSeconds, now);
+      const allEtas = state && Array.isArray(state.etas) ? septaDropPassedIfStale(state.etas, stale, now) : [];
       // With showHeadsigns off, a secondary-stop-configured route hides trips that structurally skip it
       // (by headsign/pattern) instead of just flagging them
       // -- filtered out of the full known list, before it's cut down to maxArrivals,
@@ -528,8 +537,7 @@ Module.register("MMM-septa", {
       if (!state) {
         arrivalsCell.innerHTML = "&hellip;";
       } else {
-        const fresh = septaIsFresh(state.lastFetchTime, state.refreshIntervalSeconds, now);
-        if (!fresh) row.className += " septa-stale";
+        if (stale) row.className += " septa-stale";
 
         if (state.detour) {
           arrivalsCell.classList.add("septa-detour");
@@ -717,7 +725,8 @@ Module.register("MMM-septa", {
       if (state.detour) continue;
       const secondaryStopSkippedHeadsigns = state.secondaryStopSkippedHeadsigns || [];
       const secondaryStopDetour = Boolean(state.secondaryStopDetour);
-      const allEtas = Array.isArray(state.etas) ? state.etas : [];
+      const stale = !septaIsFresh(state.lastFetchTime, state.refreshIntervalSeconds, now);
+      const allEtas = Array.isArray(state.etas) ? septaDropPassedIfStale(state.etas, stale, now) : [];
       const etasForDisplay =
         !showHeadsigns && route.secondaryStopId != null
           ? allEtas.filter((arrival) => {
